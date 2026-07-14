@@ -1,0 +1,32 @@
+{
+  "request": {
+    "workspace_id": "ws_saple_all",
+    "after_sequence": 0
+  },
+  "response": {
+    "workspace_id": "ws_saple_all",
+    "latest_sequence": 3,
+    "events": [
+      {
+        "sequence": 1,
+        "workspace_id": "ws_saple_all",
+        "kind": "agent.spawned",
+        "request_id": "req_9f3c1a2b",
+        "payload": { "agent_id": "agent_01", "provider": "claude", "model": "claude-opus-4-8" }
+      },
+      {
+        "sequence": 2,
+        "workspace_id": "ws_saple_all",
+        "kind": "agent.spawned",
+        "request_id": "req_9f3c1a2b",
+        "payload": { "agent_id": "agent_02", "provider": "claude", "model": "claude-opus-4-8" }
+      },
+      {
+        "sequence": 3,
+        "workspace_id": "ws_saple_all",
+        "kind": "terminal.closed",
+        "payload": { "pane_id": "pane_7" }
+      }
+    ]
+  }
+}

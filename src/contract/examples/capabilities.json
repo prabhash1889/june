@@ -1,0 +1,17 @@
+{
+  "contract_version": 1,
+  "bridge_version": "1.0.29",
+  "actions": [
+    "spawn_agents",
+    "assign_task",
+    "write_terminal",
+    "close_terminal",
+    "open_browser",
+    "close_browser",
+    "get_swarm_status"
+  ],
+  "limits": {
+    "max_concurrent_agents": 16,
+    "max_batch_size": 16
+  }
+}

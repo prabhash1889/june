@@ -6,5 +6,9 @@ src-tauri/gen/
 .DS_Store
 tsconfig.tsbuildinfo
 
+# Generated knowledge-graph artifacts (rebuilt by hooks).
+graphify-out/
+.code-review-graph/
+
 # saple-bridge's own workspace config for this folder as a project, not part of June itself.
 .saple/

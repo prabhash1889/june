@@ -1,0 +1,21 @@
+{
+  "request": {
+    "request_id": "req_9f3c1a2b",
+    "workspace_id": "ws_saple_all",
+    "action": "spawn_agents",
+    "arguments": {
+      "provider": "claude",
+      "model": "claude-opus-4-8",
+      "count": 5,
+      "prompt": "refactor the auth module"
+    }
+  },
+  "response": {
+    "status": "result",
+    "request_id": "req_9f3c1a2b",
+    "result": {
+      "counts": { "requested": 5, "started": 5, "failed": 0, "skipped": 0 },
+      "agent_ids": ["agent_01", "agent_02", "agent_03", "agent_04", "agent_05"]
+    }
+  }
+}
