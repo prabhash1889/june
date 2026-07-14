@@ -6,7 +6,7 @@
 **Status:** Phase 0 complete
 **Owner:** prabhash1889
 **Repo:** `SAPLE-ALL/june` (standalone; sibling of `saple-bridge`, `saple-mcp`, `artemis`, `sentry`)
-**Last updated:** 2026-07-14
+**Last updated:** 2026-07-14 (merged the control contract, invariants, and safety model from the Codex draft `JUNE-PLAN.md`; that file is superseded by this one)
 
 ---
 
@@ -70,9 +70,36 @@ June is a **cascaded voice pipeline** wrapped around a **provider-pluggable agen
 | Brain | Provider-pluggable agent loop (TypeScript): Claude default, plus OpenAI, Gemini, and local models | User chooses the brain like any other stage; one tool-calling loop + MCP client works across providers |
 | Extensibility | Every capability is an MCP server | Add a server, not a plugin system |
 | Bridge control | New localhost control endpoint in saple-bridge, wrapped as an MCP server | saple-bridge has no external intake today; this is the one thing that must be added there |
+| Bridge authority | Renderer dispatcher now, behind a Rust-ready contract | Reuses the existing store actions (days, not weeks); the contract hides where authority lives, so it can move into Rust later without touching June (see below) |
 | Model choice | User-selectable per stage (STT / brain / TTS), local **or** API, per provider | Core product requirement |
 | Packaging | Standalone Tauri app (Rust + web UI) with tray presence | Must outlive and launch saple-bridge; grows beyond saple |
 | Activation | Push-to-talk first, wake word later | PTT is zero-false-trigger and trivial; wake word is polish |
+
+### The control contract (frozen early, implementation-independent)
+
+June talks to saple-bridge through exactly three operations:
+
+```
+capabilities()                         -> supported actions and limits
+command(request_id, workspace_id,
+        action, arguments, approval?)  -> accepted | result | error
+observe(workspace_id, after_sequence)  -> ordered events
+```
+
+Contract rules (these are what make retries, restarts, and approvals safe;
+they cost little now and are expensive to retrofit later):
+
+- Every **mutating command carries a unique `request_id`** and is idempotent: retrying the same request returns the original result and creates nothing new.
+- Every **resource has a stable ID**; voice labels like "Codex three" resolve to that ID before any action is taken.
+- Every **event has a monotonically increasing sequence number**; `observe(after_sequence)` resumes from the last acknowledged event, so a June restart never loses the roster.
+- **Batch operations return requested / started / failed / skipped counts** - partial success is a first-class result, not an error.
+- **Approvals are one-time tokens** (exact action, arguments, expiry, nonce) verified by bridge before execution - see §5.
+
+### Where authority lives (decided)
+
+The Codex draft proposed moving all agent/terminal/browser lifecycle authority into a new Rust control module inside saple-bridge, with the React UI as a pure projection. That is the architecturally cleaner end state, but it means rewriting lifecycle logic that already works in the Zustand stores, and it delays the first working command by months.
+
+Decision: **Phase 1 implements the endpoint as a thin dispatcher that calls the existing renderer store actions.** The contract above is the seam - June only ever sees `capabilities/command/observe`, so if renderer-mediated control proves fragile (window hung, minimized-to-tray stalls), authority migrates into Rust behind the same contract with zero changes to June. Do not start that migration until the fragility actually bites.
 
 ### Why standalone, not a saple-bridge pane
 
@@ -107,7 +134,7 @@ Every stage of the pipeline and the brain itself is configurable. This is centra
 - **Voice** - TTS voice pick, rate, volume; spoken-confirmation policy for destructive actions.
 - **Agent** - model, effort level, system-prompt tuning, session memory on/off, max concurrent agents.
 - **Widget** - position, size, opacity, docking, at-rest vs. active behavior (details gathered in Phase 6).
-- **Privacy** - local-only mode toggle (forces local STT/TTS/brain, blocks cloud), transcript retention.
+- **Privacy** - privacy mode (Standard / Local voice / Strict offline, see §5), transcript retention.
 - **Diagnostics** - pipeline latency breakdown, logs, mic/audio device pick, MCP connection log.
 - **Appearance** - theme (dark default), accent, reduced-motion respect.
 
@@ -117,10 +144,39 @@ Every stage of the pipeline and the brain itself is configurable. This is centra
 
 Voice removes the "read before you click" safety net. Therefore:
 
-- **Destructive commands require spoken confirmation** ("Close all terminals" → "That will close 6 terminals. Say 'confirm' to proceed."). Enforced via the Agent SDK's permission hooks.
-- **Control endpoint** is localhost-only, token-authed, behind a user-visible enable toggle (mirrors saple-bridge's `agent_browser` opt-in pattern).
-- **Path containment & canonical-file whitelist** reused from saple-bridge patterns for any file writes.
-- **Local-only mode** guarantees no audio or text leaves the machine.
+### Action policy (by class, not by model)
+
+| Class | Examples | Default |
+|---|---|---|
+| Observe | list agents, status, summaries | automatic |
+| Reversible | open/focus terminal or browser | automatic |
+| Expensive | launch several paid agents | spoken confirmation with exact count |
+| Destructive | stop agent, close active terminal | spoken and visible confirmation |
+| External effect | submit form, send message, Git push | explicit visible approval |
+| OS-wide | kill unrelated process, control another app | unavailable (deferred, see §8) |
+
+### Approvals the brain cannot bypass
+
+Confirmations are not just prompt discipline. An approval is a **one-time token** carrying the exact action, arguments, expiry, and nonce; the bridge endpoint verifies the token before executing. Swapping the coordinator model (Claude → GPT → local) cannot skip a gate, because the gate lives in the execution layer, not the brain. June's UI (widget and app) presents the same pending approval with approve / reject / expire states.
+
+Additional rules:
+
+- June never claims success until bridge returns a result or an observable completion event.
+- Ambiguous targets are asked about, never guessed - especially destructive ones.
+- Concurrent write-capable agents get separate Git worktrees (bridge creates them) or the launch is rejected; shared-workspace agents run read-only.
+- Secrets never enter transcripts, logs, prompts, or plain-text settings; tokens and request bodies are redacted from logs.
+
+### Privacy modes (honest tiers, not one toggle)
+
+- **Standard** - selected cloud and local providers may be used.
+- **Local voice** - microphone audio, STT, and TTS stay local; the brain and coding agents may still use the network. Never describe this mode as fully offline.
+- **Strict offline** - only local models and capabilities declared offline-safe are enabled; browser navigation and cloud coding agents are blocked.
+
+### Local transport
+
+- Control endpoint is localhost-only, token-authed, behind a user-visible enable toggle (mirrors saple-bridge's `agent_browser` opt-in pattern). Auth cannot be disabled for mutating actions.
+- Bridge publishes a **discovery record** (PID, version, workspace ID, endpoint, short-lived token) on start and removes it on clean shutdown; June verifies process liveness and protocol version before issuing commands, and rejects stale records.
+- Path containment & canonical-file whitelist reused from saple-bridge patterns for any file writes.
 
 ---
 
@@ -152,32 +208,39 @@ conventions.
 - Not yet done: no MCP servers, no agent loop, no voice - those are Phases 1+.
 
 ### Phase 1 - saple-bridge control endpoint (the prerequisite)
-**Goal:** saple-bridge can be driven from outside.
-- Add a localhost-only, token-authed HTTP/WS control endpoint to saple-bridge's Tauri backend.
-- Backend forwards each command as a Tauri event to the renderer; a thin dispatcher calls existing store actions (`swarmStore.launchAgent`, `terminalStore.addPane`, `browser.*`, etc.) and returns the result.
+**Goal:** saple-bridge can be driven from outside, through the frozen contract.
+- Freeze the contract first: `capabilities` / `command` / `observe` shapes, error codes (bridge unavailable, stale workspace, denied action, duplicate request, capacity, provider failure, partial batch failure), and one serialized example of a successful and a rejected command. Contract tests pass without starting bridge.
+- Add a localhost-only, token-authed HTTP/WS control endpoint to saple-bridge's Tauri backend implementing that contract.
+- Backend forwards each command as a Tauri event to the renderer; a thin dispatcher calls existing store actions (`swarmStore.launchAgent`, `terminalStore.addPane`, `browser.*`, etc.) and returns the result. (Authority stays in the renderer for now - see §2 "Where authority lives".)
+- Idempotency: mutating commands carry `request_id`; the endpoint deduplicates and replays the original result on retry.
+- Events: every state change is emitted with a monotonic sequence number; `observe(after_sequence)` resumes cleanly.
+- Discovery record with PID/version/endpoint/short-lived token, written on start, removed on clean shutdown, with stale-PID detection.
 - User-visible enable toggle in saple-bridge settings.
-- Commands to support: spawn agents (provider/model/count/prompt), assign task, write-to/close terminal, open/close/navigate browser, read swarm status.
-**Exit:** a curl/script can make saple-bridge spawn a Claude agent in the open workspace.
+- Commands to support: spawn agents (provider/model/count/prompt), assign task, write-to/close terminal, open/close/navigate browser, read swarm status. Batch spawn returns requested/started/failed/skipped; write-capable concurrent agents get worktrees or are rejected.
+**Exit:** a curl/script can make saple-bridge spawn a Claude agent in the open workspace; retrying the same `request_id` spawns nothing new; a second script resumes `observe` and sees the same ordered events.
 
 ### Phase 2 - `saple-bridge-control` MCP server
 **Goal:** the control endpoint is an MCP tool surface.
 - MCP server wrapping the Phase 1 endpoint: `spawn_agents`, `send_to_terminal`, `close_terminal`, `open_browser`, `assign_task`, `get_swarm_status`.
+- Tool results surface the contract's error codes and batch counts verbatim - no swallowing partial failures.
 - Publish config so any MCP client can attach it.
 **Exit:** an MCP client (e.g. Claude Code) can spawn agents in saple-bridge by tool call.
 
 ### Phase 3 - Agent core (text-only) ★ key de-risking milestone
 **Goal:** the whole control loop works, typed, no voice.
 - Provider-pluggable agent core (`Brain` interface) with `saple-bridge-control` + `saple-memory` (+ artemis wrapped) attached. Claude (`claude-opus-4-8`) is the default brain; ship at least one non-Claude provider (e.g. OpenAI or Ollama) in this phase to prove the abstraction holds.
+- Approval flow per §5: pending / approve / reject / expire, one-time tokens verified by bridge; the same approval renders in the app UI. Expensive launches confirm with exact counts; destructive actions confirm visibly.
+- Reference resolution: "the third Codex agent" resolves against live resource state to a stable ID; ambiguity asks, never guesses.
 - Voice-tuned system prompt (short spoken-style replies, numbers spelled out, no markdown/emoji), but exercised via text first.
-- Permission hooks with destructive-action confirmation.
-- Streaming responses surfaced in the app UI.
-**Exit:** typing "open 5 claude agents and 4 codex agents in this workspace" makes it happen and June reports back. If this works typed, voice is mechanical.
+- Streaming responses surfaced in the app UI; June reports outcomes only from bridge results/events, never from intent.
+**Exit:** typing "open 5 claude agents and 4 codex agents in this workspace" makes it happen exactly once (retry-safe), June reports started/failed/skipped accurately, and switching the brain provider cannot bypass an approval. If this works typed, voice is mechanical.
 
 ### Phase 4 - Speech to text
 **Goal:** June hears you.
 - `SttProvider` interface + faster-whisper (local default) and one cloud provider.
 - Push-to-talk global hotkey; Silero VAD for end-of-utterance.
-- Live transcription surfaced in UI.
+- Live transcription surfaced in UI; no action begins before the transcript is accepted.
+- Handle permission denial, missing device, partial transcript, cancellation, and timeout.
 **Exit:** hold hotkey, speak a command, see accurate transcription feed the agent.
 
 ### Phase 5 - Text to speech
@@ -185,22 +248,25 @@ conventions.
 - `TtsProvider` interface + Kokoro (local default) and one cloud provider.
 - Sentence-by-sentence streaming so June starts speaking before the full answer is generated.
 - Barge-in: user speech interrupts TTS and sends an interrupt to the session.
-**Exit:** full spoken round-trip - say a command, hear the answer, interrupt mid-sentence.
+- June's own audio must never be picked up as a confirmation.
+**Exit:** full spoken round-trip - say a command, hear the answer, interrupt mid-sentence - with no duplicate execution.
 
 ### Phase 6 - Widget form ★ (details gathered here)
 **Goal:** the high-quality floating surface.
 - **This phase begins by asking the user for the widget spec** (the user has said they'll provide details): size, docking, transparency, expand/collapse, at-rest vs. active states, animation language, exactly what it shows (transcription, June's current action, quick results, quick actions).
 - Build the widget as a second window sharing the agent core and settings.
-- At-rest ambient state → active listening → thinking → speaking → result states.
-**Exit:** a genuinely good widget, per the user's spec, driving the same session as the app.
+- At-rest ambient state → active listening → thinking → speaking → result states, plus approval, partial-success, and failure states.
+**Exit:** a genuinely good widget, per the user's spec, driving the same session as the app - a command can start in the widget and be inspected or approved in the application.
 
-### Phase 7 - Model-choice & settings depth
-**Goal:** the full configurability promised in §3–§4.
+### Phase 7 - Model-choice, settings depth & privacy modes
+**Goal:** the full configurability promised in §3-§4, with honest privacy.
 - All provider pickers wired (STT/brain/TTS, local/API per stage), with per-stage test buttons.
 - Full brain roster: Claude, OpenAI GPT, Google Gemini, Ollama / LM Studio, and custom OpenAI-compatible endpoints, all selectable from the UI.
-- Full settings surface from §4, keychain-backed keys, local-only mode.
+- Privacy modes per §5: Standard / Local voice / Strict offline, enforced via per-capability offline-safe metadata - Strict offline rejects every declared network capability, and Local voice is never described as fully offline.
+- Show estimated provider cost and network use before high-fan-out actions.
+- Full settings surface from §4, keychain-backed keys.
 - Diagnostics: latency breakdown per stage, logs, device pick, MCP health.
-**Exit:** user can fully choose their stack from the UI and verify each stage.
+**Exit:** user can fully choose their stack from the UI and verify each stage; switching providers preserves commands and pending approvals.
 
 ### Phase 8 - Wake word & hands-free polish
 **Goal:** talk to June without touching the keyboard.
@@ -210,14 +276,40 @@ conventions.
 
 ### Phase 9 - Capability expansion & hardening
 **Goal:** prove "general-purpose" and productionize.
-- Add 1–2 non-saple MCP capabilities (e.g. web research, files) to prove extensibility.
+- Add 1-2 non-saple MCP capabilities (e.g. web research, files) to prove extensibility.
 - Wrap artemis for headless missions if not already.
-- Packaging, auto-update, error states, empty states, accessibility pass, performance.
-**Exit:** June does something outside saple by voice; app is installable and robust.
+- Recovery drills: killed June, killed bridge, killed Claude/Codex process, duplicate requests, partial batches, expired approvals, provider downtime, slow voice stages, app upgrade. Restarting June must restore the same observable state (via `observe` resume) without relaunching anything.
+- Structured redacted logs, diagnostics export, accessibility pass, packaging, auto-update, performance; measure command acceptance, execution, and spoken-response latency.
+**Exit:** June does something outside saple by voice; an installable build recovers safely from every drill above.
 
 ---
 
-## 7. Open questions (to resolve when their phase arrives)
+## 7. First-release acceptance scenario
+
+This scenario - not the number of settings, providers, or MCP servers - defines the first useful June release:
+
+1. Bridge is open on `SAPLE-ALL`; June discovers and authenticates to it.
+2. The user says: "Open five Claude agents and four Codex agents in this workspace."
+3. June repeats the provider counts, workspace, worktree policy, and cost class; the user approves once.
+4. Bridge executes one idempotent batch and emits ordered events; June reports started, failed, and blocked agents by stable spoken label.
+5. The user assigns a task to an agent, asks for status, opens a browser tab, and closes a bridge terminal.
+6. Restarting June restores the same observable state without relaunching anything.
+
+---
+
+## 8. Deferred until a real requirement appears
+
+- Moving bridge authority from the renderer dispatcher into a Rust control module (contract already permits it - see §2).
+- Standalone/headless orchestration daemon.
+- Remote or phone control.
+- Arbitrary Windows application/process control (OS-wide actions stay unavailable).
+- Browser DOM automation and credentialed form submission.
+- Custom plugin system beyond MCP.
+- Multi-user permissions or cloud synchronization.
+
+---
+
+## 9. Open questions (to resolve when their phase arrives)
 
 - **Widget spec** - full details (Phase 6, user to provide).
 - **Brain rollout order** - which non-Claude providers ship in Phase 3 vs Phase 7 (suggest OpenAI + Ollama first, Gemini next)? (Phase 3/7)
@@ -226,7 +318,7 @@ conventions.
 
 ---
 
-## 8. Default stack (recommended starting choices)
+## 10. Default stack (recommended starting choices)
 
 - **STT:** faster-whisper (local) - swap to Parakeet if NVIDIA GPU present.
 - **Brain:** Claude `claude-opus-4-8`, effort `high` - swappable to GPT, Gemini, or a local Ollama model from settings.

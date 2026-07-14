@@ -394,8 +394,8 @@
           <div class="pill"><span class="on">Local</span><span>API</span></div>
         </div>
         <div class="togrow">
-          <div class="lab">Local-only mode<small>nothing leaves the machine</small></div>
-          <div class="pill"><span class="on">On</span><span>Off</span></div>
+          <div class="lab">Privacy mode<small>honest tiers, enforced per capability</small></div>
+          <div class="pill"><span>Standard</span><span class="on">Local voice</span><span>Offline</span></div>
         </div>
       </div>
     </div>
@@ -430,9 +430,11 @@
     </div>
     <div class="safety">
       <div class="srow panel rv"><div class="k">◆</div><div><b>Spoken confirmation</b><span>"That will close six terminals. Say confirm to proceed." Destructive actions always ask.</span></div></div>
-      <div class="srow panel rv"><div class="k">◆</div><div><b>Localhost only</b><span>The control channel is bound to your machine, token-authed, and off until you switch it on.</span></div></div>
-      <div class="srow panel rv"><div class="k">◆</div><div><b>Local-only mode</b><span>One toggle forces local speech and brain, and blocks every cloud call. Nothing leaves.</span></div></div>
-      <div class="srow panel rv"><div class="k">◆</div><div><b>Contained writes</b><span>File access stays inside the workspace, reusing saple-bridge's path-containment guarantees.</span></div></div>
+      <div class="srow panel rv"><div class="k">◆</div><div><b>Approvals the brain can't skip</b><span>Confirmations are one-time tokens verified by the bridge before execution - swapping the model never bypasses a gate.</span></div></div>
+      <div class="srow panel rv"><div class="k">◆</div><div><b>Asked once, runs once</b><span>Every command carries a unique request id. Retries and reconnects replay the result - they never launch a second batch.</span></div></div>
+      <div class="srow panel rv"><div class="k">◆</div><div><b>Localhost only</b><span>The control channel is bound to your machine, token-authed, discovery-verified, and off until you switch it on.</span></div></div>
+      <div class="srow panel rv"><div class="k">◆</div><div><b>Honest privacy modes</b><span>Standard, local voice (speech stays on-device), and strict offline (every network capability blocked) - no false "fully offline" claims.</span></div></div>
+      <div class="srow panel rv"><div class="k">◆</div><div><b>Contained writes</b><span>File access stays inside the workspace; parallel write agents get their own Git worktrees or don't launch.</span></div></div>
     </div>
   </div>
 </section>
@@ -447,15 +449,15 @@
     </div>
     <div class="road">
       <div class="ph rv"><div class="pnum">Phase 0</div><h4>Foundations</h4><p>Tauri shell, tray presence, settings store, keychain, CI. An empty June that launches and remembers.</p></div>
-      <div class="ph rv"><div class="pnum">Phase 1</div><h4>Bridge control endpoint</h4><p>The one thing saple-bridge is missing: a localhost, token-authed channel that lets June drive it.</p></div>
+      <div class="ph rv"><div class="pnum">Phase 1</div><h4>Bridge control endpoint</h4><p>A localhost, token-authed channel with a frozen contract: idempotent commands, stable IDs, ordered resumable events.</p></div>
       <div class="ph rv"><div class="pnum">Phase 2</div><h4>Control as MCP</h4><p>Wrap that endpoint as an MCP server - spawn agents, terminals, browser, tasks - callable as tools.</p></div>
-      <div class="ph star rv"><div class="pnum">Phase 3</div><h4>Agent core, typed <span class="kd">key milestone</span></h4><p>Claude Agent SDK with the capabilities attached. Type a command, watch it happen. This de-risks everything.</p></div>
+      <div class="ph star rv"><div class="pnum">Phase 3</div><h4>Agent core, typed <span class="kd">key milestone</span></h4><p>The pluggable brain with capabilities and bridge-verified approvals attached. Type a command, watch it happen exactly once.</p></div>
       <div class="ph rv"><div class="pnum">Phase 4</div><h4>Speech to text</h4><p>June hears you - push-to-talk, VAD, live transcription feeding the agent.</p></div>
       <div class="ph rv"><div class="pnum">Phase 5</div><h4>Text to speech</h4><p>June talks back, streaming as it thinks, and you can interrupt it mid-sentence.</p></div>
       <div class="ph star rv"><div class="pnum">Phase 6</div><h4>The widget <span class="kd">your details</span></h4><p>Begins by asking you for the widget spec, then builds the high-quality floating surface to match.</p></div>
-      <div class="ph rv"><div class="pnum">Phase 7</div><h4>Model choice & settings depth</h4><p>Every provider picker, every knob, local-only mode, and the diagnostics that prove it all works.</p></div>
+      <div class="ph rv"><div class="pnum">Phase 7</div><h4>Model choice, settings & privacy modes</h4><p>Every provider picker, every knob, honest privacy tiers, and the diagnostics that prove it all works.</p></div>
       <div class="ph rv"><div class="pnum">Phase 8</div><h4>Wake word & hands-free</h4><p>"Hey June" - custom wake word, refined turn-taking, reliable low-false-trigger activation.</p></div>
-      <div class="ph rv"><div class="pnum">Phase 9</div><h4>Expansion & hardening</h4><p>A non-saple capability to prove it's general-purpose, then packaging, updates, and polish.</p></div>
+      <div class="ph rv"><div class="pnum">Phase 9</div><h4>Expansion & hardening</h4><p>A non-saple capability to prove it's general-purpose, then recovery drills - killed apps, retries, expired approvals - packaging and polish.</p></div>
     </div>
   </div>
 </section>
