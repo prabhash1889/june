@@ -3,10 +3,10 @@
 > A local-first voice agent that controls the SAPLE ecosystem (and more) by voice.
 > Tell June what to do; it does it, answers back, and stays out of your way.
 
-**Status:** Phase 0 complete
+**Status:** Phase 1 complete (pending live smoke test)
 **Owner:** prabhash1889
 **Repo:** `SAPLE-ALL/june` (standalone; sibling of `saple-bridge`, `saple-mcp`, `artemis`, `sentry`)
-**Last updated:** 2026-07-14 (merged the control contract, invariants, and safety model from the Codex draft `JUNE-PLAN.md`; that file is superseded by this one)
+**Last updated:** 2026-07-15 (Phase 1: contract frozen in june; control endpoint + renderer dispatcher + settings toggle landed in saple-bridge)
 
 ---
 
@@ -207,7 +207,7 @@ conventions.
   `settings.json`'s `launchCount` incremented 1 → 2 across two real relaunches.
 - Not yet done: no MCP servers, no agent loop, no voice - those are Phases 1+.
 
-### Phase 1 - saple-bridge control endpoint (the prerequisite)
+### Phase 1 - saple-bridge control endpoint (the prerequisite) ✅
 **Goal:** saple-bridge can be driven from outside, through the frozen contract.
 - Freeze the contract first: `capabilities` / `command` / `observe` shapes, error codes (bridge unavailable, stale workspace, denied action, duplicate request, capacity, provider failure, partial batch failure), and one serialized example of a successful and a rejected command. Contract tests pass without starting bridge.
 - Add a localhost-only, token-authed HTTP/WS control endpoint to saple-bridge's Tauri backend implementing that contract.
@@ -218,6 +218,32 @@ conventions.
 - User-visible enable toggle in saple-bridge settings.
 - Commands to support: spawn agents (provider/model/count/prompt), assign task, write-to/close terminal, open/close/navigate browser, read swarm status. Batch spawn returns requested/started/failed/skipped; write-capable concurrent agents get worktrees or are rejected.
 **Exit:** a curl/script can make saple-bridge spawn a Claude agent in the open workspace; retrying the same `request_id` spawns nothing new; a second script resumes `observe` and sees the same ordered events.
+
+**Done:** Contract frozen in june; endpoint + renderer dispatcher + settings toggle in saple-bridge.
+- **Contract (june):** `src/contract/types.ts` (the three operations, frozen `ERROR_CODES` and
+  `ACTIONS`, `ApprovalToken`, `BatchCounts`), `src/contract/validate.ts` (trust-boundary validators
+  enforcing the invariants), and `src/contract/examples/*.json` as the language-neutral golden
+  source of truth. `src/contract/contract.test.ts` passes without starting bridge (9 tests).
+- **Endpoint (saple-bridge `src-tauri/src/june_control.rs`):** localhost-only, token-authed
+  `tiny_http` server on an ephemeral loopback port, off by default behind a `june-control.enabled`
+  flag file. Owns the transport-independent core - monotonic sequenced event log with
+  `observe(after_sequence)` resume, and `request_id` idempotency (replay on retry,
+  `duplicate_request` on conflicting reuse) - all unit-tested (5 Rust tests). Publishes a discovery
+  record (`june-control.json`: pid/endpoint/token/version) on start, removed on clean shutdown;
+  liveness checked via pid.
+- **Dispatcher (saple-bridge `src/lib/juneDispatcher.ts`):** authority stays in the renderer -
+  `command` is forwarded as the `june://command` event, run against the existing stores
+  (`terminalStore.addPane`/`removePane`, `write_pty`, `browserStore`, `swarmStore`), state changes
+  reported via `june_emit_event`, results returned via `june_command_result`. Batch spawn returns
+  summing requested/started/failed/skipped counts.
+- **Toggle:** "June Voice Control" in Workspace settings (mirrors the agent-browser opt-in). All
+  164 bridge frontend tests + typecheck + lint + clippy green.
+- **Not yet done:** the exit criterion is a *live* end-to-end check (bridge running, workspace open,
+  real agent CLIs) - run `june/scripts/phase1-smoke.ps1` against a live bridge to confirm
+  spawn/idempotency/observe. Deferred to their own phases per the plan: approval one-time-token
+  *verification* in the endpoint (§5, exercised in Phase 3), stale-workspace mapping between June's
+  logical `workspace_id` and bridge's internal workspace key (Phase 3), and WS streaming for
+  `observe` (polling suffices now).
 
 ### Phase 2 - `saple-bridge-control` MCP server
 **Goal:** the control endpoint is an MCP tool surface.
