@@ -1,0 +1,489 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>June - your voice, in command</title>
+<style>
+  /* ============ June evening: dusk-over-indigo palette ============
+     Deliberately single dark look. June = a warm summer evening:
+     deep indigo night meeting a coral/rose horizon glow. */
+  :root{
+    --night-0:#0B0819;      /* deepest */
+    --night-1:#110C24;
+    --night-2:#181231;
+    --panel:rgba(30,22,58,0.55);
+    --panel-line:rgba(157,140,255,0.14);
+    --ink:#EFEBFA;
+    --ink-dim:#A79FC6;
+    --ink-faint:#6E668C;
+    --warm-1:#FFB07A;       /* horizon amber */
+    --warm-2:#FF7A9C;       /* horizon rose  */
+    --cool-1:#9D8CFF;       /* periwinkle    */
+    --cool-2:#6C5CE7;       /* dusk violet   */
+    --glow-warm:255,138,120;
+    --glow-cool:157,140,255;
+    --serif: ui-serif, "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+    --sans: "Segoe UI Variable Text","Segoe UI", system-ui, -apple-system, sans-serif;
+    --mono: "Cascadia Code", "Cascadia Mono", Consolas, ui-monospace, monospace;
+    --maxw:1120px;
+  }
+
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{scroll-behavior:smooth}
+  body{
+    font-family:var(--sans);
+    color:var(--ink);
+    background:var(--night-0);
+    line-height:1.6;
+    -webkit-font-smoothing:antialiased;
+    overflow-x:hidden;
+  }
+  /* Ambient dusk gradient - the whole page sits at horizon */
+  .sky{
+    position:fixed; inset:0; z-index:-2;
+    background:
+      radial-gradient(120% 80% at 50% 118%, rgba(255,122,156,.28), transparent 55%),
+      radial-gradient(90% 60% at 50% 128%, rgba(255,176,122,.22), transparent 50%),
+      radial-gradient(100% 70% at 15% -10%, rgba(108,92,231,.30), transparent 55%),
+      linear-gradient(180deg,var(--night-1),var(--night-0) 60%);
+  }
+  .grain{
+    position:fixed; inset:0; z-index:-1; opacity:.035; pointer-events:none;
+    background-image:radial-gradient(rgba(255,255,255,.6) .5px, transparent .5px);
+    background-size:3px 3px;
+  }
+
+  .wrap{max-width:var(--maxw); margin:0 auto; padding:0 28px}
+
+  /* ---------------- Nav ---------------- */
+  nav{
+    position:sticky; top:0; z-index:50;
+    backdrop-filter:blur(14px);
+    background:linear-gradient(180deg, rgba(11,8,25,.82), rgba(11,8,25,.35));
+    border-bottom:1px solid var(--panel-line);
+  }
+  .nav-in{display:flex; align-items:center; justify-content:space-between;
+    max-width:var(--maxw); margin:0 auto; padding:16px 28px}
+  .brand{display:flex; align-items:center; gap:12px; font-weight:600; letter-spacing:.2px}
+  .brand .dot{
+    width:22px;height:22px;border-radius:50%;
+    background:radial-gradient(circle at 35% 30%, var(--warm-1), var(--warm-2) 45%, var(--cool-2) 100%);
+    box-shadow:0 0 14px rgba(var(--glow-warm),.6);
+  }
+  .brand b{font-family:var(--serif); font-weight:600; font-size:19px; letter-spacing:.4px}
+  .nav-links{display:flex; gap:26px; font-size:14px}
+  .nav-links a{color:var(--ink-dim); text-decoration:none; transition:color .2s}
+  .nav-links a:hover{color:var(--ink)}
+  .tag{font-family:var(--mono); font-size:11px; color:var(--ink-faint);
+    border:1px solid var(--panel-line); padding:4px 9px; border-radius:20px}
+
+  /* ---------------- Hero ---------------- */
+  header{position:relative; padding:88px 0 60px; text-align:center}
+  .eyebrow{font-family:var(--mono); font-size:12.5px; letter-spacing:3px; text-transform:uppercase;
+    color:var(--warm-1); opacity:.9; margin-bottom:26px}
+  h1{
+    font-family:var(--serif); font-weight:600;
+    font-size:clamp(52px, 9vw, 108px); line-height:.98; letter-spacing:-2px;
+    margin-bottom:22px;
+  }
+  h1 .gl{
+    background:linear-gradient(100deg, var(--warm-1), var(--warm-2) 42%, var(--cool-1) 92%);
+    -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent;
+  }
+  .lede{max-width:640px; margin:0 auto 40px; font-size:clamp(17px,2.1vw,21px); color:var(--ink-dim)}
+  .lede b{color:var(--ink); font-weight:600}
+
+  /* --------- Signature: the breathing voice orb --------- */
+  .orb-stage{position:relative; height:300px; display:flex; align-items:center; justify-content:center; margin:14px 0 4px}
+  .orb{position:relative; width:200px; height:200px}
+  .orb .core{
+    position:absolute; inset:52px; border-radius:50%;
+    background:radial-gradient(circle at 38% 32%, #FFD9B0, var(--warm-2) 42%, var(--cool-2) 96%);
+    box-shadow:0 0 60px rgba(var(--glow-warm),.55), 0 0 110px rgba(var(--glow-cool),.35);
+    animation:breathe 4.6s ease-in-out infinite;
+  }
+  .orb .ring{position:absolute; inset:0; border-radius:50%; border:1px solid rgba(var(--glow-cool),.35)}
+  .orb .r1{animation:ripple 4.6s ease-out infinite}
+  .orb .r2{animation:ripple 4.6s ease-out infinite; animation-delay:1.5s}
+  .orb .r3{animation:ripple 4.6s ease-out infinite; animation-delay:3s}
+  @keyframes breathe{
+    0%,100%{transform:scale(.94); filter:saturate(1)}
+    50%{transform:scale(1.06); filter:saturate(1.18)}
+  }
+  @keyframes ripple{
+    0%{transform:scale(.55); opacity:.9}
+    100%{transform:scale(1.5); opacity:0}
+  }
+  /* the waveform, June listening */
+  .wave{display:flex; align-items:center; justify-content:center; gap:5px; height:56px; margin-top:2px}
+  .wave span{width:4px; border-radius:4px;
+    background:linear-gradient(var(--warm-1),var(--cool-1));
+    animation:vu 1.1s ease-in-out infinite}
+  .wave span:nth-child(1){height:16px; animation-delay:0s}
+  .wave span:nth-child(2){height:34px; animation-delay:.12s}
+  .wave span:nth-child(3){height:52px; animation-delay:.24s}
+  .wave span:nth-child(4){height:28px; animation-delay:.36s}
+  .wave span:nth-child(5){height:46px; animation-delay:.48s}
+  .wave span:nth-child(6){height:20px; animation-delay:.6s}
+  .wave span:nth-child(7){height:38px; animation-delay:.72s}
+  .wave span:nth-child(8){height:14px; animation-delay:.84s}
+  @keyframes vu{0%,100%{transform:scaleY(.35)}50%{transform:scaleY(1)}}
+
+  .spoken{font-family:var(--serif); font-style:italic; font-size:clamp(19px,2.6vw,26px);
+    color:var(--ink); margin-top:14px}
+  .spoken::before,.spoken::after{content:'"'; color:var(--warm-2); opacity:.7}
+  .spoken-sub{font-family:var(--mono); font-size:12.5px; color:var(--ink-faint); margin-top:12px; letter-spacing:.5px}
+
+  /* ---------------- Section shell ---------------- */
+  section{padding:78px 0; position:relative}
+  .sec-head{margin-bottom:44px; max-width:720px}
+  .sec-tag{font-family:var(--mono); font-size:12px; letter-spacing:2px; text-transform:uppercase;
+    color:var(--cool-1); margin-bottom:14px}
+  h2{font-family:var(--serif); font-weight:600; font-size:clamp(30px,4.4vw,46px); line-height:1.05; letter-spacing:-.5px}
+  h2 + p{color:var(--ink-dim); font-size:17px; margin-top:16px}
+
+  .panel{
+    background:var(--panel);
+    border:1px solid var(--panel-line);
+    border-radius:20px;
+    backdrop-filter:blur(10px);
+  }
+
+  /* ---------------- Two forms ---------------- */
+  .forms{display:grid; grid-template-columns:1fr 1fr; gap:24px}
+  .form-card{padding:30px; position:relative; overflow:hidden}
+  .form-card h3{font-size:22px; font-family:var(--serif); font-weight:600; margin-bottom:6px}
+  .form-card .role{font-family:var(--mono); font-size:11px; letter-spacing:1.5px; text-transform:uppercase; color:var(--warm-1); margin-bottom:18px}
+  .form-card p{color:var(--ink-dim); font-size:15px}
+  .badge{display:inline-block; font-family:var(--mono); font-size:10.5px; letter-spacing:1px;
+    color:var(--cool-1); border:1px solid var(--panel-line); border-radius:14px; padding:3px 10px; margin-top:18px}
+  /* mock widget */
+  .mock-widget{margin-top:22px; border-radius:16px; border:1px solid var(--panel-line);
+    background:linear-gradient(160deg, rgba(24,18,49,.9), rgba(17,12,36,.9)); padding:16px; display:flex; gap:13px; align-items:center}
+  .mw-orb{width:34px;height:34px;border-radius:50%;flex:none;
+    background:radial-gradient(circle at 35% 30%,var(--warm-1),var(--warm-2) 50%,var(--cool-2));
+    box-shadow:0 0 18px rgba(var(--glow-warm),.5)}
+  .mw-lines{flex:1}
+  .mw-lines .a{height:8px;width:70%;border-radius:6px;background:rgba(239,235,250,.25);margin-bottom:8px}
+  .mw-lines .b{height:8px;width:45%;border-radius:6px;background:rgba(157,140,255,.3)}
+  .mw-wave{display:flex;gap:3px;align-items:flex-end}
+  .mw-wave i{width:3px;border-radius:3px;background:linear-gradient(var(--warm-1),var(--cool-1))}
+  /* mock app window */
+  .mock-app{margin-top:22px;border-radius:16px;border:1px solid var(--panel-line);overflow:hidden;background:rgba(11,8,25,.6)}
+  .ma-bar{display:flex;gap:6px;padding:11px 14px;border-bottom:1px solid var(--panel-line)}
+  .ma-bar i{width:10px;height:10px;border-radius:50%;background:rgba(167,159,198,.35)}
+  .ma-body{display:grid;grid-template-columns:78px 1fr;min-height:120px}
+  .ma-side{border-right:1px solid var(--panel-line);padding:14px 10px;display:flex;flex-direction:column;gap:9px}
+  .ma-side i{height:7px;border-radius:5px;background:rgba(157,140,255,.22)}
+  .ma-side i:first-child{background:rgba(255,138,120,.5);width:80%}
+  .ma-main{padding:16px}
+  .ma-main .l{height:9px;border-radius:6px;background:rgba(239,235,250,.14);margin-bottom:10px}
+  .ma-main .l:nth-child(2){width:88%}
+  .ma-main .l:nth-child(3){width:64%}
+  .ma-main .l:nth-child(4){width:74%;background:rgba(255,138,120,.28)}
+
+  /* ---------------- Pipeline ---------------- */
+  .pipe{display:grid; grid-template-columns:repeat(3,1fr); gap:18px; align-items:stretch}
+  .stage{padding:26px; text-align:center; position:relative}
+  .stage .n{font-family:var(--mono); font-size:12px; color:var(--ink-faint); letter-spacing:1px}
+  .stage h4{font-family:var(--serif); font-size:21px; font-weight:600; margin:10px 0 6px}
+  .stage .sub{color:var(--ink-dim); font-size:14px; min-height:40px}
+  .stage .chips{margin-top:14px; display:flex; flex-wrap:wrap; gap:6px; justify-content:center}
+  .chip{font-family:var(--mono); font-size:11px; padding:4px 9px; border-radius:12px;
+    border:1px solid var(--panel-line); color:var(--ink-dim)}
+  .chip.local{color:var(--warm-1); border-color:rgba(255,176,122,.3)}
+  .chip.api{color:var(--cool-1); border-color:rgba(157,140,255,.3)}
+  .arrow{position:absolute; right:-13px; top:50%; transform:translateY(-50%); color:var(--cool-2); font-size:20px; z-index:2}
+  .brain-note{text-align:center; margin-top:26px; font-family:var(--mono); font-size:12.5px; color:var(--ink-faint)}
+  .brain-note b{color:var(--warm-1)}
+
+  /* ---------------- Model choice / toggle ---------------- */
+  .choice{display:grid; grid-template-columns:1.1fr 1fr; gap:34px; align-items:center}
+  .toggle-demo{padding:28px}
+  .togrow{display:flex; align-items:center; justify-content:space-between; padding:15px 4px; border-bottom:1px solid var(--panel-line)}
+  .togrow:last-child{border-bottom:none}
+  .togrow .lab{font-size:15px}
+  .togrow .lab small{display:block; font-family:var(--mono); font-size:11px; color:var(--ink-faint); margin-top:2px}
+  .pill{display:inline-flex; border:1px solid var(--panel-line); border-radius:20px; overflow:hidden; font-family:var(--mono); font-size:11px}
+  .pill span{padding:6px 12px; color:var(--ink-faint)}
+  .pill span.on{color:var(--night-0); background:linear-gradient(var(--warm-1),var(--warm-2)); font-weight:600}
+  .pill span.on.cool{background:linear-gradient(var(--cool-1),var(--cool-2)); color:#fff}
+
+  /* ---------------- Feature grid ---------------- */
+  .grid3{display:grid; grid-template-columns:repeat(3,1fr); gap:18px}
+  .fcard{padding:24px}
+  .fcard .ic{font-size:20px; margin-bottom:12px}
+  .fcard h4{font-family:var(--serif); font-size:18px; font-weight:600; margin-bottom:8px}
+  .fcard p{color:var(--ink-dim); font-size:14px}
+
+  /* ---------------- Roadmap timeline (a real sequence) ---------------- */
+  .road{position:relative; padding-left:34px}
+  .road::before{content:''; position:absolute; left:9px; top:6px; bottom:6px; width:2px;
+    background:linear-gradient(var(--warm-2), var(--cool-2), transparent)}
+  .ph{position:relative; padding:18px 0 18px 4px; border-bottom:1px solid rgba(157,140,255,.08)}
+  .ph:last-child{border-bottom:none}
+  .ph::before{content:''; position:absolute; left:-31px; top:24px; width:12px; height:12px; border-radius:50%;
+    background:var(--night-0); border:2px solid var(--cool-1)}
+  .ph.star::before{background:radial-gradient(circle,var(--warm-1),var(--warm-2)); border-color:var(--warm-1);
+    box-shadow:0 0 12px rgba(var(--glow-warm),.7)}
+  .ph .pnum{font-family:var(--mono); font-size:12px; color:var(--warm-1); letter-spacing:1px}
+  .ph h4{font-size:18px; font-weight:600; margin:3px 0 5px; display:inline-flex; gap:9px; align-items:center}
+  .ph .kd{font-family:var(--mono);font-size:10px;color:var(--night-0);background:var(--warm-1);padding:2px 7px;border-radius:10px}
+  .ph p{color:var(--ink-dim); font-size:14.5px}
+
+  /* ---------------- Safety ---------------- */
+  .safety{display:grid; grid-template-columns:repeat(2,1fr); gap:16px}
+  .srow{padding:20px 24px; display:flex; gap:14px; align-items:flex-start}
+  .srow .k{color:var(--warm-2); font-size:18px; flex:none; margin-top:1px}
+  .srow div b{display:block; margin-bottom:3px}
+  .srow div span{color:var(--ink-dim); font-size:14px}
+
+  /* ---------------- Footer / default stack ---------------- */
+  footer{padding:70px 0 60px; text-align:center; border-top:1px solid var(--panel-line); margin-top:30px}
+  .stack{display:flex; flex-wrap:wrap; gap:10px; justify-content:center; margin:26px 0 34px}
+  .stack .s{font-family:var(--mono); font-size:12px; color:var(--ink-dim);
+    border:1px solid var(--panel-line); border-radius:20px; padding:8px 14px}
+  .stack .s b{color:var(--warm-1)}
+  .foot-orb{width:40px;height:40px;border-radius:50%;margin:0 auto 20px;
+    background:radial-gradient(circle at 35% 30%,var(--warm-1),var(--warm-2) 50%,var(--cool-2));
+    box-shadow:0 0 26px rgba(var(--glow-warm),.5); animation:breathe 4.6s ease-in-out infinite}
+  footer p{color:var(--ink-faint); font-size:13px; font-family:var(--mono)}
+
+  /* reveal */
+  .rv{opacity:0; transform:translateY(22px); transition:opacity .7s ease, transform .7s ease}
+  .rv.in{opacity:1; transform:none}
+
+  @media (max-width:860px){
+    .forms,.pipe,.choice,.grid3,.safety{grid-template-columns:1fr}
+    .arrow{display:none}
+    .nav-links{display:none}
+  }
+  @media (prefers-reduced-motion:reduce){
+    *{animation:none !important; transition:none !important}
+    .rv{opacity:1; transform:none}
+  }
+</style>
+</head>
+<body>
+<div class="sky"></div>
+<div class="grain"></div>
+
+<nav>
+  <div class="nav-in">
+    <div class="brand"><span class="dot"></span><b>June</b></div>
+    <div class="nav-links">
+      <a href="#forms">Two forms</a>
+      <a href="#pipeline">Pipeline</a>
+      <a href="#models">Your models</a>
+      <a href="#roadmap">Roadmap</a>
+    </div>
+    <span class="tag">local-first · voice</span>
+  </div>
+</nav>
+
+<header>
+  <div class="wrap">
+    <div class="eyebrow">a voice agent for the SAPLE workspace</div>
+    <h1>Say it.<br><span class="gl">June does it.</span></h1>
+    <p class="lede">June listens, understands, and acts - spinning up agents, driving terminals, opening browsers, and answering back. <b>One voice. Every workspace.</b> Nothing leaves your machine unless you say so.</p>
+
+    <div class="orb-stage">
+      <div class="orb">
+        <div class="ring r1"></div><div class="ring r2"></div><div class="ring r3"></div>
+        <div class="core"></div>
+      </div>
+    </div>
+    <div class="wave"><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span></div>
+    <div class="spoken">Open five Claude agents and four Codex agents in this workspace.</div>
+    <div class="spoken-sub">june → spawning 9 agents · assigning tasks · watching the swarm</div>
+  </div>
+</header>
+
+<!-- TWO FORMS -->
+<section id="forms">
+  <div class="wrap">
+    <div class="sec-head rv">
+      <div class="sec-tag">Two forms, one mind</div>
+      <h2>A widget when you're working. A full app when you're setting up.</h2>
+      <p>Both faces drive the same live session - a command started in the widget shows up in the app, and back again.</p>
+    </div>
+    <div class="forms">
+      <div class="form-card panel rv">
+        <div class="role">Always-there</div>
+        <h3>The widget</h3>
+        <p>A high-quality floating surface - not a tiny pill. It shows what June hears, what it's doing right now, and quick results, while staying out of your way. Ambient at rest, alive when you speak.</p>
+        <div class="mock-widget">
+          <div class="mw-orb"></div>
+          <div class="mw-lines"><div class="a"></div><div class="b"></div></div>
+          <div class="mw-wave"><i style="height:10px"></i><i style="height:20px"></i><i style="height:28px"></i><i style="height:14px"></i><i style="height:22px"></i></div>
+        </div>
+        <span class="badge">full spec gathered in Phase 6 - your call</span>
+      </div>
+      <div class="form-card panel rv">
+        <div class="role">Command center</div>
+        <h3>The application</h3>
+        <p>Conversation history, deep settings, model pickers, capability management, an agent monitor, logs and diagnostics. Everything June can do, and every knob to tune it.</p>
+        <div class="mock-app">
+          <div class="ma-bar"><i></i><i></i><i></i></div>
+          <div class="ma-body">
+            <div class="ma-side"><i></i><i></i><i></i><i></i></div>
+            <div class="ma-main"><div class="l"></div><div class="l"></div><div class="l"></div><div class="l"></div></div>
+          </div>
+        </div>
+        <span class="badge">settings · models · capabilities · diagnostics</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- PIPELINE -->
+<section id="pipeline">
+  <div class="wrap">
+    <div class="sec-head rv">
+      <div class="sec-tag">How June hears and speaks</div>
+      <h2>Voice in, action out - a pipeline you can see through.</h2>
+      <p>A cascaded pipeline: hear you, think with Claude, speak back. Every stage is debuggable, and every stage is yours to swap.</p>
+    </div>
+    <div class="pipe">
+      <div class="stage panel rv">
+        <div class="n">01 - hear</div>
+        <h4>Speech to text</h4>
+        <div class="sub">Your words, transcribed the instant you finish speaking.</div>
+        <div class="chips"><span class="chip local">faster-whisper</span><span class="chip local">Parakeet</span><span class="chip api">Deepgram</span></div>
+        <div class="arrow">→</div>
+      </div>
+      <div class="stage panel rv">
+        <div class="n">02 - think</div>
+        <h4>The brain</h4>
+        <div class="sub">The model you choose runs the agent loop, calling capabilities as tools.</div>
+        <div class="chips"><span class="chip api">Claude</span><span class="chip api">GPT</span><span class="chip api">Gemini</span><span class="chip local">Ollama</span></div>
+        <div class="arrow">→</div>
+      </div>
+      <div class="stage panel rv">
+        <div class="n">03 - speak</div>
+        <h4>Text to speech</h4>
+        <div class="sub">June answers as it works, sentence by sentence.</div>
+        <div class="chips"><span class="chip local">Kokoro</span><span class="chip local">Piper</span><span class="chip api">ElevenLabs</span></div>
+      </div>
+    </div>
+    <p class="brain-note">Capabilities plug in as <b>MCP servers</b> - saple-bridge control, memory, missions, and anything you add next. June grows by adding a server, never by rewriting its core.</p>
+  </div>
+</section>
+
+<!-- MODEL CHOICE -->
+<section id="models">
+  <div class="wrap">
+    <div class="choice">
+      <div class="rv">
+        <div class="sec-tag">Your stack, your rules</div>
+        <h2>Pick every model. Local or cloud. Per stage.</h2>
+        <p style="color:var(--ink-dim);font-size:17px;margin-top:16px">Run everything on-device for privacy, reach for a cloud API when you want the best, or mix the two. Even the brain is a choice: Claude, GPT, Gemini, or a local model through Ollama. Every choice is a dropdown - and a test button. Keys live in the OS keychain, never in a file.</p>
+      </div>
+      <div class="toggle-demo panel rv">
+        <div class="togrow">
+          <div class="lab">Speech to text<small>transcription</small></div>
+          <div class="pill"><span class="on">Local</span><span>API</span></div>
+        </div>
+        <div class="togrow">
+          <div class="lab">Brain<small>Claude · GPT · Gemini · local</small></div>
+          <div class="pill"><span>Local</span><span class="on cool">API</span></div>
+        </div>
+        <div class="togrow">
+          <div class="lab">Text to speech<small>voice</small></div>
+          <div class="pill"><span class="on">Local</span><span>API</span></div>
+        </div>
+        <div class="togrow">
+          <div class="lab">Local-only mode<small>nothing leaves the machine</small></div>
+          <div class="pill"><span class="on">On</span><span>Off</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- CAPABILITIES / FEATURES -->
+<section>
+  <div class="wrap">
+    <div class="sec-head rv">
+      <div class="sec-tag">What June can do</div>
+      <h2>Not one trick. A growing set of powers.</h2>
+    </div>
+    <div class="grid3">
+      <div class="fcard panel rv"><div class="ic">🤖</div><h4>Command the swarm</h4><p>Spawn Claude and Codex agents by voice, hand any of them a task, and check the swarm's status without touching the keyboard.</p></div>
+      <div class="fcard panel rv"><div class="ic">🖥️</div><h4>Drive the workspace</h4><p>Open and close terminals, type into them, launch and steer the in-app browser - everything saple-bridge exposes, spoken.</p></div>
+      <div class="fcard panel rv"><div class="ic">🧠</div><h4>Remember & track</h4><p>Reads and writes the shared memory graph - tasks, agents, runs - so June knows what's already happening.</p></div>
+      <div class="fcard panel rv"><div class="ic">🔌</div><h4>Grow by plugging in</h4><p>Calendar, email, files, web research - each is just another MCP server. Add one and June can do it.</p></div>
+      <div class="fcard panel rv"><div class="ic">🎚️</div><h4>Tune everything</h4><p>Hotkeys, wake word, VAD sensitivity, voice, effort level, concurrency - deep settings for how June listens and acts.</p></div>
+      <div class="fcard panel rv"><div class="ic">📊</div><h4>See the latency</h4><p>Diagnostics break down where each moment goes - hear, think, speak - plus logs and MCP health at a glance.</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- SAFETY -->
+<section>
+  <div class="wrap">
+    <div class="sec-head rv">
+      <div class="sec-tag">Because voice removes the safety net</div>
+      <h2>Powerful, but never reckless.</h2>
+      <p>You can't "read before you click" when you're talking. So June asks first where it counts.</p>
+    </div>
+    <div class="safety">
+      <div class="srow panel rv"><div class="k">◆</div><div><b>Spoken confirmation</b><span>"That will close six terminals. Say confirm to proceed." Destructive actions always ask.</span></div></div>
+      <div class="srow panel rv"><div class="k">◆</div><div><b>Localhost only</b><span>The control channel is bound to your machine, token-authed, and off until you switch it on.</span></div></div>
+      <div class="srow panel rv"><div class="k">◆</div><div><b>Local-only mode</b><span>One toggle forces local speech and brain, and blocks every cloud call. Nothing leaves.</span></div></div>
+      <div class="srow panel rv"><div class="k">◆</div><div><b>Contained writes</b><span>File access stays inside the workspace, reusing saple-bridge's path-containment guarantees.</span></div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ROADMAP -->
+<section id="roadmap">
+  <div class="wrap">
+    <div class="sec-head rv">
+      <div class="sec-tag">Ten phases, each one shippable</div>
+      <h2>Built in order, so voice is the last easy step.</h2>
+      <p>The plan proves the control loop in text before adding a microphone. Once it works typed, speaking it is mechanical.</p>
+    </div>
+    <div class="road">
+      <div class="ph rv"><div class="pnum">Phase 0</div><h4>Foundations</h4><p>Tauri shell, tray presence, settings store, keychain, CI. An empty June that launches and remembers.</p></div>
+      <div class="ph rv"><div class="pnum">Phase 1</div><h4>Bridge control endpoint</h4><p>The one thing saple-bridge is missing: a localhost, token-authed channel that lets June drive it.</p></div>
+      <div class="ph rv"><div class="pnum">Phase 2</div><h4>Control as MCP</h4><p>Wrap that endpoint as an MCP server - spawn agents, terminals, browser, tasks - callable as tools.</p></div>
+      <div class="ph star rv"><div class="pnum">Phase 3</div><h4>Agent core, typed <span class="kd">key milestone</span></h4><p>Claude Agent SDK with the capabilities attached. Type a command, watch it happen. This de-risks everything.</p></div>
+      <div class="ph rv"><div class="pnum">Phase 4</div><h4>Speech to text</h4><p>June hears you - push-to-talk, VAD, live transcription feeding the agent.</p></div>
+      <div class="ph rv"><div class="pnum">Phase 5</div><h4>Text to speech</h4><p>June talks back, streaming as it thinks, and you can interrupt it mid-sentence.</p></div>
+      <div class="ph star rv"><div class="pnum">Phase 6</div><h4>The widget <span class="kd">your details</span></h4><p>Begins by asking you for the widget spec, then builds the high-quality floating surface to match.</p></div>
+      <div class="ph rv"><div class="pnum">Phase 7</div><h4>Model choice & settings depth</h4><p>Every provider picker, every knob, local-only mode, and the diagnostics that prove it all works.</p></div>
+      <div class="ph rv"><div class="pnum">Phase 8</div><h4>Wake word & hands-free</h4><p>"Hey June" - custom wake word, refined turn-taking, reliable low-false-trigger activation.</p></div>
+      <div class="ph rv"><div class="pnum">Phase 9</div><h4>Expansion & hardening</h4><p>A non-saple capability to prove it's general-purpose, then packaging, updates, and polish.</p></div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <div class="foot-orb"></div>
+    <h2 style="font-size:clamp(26px,4vw,38px)">June is ready to listen.</h2>
+    <div class="stack">
+      <span class="s"><b>hear</b> · faster-whisper</span>
+      <span class="s"><b>think</b> · Claude default · GPT · Gemini · local</span>
+      <span class="s"><b>speak</b> · Kokoro</span>
+      <span class="s"><b>wake</b> · openWakeWord</span>
+      <span class="s"><b>shell</b> · Tauri, tray-resident</span>
+    </div>
+    <p>June · local-first voice agent · part of the SAPLE ecosystem</p>
+  </div>
+</footer>
+
+<script>
+  // Subtle scroll reveal - respects reduced motion via CSS guard.
+  const io = new IntersectionObserver((entries)=>{
+    entries.forEach(e=>{ if(e.isIntersecting){ e.target.classList.add('in'); io.unobserve(e.target);} });
+  }, {threshold:0.12, rootMargin:'0px 0px -40px 0px'});
+  document.querySelectorAll('.rv').forEach((el,i)=>{
+    el.style.transitionDelay = (Math.min(i,4)*40)+'ms';
+    io.observe(el);
+  });
+</script>
+</body>
+</html>

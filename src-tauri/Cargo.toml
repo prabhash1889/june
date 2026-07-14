@@ -1,0 +1,25 @@
+[package]
+name = "june"
+version = "0.1.0"
+description = "June — a local-first voice agent that controls the SAPLE ecosystem (and more) by voice"
+authors = ["Saple"]
+edition = "2021"
+
+[lib]
+name = "june_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+keyring = "2.1"
+
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+# Opening the app again focuses the existing window instead of starting a second process.
+tauri-plugin-single-instance = "2"
+# Restore the window's last size/position/maximized state on launch.
+tauri-plugin-window-state = "2"

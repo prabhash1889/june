@@ -1,0 +1,10 @@
+node_modules/
+dist/
+src-tauri/target/
+src-tauri/gen/
+*.log
+.DS_Store
+tsconfig.tsbuildinfo
+
+# saple-bridge's own workspace config for this folder as a project, not part of June itself.
+.saple/
