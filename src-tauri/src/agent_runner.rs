@@ -31,7 +31,32 @@ use std::process::{ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
+
+/// Append one already-redacted audit record (a `{"t":"audit",...}` line from
+/// run-once, with the turn stamped) to `<app_data_dir>/audit.jsonl` (10.7).
+/// Best-effort: a failed audit write must never break the turn, but it is the
+/// record phases 17-19 rely on, so failures are logged to stderr.
+fn append_audit(app: &AppHandle, entry: &serde_json::Value) {
+    let dir = match app.path().app_data_dir() {
+        Ok(dir) => dir,
+        Err(e) => {
+            eprintln!("[audit] no app data dir: {e}");
+            return;
+        }
+    };
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join("audit.jsonl");
+    let line = entry.to_string();
+    let write = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .and_then(|mut f| writeln!(f, "{line}"));
+    if let Err(e) = write {
+        eprintln!("[audit] could not write {}: {e}", path.display());
+    }
+}
 
 /// A gated tool call awaiting a human yes/no. Serialized straight to the UI as
 /// the `agent://approval` payload; also stored so a window opened mid-approval
@@ -109,9 +134,6 @@ fn brain_env(app: &AppHandle) -> Vec<(String, String)> {
     if let Some(m) = field("model") {
         env.push(("JUNE_BRAIN_MODEL".into(), m.to_string()));
     }
-    if let Some(e) = field("effort") {
-        env.push(("JUNE_BRAIN_EFFORT".into(), e.to_string()));
-    }
     if let Some(b) = s.get("brainBaseUrl").and_then(|v| v.as_str()) {
         if !b.is_empty() {
             env.push(("JUNE_BRAIN_BASE_URL".into(), b.to_string()));
@@ -153,8 +175,15 @@ fn brain_env(app: &AppHandle) -> Vec<(String, String)> {
 fn files_env(app: &AppHandle) -> Vec<(String, String)> {
     let s = crate::settings::read_settings(app);
     let files = s.get("files");
-    let enabled = files.and_then(|f| f.get("enabled")).and_then(|v| v.as_bool()).unwrap_or(false);
-    let root = files.and_then(|f| f.get("root")).and_then(|v| v.as_str()).unwrap_or("").trim();
+    let enabled = files
+        .and_then(|f| f.get("enabled"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let root = files
+        .and_then(|f| f.get("root"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim();
     if enabled && !root.is_empty() {
         vec![("JUNE_FILES_ROOT".into(), root.to_string())]
     } else {
@@ -202,7 +231,12 @@ pub async fn run_agent(
     brain_vars.extend(files_env(&app));
 
     // Mirror the user's message to any open window before June starts working.
-    record(&session, &app, "agent://user", serde_json::json!({ "turn": turn, "text": transcript }));
+    record(
+        &session,
+        &app,
+        "agent://user",
+        serde_json::json!({ "turn": turn, "text": transcript }),
+    );
 
     // Blocking child + line reads off the async runtime (Tauri has no tokio
     // "process" feature enabled). We emit each streamed line as it arrives.
@@ -218,10 +252,13 @@ pub async fn run_agent(
         } else {
             Command::new("npx")
         };
+        // NOTE: the transcript is NOT an argument. It is untrusted spoken text and
+        // this spawn goes through `cmd /C npx` on Windows, where a transcript in
+        // argv is an OS command-injection vector. It is sent as the first stdin
+        // JSONL line below, where it is inert data (10.2).
         let mut child = cmd
             .arg("tsx")
             .arg(&script)
-            .arg(&transcript)
             .envs(brain_vars)
             .current_dir(&cwd)
             .stdin(Stdio::piped())
@@ -230,8 +267,13 @@ pub async fn run_agent(
             .spawn()
             .map_err(|e| format!("Could not start the agent: {e}"))?;
 
-        // Hold the child's stdin so `resolve_approval` can answer a gated call.
-        if let Some(stdin) = child.stdin.take() {
+        // Hand the child its command as the first stdin line, then hold the same
+        // stdin so `resolve_approval` can answer a gated call on it. json! escapes
+        // any newline/quote in the transcript, so it stays a single JSON line.
+        if let Some(mut stdin) = child.stdin.take() {
+            let line = serde_json::json!({ "transcript": transcript }).to_string();
+            let _ = writeln!(stdin, "{line}");
+            let _ = stdin.flush();
             *session_task.stdin.lock().unwrap() = Some((turn, stdin));
         }
         let stdout = child
@@ -311,6 +353,14 @@ pub async fn run_agent(
                             serde_json::json!({ "turn": turn, "id": id, "decision": "deny" }),
                         );
                     }
+                }
+                Some("audit") => {
+                    // One record per tool call (10.7). Stamp the turn (run-once
+                    // doesn't know it) and append to the local audit log. This is
+                    // the reviewable trail every unattended feature (17-19) needs.
+                    let mut entry = v.clone();
+                    entry["turn"] = turn.into();
+                    append_audit(&app_task, &entry);
                 }
                 Some("final") => {
                     final_text = Some(str_at("text"));
@@ -396,7 +446,10 @@ pub fn resolve_approval(
             Some((t, stdin)) if *t == turn => stdin,
             _ => return Err("That approval is no longer pending.".to_string()),
         };
-        let line = format!("{}\n", serde_json::json!({ "approvalId": id, "decision": decision }));
+        let line = format!(
+            "{}\n",
+            serde_json::json!({ "approvalId": id, "decision": decision })
+        );
         stdin
             .write_all(line.as_bytes())
             .map_err(|e| format!("Could not deliver the decision: {e}"))?;

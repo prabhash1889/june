@@ -90,7 +90,8 @@ fn filename_for(mime: &str) -> &'static str {
     let base = mime.split(';').next().unwrap_or("").trim();
     match base {
         "audio/ogg" => "audio.ogg",
-        "audio/mp4" | "audio/mpeg" => "audio.mp4",
+        "audio/mp4" => "audio.mp4",
+        "audio/mpeg" | "audio/mp3" => "audio.mp3", // mpeg is .mp3, not .mp4 (10.8)
         "audio/wav" | "audio/x-wav" => "audio.wav",
         _ => "audio.webm",
     }
@@ -100,7 +101,20 @@ fn filename_for(mime: &str) -> &'static str {
 /// not an error: silence or an unintelligible clip returns `Ok("")` and the UI
 /// asks the user to try again rather than feeding an empty command to the agent.
 #[tauri::command]
-pub async fn transcribe(audio: Vec<u8>, mime: String) -> Result<String, String> {
+pub async fn transcribe(
+    app: tauri::AppHandle,
+    audio: Vec<u8>,
+    mime: String,
+) -> Result<String, String> {
+    // Privacy at the execution boundary (10.3): refuse cloud STT under an
+    // on-device mode here in Rust, not just in the UI, so audio never leaves the
+    // machine even if the webview asks. This is the only cloud STT provider today.
+    if crate::settings::cloud_voice_blocked(&app) {
+        return Err(
+            "Voice is off in your current privacy mode - cloud transcription is blocked."
+                .to_string(),
+        );
+    }
     if audio.is_empty() {
         return Err("No audio was captured.".to_string());
     }
@@ -116,6 +130,7 @@ mod tests {
         assert_eq!(filename_for("audio/webm;codecs=opus"), "audio.webm");
         assert_eq!(filename_for("audio/ogg;codecs=opus"), "audio.ogg");
         assert_eq!(filename_for("audio/mp4"), "audio.mp4");
+        assert_eq!(filename_for("audio/mpeg"), "audio.mp3");
         assert_eq!(filename_for("audio/wav"), "audio.wav");
         assert_eq!(filename_for("something/unknown"), "audio.webm");
     }

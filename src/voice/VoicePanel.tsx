@@ -3,7 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 
 import { hasOpenAiKey, runAgent, setOpenAiKey, transcribe } from "../lib/stt.ts";
 import { type Approval, openApp, usePendingApproval } from "../lib/session.ts";
-import { DEFAULT_SETTINGS, type JuneSettings, loadSettings, voiceAllowed } from "../lib/settings.ts";
+import { DEFAULT_SETTINGS, type JuneSettings, loadSettings, voiceAllowed, voiceNeedsOpenAiKey } from "../lib/settings.ts";
 import { SentenceBuffer, SpeechQueue } from "../lib/tts.ts";
 import { startBargeMonitor, startCapture, type CaptureError, type CaptureHandle } from "../lib/voice-capture.ts";
 import { startWakeListener } from "../lib/wake.ts";
@@ -64,33 +64,38 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
   // re-arms when settings load or the user toggles it.
   const [wake, setWake] = useState(DEFAULT_SETTINGS.wake);
 
-  // Prompt for the OpenAI key up front if it's missing - speech in and out both
-  // need it, and this keeps the failure actionable instead of a mid-flow 401.
-  useEffect(() => {
-    void hasOpenAiKey().then((has) => {
-      if (!has) setPhase({ s: "need-key" });
+  // Load the voice stack + privacy mode, and decide the key gate. Under a mode
+  // that blocks cloud voice (June has no local voice provider yet) the mic is
+  // disabled up front rather than failing mid-capture (§5). The OpenAI key is
+  // demanded ONLY when the chosen voice stack actually uses it and voice isn't
+  // blocked (10.6) - a local/keyless stack or a strict mode never nags for it.
+  // Re-run on `settings://changed` so a save applies live, no restart (10.5).
+  const refreshSettings = useCallback(async () => {
+    const s = await loadSettings().catch(() => DEFAULT_SETTINGS);
+    settingsRef.current = s;
+    setWake(s.wake);
+    const blocked = !voiceAllowed(s);
+    voiceBlockedRef.current = blocked;
+    setVoiceBlocked(blocked);
+
+    const needsKey = !blocked && voiceNeedsOpenAiKey(s);
+    const hasKey = needsKey ? await hasOpenAiKey().catch(() => false) : true;
+    setPhase((p) => {
+      if (needsKey && !hasKey) return p.s === "need-key" ? p : { s: "need-key" };
+      // Key satisfied or no longer needed: release the gate, but never interrupt
+      // work already in flight - only the resting need-key/idle phase is touched.
+      if (p.s === "need-key") return { s: "idle" };
+      return p;
     });
   }, []);
 
-  // Load the voice stack + privacy mode. Under a mode that blocks cloud voice
-  // (and June has no local voice provider yet), the mic is disabled up front
-  // rather than failing mid-capture (PLAN.md §5 privacy modes).
   useEffect(() => {
-    let alive = true;
-    loadSettings()
-      .then((s) => {
-        if (!alive) return;
-        settingsRef.current = s;
-        setWake(s.wake);
-        const blocked = !voiceAllowed(s);
-        voiceBlockedRef.current = blocked;
-        setVoiceBlocked(blocked);
-      })
-      .catch(() => {});
+    void refreshSettings();
+    const unlisten = listen("settings://changed", () => void refreshSettings());
     return () => {
-      alive = false;
+      void unlisten.then((f) => f());
     };
-  }, []);
+  }, [refreshSettings]);
 
   const beginTranscribe = useCallback(async () => {
     const handle = capture.current;

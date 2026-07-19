@@ -8,7 +8,7 @@ import * as path from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { resolveWithin } from "./paths.ts";
+import { resolveWithin, utf8SafeEnd } from "./paths.ts";
 
 const ROOT = path.resolve("/allowed/root");
 
@@ -36,5 +36,25 @@ describe("resolveWithin", () => {
     // `/allowed/root-evil` shares the string prefix `/allowed/root` but is NOT
     // inside it - the separator check is what catches this.
     expect(() => resolveWithin(ROOT, path.resolve("/allowed/root-evil/x"))).toThrow(/outside/);
+  });
+});
+
+describe("utf8SafeEnd", () => {
+  // "a€b": '€' is 3 bytes (E2 82 AC), so the buffer is [61, E2, 82, AC, 62].
+  const buf = new TextEncoder().encode("a€b");
+
+  it("returns the limit when it lands on a boundary (or past the end)", () => {
+    expect(utf8SafeEnd(buf, buf.length)).toBe(5); // whole buffer
+    expect(utf8SafeEnd(buf, 100)).toBe(5); // limit beyond the end
+    expect(utf8SafeEnd(buf, 1)).toBe(1); // right after 'a'
+    expect(utf8SafeEnd(buf, 4)).toBe(4); // right after the full '€'
+  });
+
+  it("walks back off a continuation byte so a multi-byte char is never split", () => {
+    // A cut at 2 or 3 is mid-'€'; back off to 1 (just after 'a').
+    expect(utf8SafeEnd(buf, 2)).toBe(1);
+    expect(utf8SafeEnd(buf, 3)).toBe(1);
+    // Decoding to that boundary yields no  replacement char.
+    expect(new TextDecoder("utf-8", { fatal: false }).decode(buf.subarray(0, utf8SafeEnd(buf, 3)))).toBe("a");
   });
 });

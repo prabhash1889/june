@@ -30,3 +30,14 @@ export function resolveWithin(root: string, rel: string): string {
   }
   return abs;
 }
+
+/** Largest number of bytes at or before `limit` that end on a UTF-8 character
+ *  boundary, so truncating a large file never splits a multi-byte char into a
+ *  `` replacement char (10.8). A byte `0b10xxxxxx` is a continuation byte; if the
+ *  first dropped byte would be one, we're mid-character, so walk back to the
+ *  char's start. Returns `min(buf.length, limit)` when no split occurs. */
+export function utf8SafeEnd(buf: Uint8Array, limit: number): number {
+  let end = Math.min(buf.length, limit);
+  while (end > 0 && end < buf.length && (buf[end] & 0xc0) === 0x80) end--;
+  return end;
+}

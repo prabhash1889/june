@@ -22,7 +22,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { type McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 
 import { type Brain, type TurnHooks, type TurnResult } from "./brain.ts";
-import { actionOf, classify, summarize } from "./policy.ts";
+import { actionOf, classify, serverOf, summarize } from "./policy.ts";
 
 export interface OpenAiCompatBrainConfig {
   id: string; // provider id, e.g. "openai" | "ollama" | "custom"
@@ -52,12 +52,14 @@ interface OpenAiTool {
   function: { name: string; description?: string; parameters: Record<string, unknown> };
 }
 
-/** One connected MCP capability server plus the bare tool names it owns, so a
- *  tool call can be routed back to the right client. */
+/** One connected MCP capability server plus the bare tool names it owns (so a
+ *  tool call can be routed back to the right client) and its tools already
+ *  translated to OpenAI schema (so the loop never calls `listTools` twice). */
 interface Connected {
   client: Client;
   close: () => Promise<void>;
   toolNames: Set<string>;
+  tools: OpenAiTool[];
 }
 
 export class OpenAiCompatBrain implements Brain {
@@ -86,7 +88,7 @@ export class OpenAiCompatBrain implements Brain {
     }
 
     try {
-      const tools = await collectTools(servers);
+      const tools = servers.flatMap((s) => s.tools);
       const routeOf = (name: string): Client | undefined =>
         servers.find((s) => s.toolNames.has(name))?.client;
 
@@ -136,7 +138,7 @@ export class OpenAiCompatBrain implements Brain {
       return `Error: the tool arguments were not valid JSON.`;
     }
 
-    const cls = classify(action);
+    const cls = classify(action, serverOf(call.function.name));
     const decision = await hooks.gate({ tool: call.function.name, action, cls, input, summary: summarize(action, input) });
     if (!decision.allow) return `Not run: ${decision.reason}`;
     const finalInput = decision.input ?? input;
@@ -194,11 +196,14 @@ export class OpenAiCompatBrain implements Brain {
       const client = new Client({ name: `june-${this.id}`, version: "0.1.0" });
       const transport = new StdioClientTransport(stdioParams(cfg));
       await client.connect(transport);
+      // One listTools per server: names for routing and schemas for the model
+      // both come from this single call (10.8 - was fetched twice).
       const { tools } = await client.listTools();
       out.push({
         client,
         close: () => client.close(),
         toolNames: new Set(tools.map((t) => t.name)),
+        tools: tools.map(toOpenAiTool),
       });
     }
     return out;
@@ -222,18 +227,9 @@ function stdioParams(cfg: StdioConfig): { command: string; args: string[]; env?:
   return { command: cfg.command, args, env: cfg.env };
 }
 
-/** Gather all MCP tools across servers as OpenAI function tools. The pure
- *  per-tool translation is `toOpenAiTool`, unit-tested without a live model. */
-async function collectTools(servers: Connected[]): Promise<OpenAiTool[]> {
-  const out: OpenAiTool[] = [];
-  for (const s of servers) {
-    const { tools } = await s.client.listTools();
-    for (const t of tools) out.push(toOpenAiTool(t));
-  }
-  return out;
-}
-
-/** MCP tool -> OpenAI function-tool schema. */
+/** MCP tool -> OpenAI function-tool schema. The pure per-tool translation,
+ *  unit-tested without a live model; each server's tools are translated once at
+ *  connect time and reused for the whole turn. */
 export function toOpenAiTool(t: { name: string; description?: string; inputSchema?: unknown }): OpenAiTool {
   const params =
     t.inputSchema && typeof t.inputSchema === "object"

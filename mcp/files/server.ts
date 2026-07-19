@@ -24,7 +24,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 
-import { isWithin, resolveWithin } from "./paths.ts";
+import { isWithin, resolveWithin, utf8SafeEnd } from "./paths.ts";
 
 /** Cap a single read so a voice reply can't be flooded by a huge file. */
 const MAX_READ_BYTES = 100_000;
@@ -107,7 +107,7 @@ server.registerTool(
       await assertRealWithin(abs);
       const buf = await fs.readFile(abs);
       const truncated = buf.length > MAX_READ_BYTES;
-      const text = buf.subarray(0, MAX_READ_BYTES).toString("utf-8");
+      const text = buf.subarray(0, utf8SafeEnd(buf, MAX_READ_BYTES)).toString("utf-8");
       return ok(truncated ? `${text}\n\n[truncated - file is ${buf.length} bytes]` : text);
     } catch (e) {
       return fail(msg(e));

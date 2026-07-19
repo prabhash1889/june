@@ -72,6 +72,17 @@ export function phraseMatches(transcript: string, phrase: string, sensitivity = 
   return false;
 }
 
+/** Backoff after repeated wake-burst transcription failures (10.8). The first
+ *  two failures retry on the next onset; from the third, bursts pause for a
+ *  growing spell (capped at 30s) so a dead network or a revoked key can't spam
+ *  cloud STT on every noise onset. Returns the timestamp (same clock as `now`)
+ *  at which bursts may resume - `now` itself when no wait is needed. Pure, so it
+ *  is the runnable check for the backoff schedule. */
+export function wakeBackoffUntil(failures: number, now: number): number {
+  if (failures < 3) return now;
+  return now + Math.min(30_000, 1000 * 2 ** (failures - 3));
+}
+
 export interface WakeHandle {
   /** Stop listening and release the microphone. */
   stop: () => void;
@@ -117,6 +128,8 @@ export async function startWakeListener(opts: {
   let recorder: MediaRecorder | null = null;
   let detector: SilenceDetector | null = null;
   let burstMs = 0;
+  let failures = 0; // consecutive burst-transcription failures, for backoff (10.8)
+  let resumeAt = 0; // performance.now() before which onsets are ignored (backoff)
 
   const beginBurst = (): void => {
     busy = true;
@@ -137,9 +150,15 @@ export async function startWakeListener(opts: {
         .arrayBuffer()
         .then((ab) => (ab.byteLength > 0 ? transcribe(new Uint8Array(ab), mime) : ""))
         .then((text) => {
+          failures = 0; // a completed transcription (even empty) clears the backoff
           if (!stopped && phraseMatches(text, opts.phrase, opts.sensitivity)) opts.onWake();
         })
-        .catch(() => {}) // a failed transcription just means no wake this burst
+        .catch(() => {
+          // A failed transcription (network down, revoked key) just means no wake
+          // this burst - but back off so we stop hammering cloud STT (10.8).
+          failures += 1;
+          resumeAt = wakeBackoffUntil(failures, performance.now());
+        })
         .finally(() => {
           busy = false;
         });
@@ -162,7 +181,8 @@ export async function startWakeListener(opts: {
     analyser.getFloatTimeDomainData(buf);
     const level = rms(buf);
     if (!busy) {
-      if (level >= ONSET_RMS) beginBurst();
+      // Hold off new bursts while backing off from repeated STT failures (10.8).
+      if (level >= ONSET_RMS && performance.now() >= resumeAt) beginBurst();
       return;
     }
     // A burst is recording: advance the VAD and cap the length.

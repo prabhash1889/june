@@ -170,4 +170,17 @@ export function voiceAllowed(settings: JuneSettings): boolean {
   return !privacyViolations(settings).some((v) => v.stage === "stt" || v.stage === "tts");
 }
 
+const OPENAI_KEY_SERVICE = "june_provider_openai_api_key";
+
+/** Whether the selected voice stack (STT or TTS) actually needs the OpenAI key.
+ *  The widget uses this to only demand a key when the chosen stack uses it, and
+ *  never when voice is off for the mode (10.6) - so picking a local/keyless stack
+ *  or a strict privacy mode doesn't nag for a key it will never call. */
+export function voiceNeedsOpenAiKey(settings: JuneSettings): boolean {
+  return (["stt", "tts"] as Stage[]).some((stage) => {
+    const p = resolveProvider(stage, settings[stage].provider);
+    return p?.keyService === OPENAI_KEY_SERVICE;
+  });
+}
+
 export { PROVIDERS };

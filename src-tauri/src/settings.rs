@@ -2,7 +2,7 @@ use serde_json::Value;
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 fn settings_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
@@ -40,9 +40,26 @@ pub(crate) fn read_settings(app: &tauri::AppHandle) -> Value {
         .unwrap_or_else(|_| Value::Object(Default::default()))
 }
 
+/// True if the current privacy mode keeps voice on-device, so cloud STT/TTS must
+/// be refused at the execution boundary (10.3) - the same rule the brain already
+/// gets in agent/run-once.ts. There is no local voice provider yet, so under
+/// these modes cloud voice is simply blocked. Mirrors src/lib/privacy.ts.
+pub(crate) fn cloud_voice_blocked(app: &tauri::AppHandle) -> bool {
+    matches!(
+        read_settings(app)
+            .get("privacyMode")
+            .and_then(|v| v.as_str()),
+        Some("local-voice") | Some("strict-offline")
+    )
+}
+
 #[tauri::command]
 pub fn save_settings(app: tauri::AppHandle, settings: Value) -> Result<(), String> {
-    write_settings_file(&settings_path(&app)?, &settings)
+    write_settings_file(&settings_path(&app)?, &settings)?;
+    // Live settings propagation (10.5): tell open windows to reload so wake/TTS/
+    // privacy changes apply without an app restart. Best-effort broadcast.
+    let _ = app.emit("settings://changed", ());
+    Ok(())
 }
 
 #[cfg(test)]
@@ -50,7 +67,11 @@ mod tests {
     use super::*;
 
     fn temp_path(name: &str) -> PathBuf {
-        std::env::temp_dir().join(format!("june-settings-test-{}-{}", std::process::id(), name))
+        std::env::temp_dir().join(format!(
+            "june-settings-test-{}-{}",
+            std::process::id(),
+            name
+        ))
     }
 
     #[test]

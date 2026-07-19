@@ -12,7 +12,7 @@
 import { query, type McpServerConfig, type PermissionResult } from "@anthropic-ai/claude-agent-sdk";
 
 import { type Brain, type TurnHooks, type TurnResult } from "./brain.ts";
-import { actionOf, classify, summarize } from "./policy.ts";
+import { actionOf, classify, serverOf, summarize } from "./policy.ts";
 
 export interface ClaudeBrainConfig {
   model?: string;
@@ -23,6 +23,8 @@ export interface ClaudeBrainConfig {
 interface ContentBlock {
   type: string;
   text?: string;
+  id?: string; // tool_use block id
+  tool_use_id?: string; // tool_result -> the tool_use it answers
   name?: string;
   input?: Record<string, unknown>;
   content?: unknown;
@@ -47,7 +49,7 @@ export class ClaudeBrain implements Brain {
       input: Record<string, unknown>,
     ): Promise<PermissionResult> => {
       const action = actionOf(toolName);
-      const cls = classify(action);
+      const cls = classify(action, serverOf(toolName));
       const decision = await hooks.gate({
         tool: toolName,
         action,
@@ -78,13 +80,21 @@ export class ClaudeBrain implements Brain {
 
     let finalText = "";
     let isError = false;
+    // Correlate a tool_result back to the tool_use it answers: results arrive on a
+    // later synthetic user turn carrying only `tool_use_id`, so without this map
+    // every result reported as an empty action and batch counts (spawn_agents)
+    // never rendered on the default brain (10.4).
+    const actionById = new Map<string, string>();
 
     for await (const msg of response) {
       if (msg.type === "assistant") {
         for (const block of msg.message.content as ContentBlock[]) {
           if (block.type === "text" && block.text) hooks.onText?.(block.text);
-          else if (block.type === "tool_use")
-            hooks.onToolUse?.({ tool: block.name ?? "", action: actionOf(block.name ?? ""), input: block.input ?? {} });
+          else if (block.type === "tool_use") {
+            const action = actionOf(block.name ?? "");
+            if (block.id) actionById.set(block.id, action);
+            hooks.onToolUse?.({ tool: block.name ?? "", action, input: block.input ?? {} });
+          }
         }
       } else if (msg.type === "user" && hooks.onToolResult) {
         // Tool results ride back on a synthetic user turn.
@@ -92,7 +102,11 @@ export class ClaudeBrain implements Brain {
         if (Array.isArray(content))
           for (const block of content as ContentBlock[])
             if (block.type === "tool_result")
-              hooks.onToolResult(actionOf(""), block.content, block.is_error === true);
+              hooks.onToolResult(
+                (block.tool_use_id && actionById.get(block.tool_use_id)) || "",
+                block.content,
+                block.is_error === true,
+              );
       } else if (msg.type === "result") {
         isError = msg.subtype !== "success";
         finalText = msg.subtype === "success" ? msg.result : `June hit an error: ${msg.subtype}`;

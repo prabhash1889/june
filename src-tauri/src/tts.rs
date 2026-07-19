@@ -95,10 +95,19 @@ impl TtsProvider for OpenAiTts {
 /// (`Ok(vec![])`) so the caller can enqueue freely without guarding every chunk.
 #[tauri::command]
 pub async fn synthesize(
+    app: tauri::AppHandle,
     text: String,
     voice: Option<String>,
     model: Option<String>,
 ) -> Result<Vec<u8>, String> {
+    // Privacy at the execution boundary (10.3): refuse cloud TTS under an
+    // on-device mode here in Rust, so June's reply text never leaves the machine
+    // even if the webview asks. This is the only cloud TTS provider today.
+    if crate::settings::cloud_voice_blocked(&app) {
+        return Err(
+            "Voice is off in your current privacy mode - cloud speech is blocked.".to_string(),
+        );
+    }
     if text.trim().is_empty() {
         return Ok(Vec::new());
     }
