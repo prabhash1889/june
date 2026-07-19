@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 
 import { hasOpenAiKey, runAgent, setOpenAiKey, transcribe } from "../lib/stt.ts";
 import { type Approval, openApp, usePendingApproval } from "../lib/session.ts";
+import { DEFAULT_SETTINGS, type JuneSettings, loadSettings, voiceAllowed } from "../lib/settings.ts";
 import { SentenceBuffer, SpeechQueue } from "../lib/tts.ts";
 import { startBargeMonitor, startCapture, type CaptureError, type CaptureHandle } from "../lib/voice-capture.ts";
 
@@ -53,12 +54,37 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
   const replyRef = useRef("");
   const spokeRef = useRef(false);
 
+  // The user's chosen voice stack (§4). Loaded once; a load failure (e.g. no
+  // backend in tests) leaves the defaults, so the pipeline still works.
+  const settingsRef = useRef<JuneSettings>(DEFAULT_SETTINGS);
+  const voiceBlockedRef = useRef(false);
+  const [voiceBlocked, setVoiceBlocked] = useState(false);
+
   // Prompt for the OpenAI key up front if it's missing - speech in and out both
   // need it, and this keeps the failure actionable instead of a mid-flow 401.
   useEffect(() => {
     void hasOpenAiKey().then((has) => {
       if (!has) setPhase({ s: "need-key" });
     });
+  }, []);
+
+  // Load the voice stack + privacy mode. Under a mode that blocks cloud voice
+  // (and June has no local voice provider yet), the mic is disabled up front
+  // rather than failing mid-capture (PLAN.md §5 privacy modes).
+  useEffect(() => {
+    let alive = true;
+    loadSettings()
+      .then((s) => {
+        if (!alive) return;
+        settingsRef.current = s;
+        const blocked = !voiceAllowed(s);
+        voiceBlockedRef.current = blocked;
+        setVoiceBlocked(blocked);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
   }, []);
 
   const beginTranscribe = useCallback(async () => {
@@ -104,6 +130,13 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
   }, [beginTranscribe]);
 
   const startListening = useCallback(async () => {
+    if (voiceBlockedRef.current) {
+      setPhase({
+        s: "error",
+        message: "Voice is off in your current privacy mode. Switch to Standard or add a local voice provider in settings.",
+      });
+      return;
+    }
     stopping.current = false;
     try {
       capture.current = await startCapture({ onEndpoint: () => stopListening(), maxMs: MAX_CAPTURE_MS });
@@ -136,9 +169,13 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
     // queue has drained - either can finish first. A drain alone means speech
     // merely caught up with the token stream (e.g. during a slow tool call).
     let agentDone = false;
-    const queue = new SpeechQueue(() => {
-      if (turnRef.current === turn && agentDone) setPhase({ s: "reply", text: replyRef.current });
-    });
+    const queue = new SpeechQueue(
+      () => {
+        if (turnRef.current === turn && agentDone) setPhase({ s: "reply", text: replyRef.current });
+      },
+      settingsRef.current.tts.voice,
+      settingsRef.current.tts.model,
+    );
     queueRef.current = queue;
     setPhase({ s: "thinking" });
     try {
@@ -310,6 +347,9 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
         ) : (
           <>
             <Status phase={phase} approval={approval} />
+            {voiceBlocked && (
+              <p className="err">Voice is off in your privacy mode. Change it in the full app settings.</p>
+            )}
             {approval && <ApprovalCard approval={approval} onDecide={decide} />}
             {phase.s === "review" && (
               <ReviewCard

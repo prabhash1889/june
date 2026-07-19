@@ -21,9 +21,9 @@ describe("gate policy", () => {
     expect(isGated(classify("send_to_terminal"))).toBe(false); // reversible
   });
 
-  it("states the exact count in a spawn confirmation (§5)", () => {
-    expect(summarize("spawn_agents", { provider: "codex", count: 4 })).toBe("Spawn 4 codex agents");
-    expect(summarize("spawn_agents", { provider: "claude", count: 1 })).toBe("Spawn 1 claude agent");
+  it("states the exact count and cost/network class in a spawn confirmation (§5, Phase 7)", () => {
+    expect(summarize("spawn_agents", { provider: "codex", count: 4 })).toBe("Spawn 4 codex agents (paid, uses network)");
+    expect(summarize("spawn_agents", { provider: "claude", count: 1 })).toBe("Spawn 1 claude agent (paid, uses network)");
   });
 
   it("an unknown action defaults to reversible, never silently gated off", () => {

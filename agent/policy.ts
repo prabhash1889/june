@@ -48,7 +48,11 @@ export function summarize(action: string, input: Record<string, unknown>): strin
       const count = Number(input.count ?? 1);
       const provider = s("provider", "claude");
       const model = s("model");
-      return `Spawn ${count} ${provider}${model ? ` (${model})` : ""} agent${count === 1 ? "" : "s"}`;
+      // The count is the cost/network estimate the user approves against (§5,
+      // Phase 7 "show estimated cost and network use before high-fan-out"). We
+      // state the class (paid, networked), not a dollar figure - real per-token
+      // cost is unknowable before the run. ponytail: a class, not a quote.
+      return `Spawn ${count} ${provider}${model ? ` (${model})` : ""} agent${count === 1 ? "" : "s"} (paid, uses network)`;
     }
     case "close_terminal":
       return `Close terminal ${s("pane_id") || "?"}`;

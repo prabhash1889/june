@@ -5,10 +5,11 @@ import { invoke } from "@tauri-apps/api/core";
 // sentences, synthesizes them, and plays them in order so June starts speaking
 // before the whole answer is generated. `SpeechQueue.stop()` is the barge-in.
 
-/** Synthesize one chunk of text to mp3 bytes via Rust. Empty text yields no
- *  audio. Rejects with a human-readable message on failure. */
-export async function synthesize(text: string): Promise<Uint8Array> {
-  const bytes = await invoke<number[]>("synthesize", { text });
+/** Synthesize one chunk of text to mp3 bytes via Rust. `voice`/`model` come from
+ *  settings (§4 Voice); Rust validates them and falls back if unset. Empty text
+ *  yields no audio. Rejects with a human-readable message on failure. */
+export async function synthesize(text: string, voice?: string, model?: string): Promise<Uint8Array> {
+  const bytes = await invoke<number[]>("synthesize", { text, voice, model });
   return new Uint8Array(bytes);
 }
 
@@ -68,12 +69,17 @@ export class SpeechQueue {
   #stopped = false;
   #audio: HTMLAudioElement | null = null;
   readonly #onIdle: () => void;
+  readonly #voice?: string;
+  readonly #model?: string;
 
   /** @param onIdle fired whenever the queue drains. The queue can drain
    *  mid-turn (speech outpacing the token stream), so the caller decides
-   *  whether a drain means the turn is over - see VoicePanel.accept. */
-  constructor(onIdle: () => void = () => {}) {
+   *  whether a drain means the turn is over - see VoicePanel.accept.
+   *  @param voice/model the user's TTS choice (§4); passed to each synthesis. */
+  constructor(onIdle: () => void = () => {}, voice?: string, model?: string) {
     this.#onIdle = onIdle;
+    this.#voice = voice;
+    this.#model = model;
   }
 
   /** True when nothing is playing and nothing is queued. */
@@ -83,7 +89,7 @@ export class SpeechQueue {
 
   enqueue(text: string): void {
     if (this.#stopped || !text.trim()) return;
-    const audio = synthesize(text);
+    const audio = synthesize(text, this.#voice, this.#model);
     audio.catch(() => {}); // failures are handled at play time; don't leak rejections
     this.#pending.push(audio);
     void this.#pump();

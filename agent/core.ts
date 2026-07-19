@@ -10,6 +10,7 @@ import { type McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 
 import { type Brain, type TurnHooks, type TurnResult } from "./brain.ts";
 import { ClaudeBrain } from "./claude-brain.ts";
+import { OpenAiCompatBrain } from "./openai-brain.ts";
 import { SYSTEM_PROMPT } from "./prompt.ts";
 
 /** Absolute path to Phase 2's MCP server, resolved from this file so it works
@@ -34,7 +35,14 @@ export function defaultMcpServers(workspaceId?: string): Record<string, McpServe
 }
 
 export interface JuneAgentOptions {
+  /** Brain provider id (PLAN.md §3 roster). "claude" (or unset) uses the Agent
+   *  SDK brain; every other id routes through the OpenAI-compatible brain. */
+  provider?: string;
   model?: string;
+  /** OpenAI-compatible endpoint root (non-Claude brains). */
+  baseUrl?: string;
+  /** Provider API key (non-Claude brains). Claude reads ANTHROPIC_API_KEY. */
+  apiKey?: string;
   workspaceId?: string;
   /** Extra MCP capabilities merged over the default (e.g. saple-memory). */
   extraMcpServers?: Record<string, McpServerConfig>;
@@ -46,10 +54,18 @@ export interface JuneAgent {
 }
 
 export function createJuneAgent(opts: JuneAgentOptions = {}): JuneAgent {
-  const brain = new ClaudeBrain({
-    model: opts.model,
-    systemPrompt: SYSTEM_PROMPT,
-    mcpServers: { ...defaultMcpServers(opts.workspaceId), ...opts.extraMcpServers },
-  });
+  const mcpServers = { ...defaultMcpServers(opts.workspaceId), ...opts.extraMcpServers };
+  const provider = opts.provider ?? "claude";
+  const brain: Brain =
+    provider === "claude"
+      ? new ClaudeBrain({ model: opts.model, systemPrompt: SYSTEM_PROMPT, mcpServers })
+      : new OpenAiCompatBrain({
+          id: provider,
+          model: opts.model ?? "",
+          baseUrl: opts.baseUrl ?? "",
+          apiKey: opts.apiKey,
+          systemPrompt: SYSTEM_PROMPT,
+          mcpServers,
+        });
   return { brain, run: (prompt, hooks) => brain.run(prompt, hooks) };
 }

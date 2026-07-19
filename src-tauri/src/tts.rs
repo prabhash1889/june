@@ -13,8 +13,10 @@ use crate::keychain::get_api_key_inner;
 
 const OPENAI_KEY_SERVICE: &str = "june_provider_openai_api_key";
 const SPEECH_URL: &str = "https://api.openai.com/v1/audio/speech";
-const SPEECH_MODEL: &str = "tts-1"; // fast tier; tts-1-hd trades latency for quality
-const SPEECH_VOICE: &str = "alloy";
+const DEFAULT_MODEL: &str = "tts-1"; // fast tier; tts-1-hd trades latency for quality
+const DEFAULT_VOICE: &str = "alloy";
+const VOICES: [&str; 6] = ["alloy", "echo", "fable", "onyx", "nova", "shimmer"];
+const MODELS: [&str; 2] = ["tts-1", "tts-1-hd"];
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// One synthesis backend. `text` is a single chunk (June streams a sentence at a
@@ -25,8 +27,26 @@ trait TtsProvider {
 }
 
 /// Cloud default: OpenAI TTS. Reuses the same keychain key as STT, so an
-/// empty/missing key is a clear, actionable error rather than an opaque 401.
-struct OpenAiTts;
+/// empty/missing key is a clear, actionable error rather than an opaque 401. The
+/// user's chosen voice/model (§4 Voice) are validated against the known sets, so
+/// a bad settings value falls back rather than sending a rejected request.
+struct OpenAiTts {
+    voice: String,
+    model: String,
+}
+
+impl OpenAiTts {
+    fn new(voice: Option<String>, model: Option<String>) -> Self {
+        let pick = |val: Option<String>, allowed: &[&str], default: &str| {
+            val.filter(|v| allowed.contains(&v.as_str()))
+                .unwrap_or_else(|| default.to_string())
+        };
+        OpenAiTts {
+            voice: pick(voice, &VOICES, DEFAULT_VOICE),
+            model: pick(model, &MODELS, DEFAULT_MODEL),
+        }
+    }
+}
 
 impl TtsProvider for OpenAiTts {
     async fn synthesize(&self, text: &str) -> Result<Vec<u8>, String> {
@@ -45,8 +65,8 @@ impl TtsProvider for OpenAiTts {
             .post(SPEECH_URL)
             .bearer_auth(key)
             .json(&serde_json::json!({
-                "model": SPEECH_MODEL,
-                "voice": SPEECH_VOICE,
+                "model": self.model,
+                "voice": self.voice,
                 "input": text,
                 "response_format": "mp3",
             }))
@@ -74,9 +94,34 @@ impl TtsProvider for OpenAiTts {
 /// Synthesize one chunk of June's reply to mp3 bytes. Empty text is a no-op
 /// (`Ok(vec![])`) so the caller can enqueue freely without guarding every chunk.
 #[tauri::command]
-pub async fn synthesize(text: String) -> Result<Vec<u8>, String> {
+pub async fn synthesize(
+    text: String,
+    voice: Option<String>,
+    model: Option<String>,
+) -> Result<Vec<u8>, String> {
     if text.trim().is_empty() {
         return Ok(Vec::new());
     }
-    OpenAiTts.synthesize(&text).await
+    OpenAiTts::new(voice, model).synthesize(&text).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{OpenAiTts, DEFAULT_MODEL, DEFAULT_VOICE};
+
+    #[test]
+    fn validates_voice_and_model_falling_back_on_bad_input() {
+        let ok = OpenAiTts::new(Some("nova".into()), Some("tts-1-hd".into()));
+        assert_eq!(ok.voice, "nova");
+        assert_eq!(ok.model, "tts-1-hd");
+
+        // Unknown values fall back to the defaults rather than reaching the API.
+        let bad = OpenAiTts::new(Some("robot".into()), Some("tts-9".into()));
+        assert_eq!(bad.voice, DEFAULT_VOICE);
+        assert_eq!(bad.model, DEFAULT_MODEL);
+
+        let none = OpenAiTts::new(None, None);
+        assert_eq!(none.voice, DEFAULT_VOICE);
+        assert_eq!(none.model, DEFAULT_MODEL);
+    }
 }

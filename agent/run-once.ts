@@ -22,9 +22,27 @@
 import { createInterface } from "node:readline";
 import { stdin, stdout } from "node:process";
 
+import { type PrivacyMode, providerAllowed } from "../src/lib/privacy.ts";
+import { resolveProvider } from "../src/lib/providers.ts";
 import { type ToolGate } from "./brain.ts";
 import { createJuneAgent } from "./core.ts";
 import { isGated } from "./policy.ts";
+
+const PRIVACY_MODES: PrivacyMode[] = ["standard", "local-voice", "strict-offline"];
+
+/** Resolve the brain the host (agent_runner.rs) selected via env into
+ *  createJuneAgent options, defaulting to Claude. Base URL comes from the
+ *  registry so it stays single-sourced; a custom endpoint overrides it. */
+function brainConfig(): { provider: string; model?: string; baseUrl?: string; apiKey?: string } {
+  const provider = process.env.JUNE_BRAIN_PROVIDER || "claude";
+  const p = resolveProvider("brain", provider);
+  return {
+    provider,
+    model: process.env.JUNE_BRAIN_MODEL || undefined,
+    baseUrl: process.env.JUNE_BRAIN_BASE_URL || p?.baseUrl || undefined,
+    apiKey: process.env.JUNE_BRAIN_API_KEY || undefined,
+  };
+}
 
 function emit(obj: Record<string, unknown>): void {
   stdout.write(JSON.stringify(obj) + "\n");
@@ -104,7 +122,23 @@ async function main(): Promise<void> {
     return;
   }
 
-  const agent = createJuneAgent({ workspaceId: process.env.JUNE_WORKSPACE_ID ?? "june" });
+  const brain = brainConfig();
+
+  // Privacy enforcement at the execution boundary (PLAN.md §5), not just the
+  // settings form: refuse a networked brain when the mode forbids it, so editing
+  // settings.json can't smuggle a cloud brain past Strict offline.
+  const mode = process.env.JUNE_PRIVACY_MODE as PrivacyMode | undefined;
+  const p = resolveProvider("brain", brain.provider);
+  if (p && mode && PRIVACY_MODES.includes(mode) && !providerAllowed(mode, "brain", p)) {
+    emit({
+      t: "final",
+      text: `Privacy mode blocks the ${p.label} brain. Choose a local brain or change the mode in settings.`,
+      isError: true,
+    });
+    return;
+  }
+
+  const agent = createJuneAgent({ ...brain, workspaceId: process.env.JUNE_WORKSPACE_ID ?? "june" });
   const result = await agent.run(transcript, {
     gate: makeGate(),
     onText: (delta) => emit({ t: "text", delta }),

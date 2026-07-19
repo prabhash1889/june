@@ -93,6 +93,59 @@ fn record(session: &AgentSession, app: &AppHandle, name: &str, payload: serde_js
     let _ = app.emit(name, payload);
 }
 
+/// Resolve the brain the user chose (settings.json) into environment variables
+/// for the run-once child (PLAN.md Phase 7). The provider's API key is read from
+/// the OS keychain HERE, so it reaches the Node agent via the child's env and
+/// never crosses the webview IPC boundary (the same rule the STT/TTS calls
+/// follow). A local brain (Ollama / LM Studio) needs no key. Absent settings ->
+/// no overrides -> run-once defaults to Claude, exactly as before Phase 7.
+fn brain_env(app: &AppHandle) -> Vec<(String, String)> {
+    let s = crate::settings::read_settings(app);
+    let brain = s.get("brain");
+    let field = |k: &str| brain.and_then(|b| b.get(k)).and_then(|v| v.as_str());
+    let provider = field("provider").unwrap_or("claude").to_string();
+
+    let mut env: Vec<(String, String)> = vec![("JUNE_BRAIN_PROVIDER".into(), provider.clone())];
+    if let Some(m) = field("model") {
+        env.push(("JUNE_BRAIN_MODEL".into(), m.to_string()));
+    }
+    if let Some(e) = field("effort") {
+        env.push(("JUNE_BRAIN_EFFORT".into(), e.to_string()));
+    }
+    if let Some(b) = s.get("brainBaseUrl").and_then(|v| v.as_str()) {
+        if !b.is_empty() {
+            env.push(("JUNE_BRAIN_BASE_URL".into(), b.to_string()));
+        }
+    }
+    if let Some(mode) = s.get("privacyMode").and_then(|v| v.as_str()) {
+        env.push(("JUNE_PRIVACY_MODE".into(), mode.to_string()));
+    }
+
+    // Provider -> keychain service. This mapping is the execution-side counterpart
+    // of the frontend registry (src/lib/providers.ts); keep them in step.
+    let key_service = match provider.as_str() {
+        "claude" => Some("june_provider_anthropic_api_key"),
+        "openai" => Some("june_provider_openai_api_key"),
+        "gemini" => Some("june_provider_google_api_key"),
+        "custom" => Some("june_provider_custom_api_key"),
+        _ => None, // ollama / lmstudio: local, no key
+    };
+    if let Some(service) = key_service {
+        if let Ok(key) = crate::keychain::get_api_key_inner(service.to_string()) {
+            if !key.trim().is_empty() {
+                // Claude's Agent SDK reads ANTHROPIC_API_KEY; every other brain
+                // reads JUNE_BRAIN_API_KEY in agent/core.ts.
+                if provider == "claude" {
+                    env.push(("ANTHROPIC_API_KEY".into(), key));
+                } else {
+                    env.push(("JUNE_BRAIN_API_KEY".into(), key));
+                }
+            }
+        }
+    }
+    env
+}
+
 /// Absolute path to agent/run-once.ts, resolved from this crate at compile time
 /// (`<repo>/src-tauri` -> `<repo>/agent/run-once.ts`).
 fn run_once_script() -> PathBuf {
@@ -126,6 +179,9 @@ pub async fn run_agent(
         .ok_or("Could not locate the June project root.")?;
 
     let session = session.inner().clone();
+    // Resolve the chosen brain (+ its key) into env before we cross into the
+    // blocking spawn; the child reads these to pick its provider.
+    let brain_vars = brain_env(&app);
 
     // Mirror the user's message to any open window before June starts working.
     record(&session, &app, "agent://user", serde_json::json!({ "turn": turn, "text": transcript }));
@@ -148,6 +204,7 @@ pub async fn run_agent(
             .arg("tsx")
             .arg(&script)
             .arg(&transcript)
+            .envs(brain_vars)
             .current_dir(&cwd)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

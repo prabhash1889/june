@@ -31,6 +31,15 @@ pub fn load_settings(app: tauri::AppHandle) -> Result<Value, String> {
     read_settings_file(&settings_path(&app)?)
 }
 
+/// Read the settings bag from Rust (e.g. to resolve the chosen brain before
+/// spawning a turn). Missing/unreadable settings collapse to an empty object so
+/// callers get defaults rather than an error.
+pub(crate) fn read_settings(app: &tauri::AppHandle) -> Value {
+    settings_path(app)
+        .and_then(|p| read_settings_file(&p))
+        .unwrap_or_else(|_| Value::Object(Default::default()))
+}
+
 #[tauri::command]
 pub fn save_settings(app: tauri::AppHandle, settings: Value) -> Result<(), String> {
     write_settings_file(&settings_path(&app)?, &settings)

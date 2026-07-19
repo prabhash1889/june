@@ -695,3 +695,208 @@ button {
     transition: none;
   }
 }
+
+/* ---- Settings (Phase 7: the app window's second face) --------------------- */
+
+.app-nav {
+  display: inline-flex;
+  gap: 4px;
+}
+
+.app-window .app-nav button {
+  padding: 4px 12px;
+  font-size: 12.5px;
+  color: var(--dim);
+}
+
+.app-window .app-nav button.active {
+  color: var(--ink);
+  background: var(--blue-tint);
+  border-color: var(--blue);
+}
+
+/* Push the status text to the far right of the header, past the nav. */
+.app-sub {
+  margin-left: auto;
+}
+
+.settings-view {
+  flex: 1;
+  overflow-y: auto;
+  padding: 18px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  scrollbar-color: var(--bg2) transparent;
+}
+
+.settings-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.settings-section h2 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--dim);
+}
+
+.settings-hint {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--dim);
+}
+
+.stage-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-m);
+  background: var(--bg1);
+}
+
+.stage-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.stage-label {
+  min-width: 108px;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.settings-view input,
+.settings-view select {
+  border-radius: var(--radius-s);
+  border: 1px solid var(--line);
+  background: var(--bg2);
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+  padding: 6px 9px;
+  transition: border-color 0.15s ease;
+}
+
+.settings-view input {
+  min-width: 140px;
+}
+
+.settings-view input.wide {
+  flex: 1;
+  min-width: 220px;
+}
+
+.settings-view input:focus-visible,
+.settings-view select:focus-visible {
+  outline: none;
+  border-color: var(--blue);
+}
+
+.settings-view input::placeholder {
+  color: var(--dim);
+}
+
+.settings-test,
+.diag-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.test-result {
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+
+.test-result.ok {
+  color: var(--blue);
+}
+
+.test-result.bad {
+  color: var(--warm);
+}
+
+.key-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.key-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 160px;
+  font-size: 13px;
+}
+
+.key-row input {
+  flex: 1;
+  min-width: 180px;
+}
+
+.key-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--line-strong);
+}
+
+.key-dot.on {
+  background: var(--blue);
+  box-shadow: 0 0 0 3px var(--blue-tint);
+}
+
+.privacy-mode {
+  display: flex;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-m);
+  background: var(--bg1);
+  cursor: pointer;
+}
+
+.privacy-mode > span {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.privacy-name {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.privacy-desc {
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--dim);
+}
+
+.privacy-violations {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+kbd {
+  font: inherit;
+  font-size: 11.5px;
+  padding: 1px 5px;
+  border: 1px solid var(--line-strong);
+  border-radius: 5px;
+  background: var(--bg2);
+}

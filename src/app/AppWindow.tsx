@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
 import { type Approval, usePendingApproval } from "../lib/session.ts";
+import { SettingsPanel } from "./SettingsPanel.tsx";
 
 // The full application window (PLAN.md Phase 6). It shares the agent session with
 // the widget: the backend broadcasts every step of a turn as an `agent://*`
@@ -10,8 +11,9 @@ import { type Approval, usePendingApproval } from "../lib/session.ts";
 // conversation and its approvals can be granted here. It does NOT own the mic or
 // speak - the widget owns the voice pipeline; this window inspects and approves.
 //
-// Settings, model pickers, and MCP management (PLAN.md §4) are Phase 7 - this
-// window stands them up as a labelled placeholder rather than faking them.
+// Phase 7 adds the second face: the Settings panel (models, keys, privacy,
+// diagnostics). It is mounted only when selected, so the conversation stays the
+// default view and nothing loads settings until the user asks for them.
 
 type Entry =
   | { kind: "you"; key: string; turn: number; text: string }
@@ -163,10 +165,13 @@ function useConversation(): { entries: Entry[]; working: boolean } {
   return { entries, working };
 }
 
+type View = "chat" | "settings";
+
 export function AppWindow() {
   const { entries, working } = useConversation();
   const { approval, decide } = usePendingApproval();
   const scroller = useRef<HTMLDivElement>(null);
+  const [view, setView] = useState<View>("chat");
 
   useEffect(() => {
     const el = scroller.current;
@@ -179,27 +184,42 @@ export function AppWindow() {
     <div className="app-window">
       <header className="app-header">
         <div className="app-title">June</div>
+        <nav className="app-nav">
+          <button className={view === "chat" ? "active" : ""} onClick={() => setView("chat")}>
+            Conversation
+          </button>
+          <button className={view === "settings" ? "active" : ""} onClick={() => setView("settings")}>
+            Settings
+          </button>
+        </nav>
         <div className="app-sub">
           <span className={`status-dot ${working ? "busy" : ""}`} aria-hidden="true" />
           {working ? "Working…" : "Ready. Speak to the widget or hold Ctrl + Shift + Space."}
         </div>
       </header>
 
+      {/* Approvals stay visible in both views, so a gated command can be granted
+          from the settings screen too. */}
       {approval && <ApprovalBanner approval={approval} onDecide={decide} />}
 
-      <div className="conversation" ref={scroller}>
-        {entries.length === 0 && (
-          <p className="empty">
-            Nothing yet. Hold Ctrl + Shift + Space and speak - your commands, June's replies, and every action it takes
-            appear here live.
-          </p>
-        )}
-        {entries.map((e) => (
-          <ConversationEntry key={e.key} entry={e} />
-        ))}
-      </div>
-
-      <footer className="app-footer">Model, capability, and voice settings arrive in Phase 7.</footer>
+      {view === "settings" ? (
+        <SettingsPanel />
+      ) : (
+        <>
+          <div className="conversation" ref={scroller}>
+            {entries.length === 0 && (
+              <p className="empty">
+                Nothing yet. Hold Ctrl + Shift + Space and speak - your commands, June's replies, and every action it
+                takes appear here live.
+              </p>
+            )}
+            {entries.map((e) => (
+              <ConversationEntry key={e.key} entry={e} />
+            ))}
+          </div>
+          <footer className="app-footer">Open Settings to choose your models, keys, and privacy mode.</footer>
+        </>
+      )}
     </div>
   );
 }

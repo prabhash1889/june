@@ -1,4 +1,5 @@
 mod agent_runner;
+mod diagnostics;
 mod keychain;
 mod settings;
 mod stt;
@@ -79,6 +80,8 @@ pub fn run() {
             keychain::delete_api_key,
             stt::transcribe,
             tts::synthesize,
+            diagnostics::bridge_health,
+            diagnostics::test_brain,
             agent_runner::run_agent,
             agent_runner::resolve_approval,
             agent_runner::pending_approval,
