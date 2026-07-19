@@ -3,7 +3,7 @@
 > A local-first voice agent that controls the SAPLE ecosystem (and more) by voice.
 > Tell June what to do; it does it, answers back, and stays out of your way.
 
-**Status:** Phases 0-2 complete. Phase 2's exit criterion passed live on 2026-07-19: an MCP client (SDK stdio) listed all six `saple-bridge-control` tools and `spawn_agents` started one real Claude agent in the running bridge, with contract batch counts surfaced verbatim. Phase 3 (text-only agent core) is unblocked.
+**Status:** Phases 0-3 complete. Phase 3's exit criterion passed live on 2026-07-19: typing "open 5 claude agents and 4 codex agents in this workspace" into the text agent core spawned exactly 5 + 4 real agents through the approval gate, June reported started/failed/skipped accurately from bridge results, and a denied gate provably blocked a spawn (enforced in the execution layer, not the prompt). Phase 4 (speech to text) is unblocked. Remaining Phase 3 tail: the app-UI surface for the stream/approvals (the text harness proves the loop; the UI reuses the same core).
 **Owner:** prabhash1889
 **Repo:** `SAPLE-ALL/june` (standalone; sibling of `saple-bridge`, `saple-mcp`, `artemis`, `sentry`)
 **Last updated:** 2026-07-15 (Phase 1: contract frozen in june; control endpoint + renderer dispatcher + settings toggle landed in saple-bridge)
@@ -268,7 +268,7 @@ conventions.
 - **Publish:** `mcp.config.example.json` + `README.md` show how to attach it (`claude mcp add ...`). `typecheck`/`lint`/`test` extended to cover `mcp/**`; all green.
 - **Gate (met 2026-07-19):** driven as a real MCP client over stdio (SDK `Client` + `StdioClientTransport`) against a live bridge - `listTools` returned all six, `get_swarm_status` read the roster, and `spawn_agents` started one real Claude agent (`counts.started: 1`, agent id returned). Deferred to Phase 3: approval-token args on gated tools, and June's logical→bridge workspace mapping.
 
-### Phase 3 - Agent core (text-only) ★ key de-risking milestone
+### Phase 3 - Agent core (text-only) ★ key de-risking milestone ✅
 **Goal:** the whole control loop works, typed, no voice.
 - Provider-pluggable agent core (`Brain` interface) with `saple-bridge-control` + `saple-memory` (+ artemis wrapped) attached. Claude (`claude-opus-4-8`) is the default and **only committed** brain for this phase - ship the `Brain` interface with one working implementation. A second non-Claude provider is deferred to Phase 7 (where the full roster lives); the voice-pipeline risk here is high and the provider-abstraction risk is low, so proving the *loop* comes first, not proving the *abstraction*. Design the interface so a second provider is a later config entry, but do not build one now.
 - Approval flow per §5: pending / approve / reject / expire, one-time tokens verified by bridge; the same approval renders in the app UI. Expensive launches confirm with exact counts; destructive actions confirm visibly.
@@ -276,6 +276,14 @@ conventions.
 - Voice-tuned system prompt (short spoken-style replies, numbers spelled out, no markdown/emoji), but exercised via text first.
 - Streaming responses surfaced in the app UI; June reports outcomes only from bridge results/events, never from intent.
 **Exit:** typing "open 5 claude agents and 4 codex agents in this workspace" makes it happen exactly once (retry-safe), June reports started/failed/skipped accurately, and an approval gate cannot be bypassed by the brain (verified in the execution layer, so it holds regardless of provider). If this works typed, voice is mechanical. (The provider-swap-can't-skip-a-gate check moves to Phase 7 when a second brain exists.)
+
+**Done:** a provider-neutral agent core at `agent/` (Node-scoped, run with `tsx`), driving the Phase 2 MCP tools.
+- **Brain (`agent/brain.ts` + `agent/claude-brain.ts`):** one `Brain` interface; Claude is the only committed impl, over `@anthropic-ai/claude-agent-sdk` `query()` (uses the local `claude` auth or `ANTHROPIC_API_KEY`). Built-in tools are disabled (`tools: []`) and the developer's own Claude settings ignored (`settingSources: []`) - June may only touch the workspace through attached MCP servers. `saple-bridge-control` is attached with `alwaysLoad: true` so its tools are always in the prompt (without a tool-search tool the model otherwise hallucinated tool names). A second provider is a later `Brain` impl, not a new loop.
+- **Approval gate (`agent/policy.ts`, wired via the SDK `canUseTool` hook in `claude-brain.ts`):** classified by §5 action class, not by model, and enforced at the tool dispatch point - the brain cannot run a gated tool without a decision from June's core, so it "holds regardless of provider". `spawn_agents` (expensive, confirmed with exact count) and `close_terminal` (destructive) are gated; observe/reversible run automatically. Fails closed. Classification unit-tested (4 tests).
+- **Voice-tuned prompt (`agent/prompt.ts`):** spoken-style, numbers spelled out, no markdown; reports outcomes only from tool results, resolves labels via `get_swarm_status` and asks when ambiguous.
+- **Text harness (`agent/cli.ts`):** one-shot or REPL; `npm run agent`. `JUNE_APPROVE=allow|deny` gives a headless approval policy.
+- **Gate met live (2026-07-19):** against a running bridge - `get_swarm_status` read the roster and June reported it in voice style; a denied "open two claude agents" blocked the spawn (result: not approved, nothing started); an approved single spawn started one agent; and the full "open 5 claude + 4 codex" decomposed into two spawns, started all 9 (counts 5/5/0/0 and 4/4/0/0), and June reported them accurately.
+- **Deferred:** the §5 *one-time token verified by bridge* (the execution-layer gate already meets the exit criterion; bridge-side token mint/verify is defense-in-depth, best paired with the Rust authority migration), and the app-UI stream/approval surface (reuses this same core).
 
 ### Phase 4 - Speech to text
 **Goal:** June hears you.

@@ -44,9 +44,9 @@ export default tseslint.config(
     },
   },
 
-  // saple-bridge-control MCP server (Node + TypeScript, no browser/React).
+  // Node + TypeScript tooling: the MCP server and the agent core (no browser/React).
   {
-    files: ["mcp/**/*.ts"],
+    files: ["mcp/**/*.ts", "agent/**/*.ts"],
     extends: [js.configs.recommended, ...tseslint.configs.recommended],
     languageOptions: {
       ecmaVersion: 2022,
