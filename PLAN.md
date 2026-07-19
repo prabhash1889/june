@@ -3,7 +3,7 @@
 > A local-first voice agent that controls the SAPLE ecosystem (and more) by voice.
 > Tell June what to do; it does it, answers back, and stays out of your way.
 
-**Status:** Phase 1 complete (pending live smoke test)
+**Status:** Phase 0 and Phase 1 complete. Phase 1's exit criterion passed live on 2026-07-19 (`scripts/phase1-smoke.ps1` against a running bridge: spawn, idempotent replay, and `observe` resume all confirmed). Phase 2 is unblocked.
 **Owner:** prabhash1889
 **Repo:** `SAPLE-ALL/june` (standalone; sibling of `saple-bridge`, `saple-mcp`, `artemis`, `sentry`)
 **Last updated:** 2026-07-15 (Phase 1: contract frozen in june; control endpoint + renderer dispatcher + settings toggle landed in saple-bridge)
@@ -111,6 +111,8 @@ June must be able to launch and control saple-bridge (including starting it), wi
 
 Every stage of the pipeline and the brain itself is configurable. This is central, not an afterthought.
 
+**Committed vs. opportunistic:** the tables below are the design *target*, not a build list. Only the default stack in §10 (one STT, one brain, one TTS) is committed for the first useful release (§7). Every other provider is opportunistic - added when a real need appears, one interface impl at a time - never a prerequisite for shipping the acceptance scenario. Do not build the full matrix before one stack works end-to-end.
+
 | Stage | Local options | API options | Notes |
 |---|---|---|---|
 | **STT** | faster-whisper, NVIDIA Parakeet, Moonshine (streaming) | Deepgram, AssemblyAI, OpenAI | Local default for privacy; short commands tolerate small models |
@@ -184,6 +186,11 @@ Additional rules:
 
 Each phase is independently shippable and de-risks the next. Order is dependency-driven: prove the control loop in text before adding voice.
 
+**Known schedule risks (flagged, not yet mitigated):**
+- **saple-bridge coupling** - Phase 1's real completion and everything after it depends on a live saple-bridge whose renderer stores June's dispatcher drives. Bridge is a separate product; if its internals shift, June stalls. Mitigation is the contract seam (§2) plus the Phase 1 live-smoke gate above - keep them honest.
+- **Widget spec unknown** - Phase 6 is a whole second UI surface with no spec yet ("user to provide"). It sits in the middle of the plan as a sizeable unestimated unknown; treat its scope as open until §9's widget question is answered.
+- **Voice-pipeline test flakiness** - Phases 4-5 exit criteria are manual ("hold hotkey, speak"). Real audio E2E tests are flaky by nature. Before those phases, decide the test strategy (recorded-audio fixtures / mocked device / golden transcripts) so the voice stages don't become an untested, flaky corner of an otherwise rigorously-tested codebase.
+
 ### Phase 0 - Foundations & scaffolding ✅
 **Goal:** empty app that builds, runs, and has a home.
 - Tauri app skeleton (Rust backend + web UI), tray presence, single-instance lock.
@@ -223,7 +230,7 @@ conventions.
 - **Contract (june):** `src/contract/types.ts` (the three operations, frozen `ERROR_CODES` and
   `ACTIONS`, `ApprovalToken`, `BatchCounts`), `src/contract/validate.ts` (trust-boundary validators
   enforcing the invariants), and `src/contract/examples/*.json` as the language-neutral golden
-  source of truth. `src/contract/contract.test.ts` passes without starting bridge (9 tests).
+  source of truth. `src/contract/contract.test.ts` passes without starting bridge (8 tests).
 - **Endpoint (saple-bridge `src-tauri/src/june_control.rs`):** localhost-only, token-authed
   `tiny_http` server on an ephemeral loopback port, off by default behind a `june-control.enabled`
   flag file. Owns the transport-independent core - monotonic sequenced event log with
@@ -238,9 +245,12 @@ conventions.
   summing requested/started/failed/skipped counts.
 - **Toggle:** "June Voice Control" in Workspace settings (mirrors the agent-browser opt-in). All
   164 bridge frontend tests + typecheck + lint + clippy green.
-- **Not yet done:** the exit criterion is a *live* end-to-end check (bridge running, workspace open,
-  real agent CLIs) - run `june/scripts/phase1-smoke.ps1` against a live bridge to confirm
-  spawn/idempotency/observe. Deferred to their own phases per the plan: approval one-time-token
+- **Gate before Phase 2 (met 2026-07-19):** the exit criterion is a *live* end-to-end check (bridge
+  running, workspace open, real agent CLIs) - `june/scripts/phase1-smoke.ps1` ran green against a
+  live bridge (pid discovered via `june-control.json`, protocol v1): `spawn_agents` started one
+  Claude agent, retrying the same `request_id` replayed the identical result and spawned nothing new,
+  and `observe` returned the ordered event then resumed clean with no repeats. Phase 2 is unblocked.
+  Deferred to their own phases per the plan: approval one-time-token
   *verification* in the endpoint (§5, exercised in Phase 3), stale-workspace mapping between June's
   logical `workspace_id` and bridge's internal workspace key (Phase 3), and WS streaming for
   `observe` (polling suffices now).
@@ -254,12 +264,12 @@ conventions.
 
 ### Phase 3 - Agent core (text-only) ★ key de-risking milestone
 **Goal:** the whole control loop works, typed, no voice.
-- Provider-pluggable agent core (`Brain` interface) with `saple-bridge-control` + `saple-memory` (+ artemis wrapped) attached. Claude (`claude-opus-4-8`) is the default brain; ship at least one non-Claude provider (e.g. OpenAI or Ollama) in this phase to prove the abstraction holds.
+- Provider-pluggable agent core (`Brain` interface) with `saple-bridge-control` + `saple-memory` (+ artemis wrapped) attached. Claude (`claude-opus-4-8`) is the default and **only committed** brain for this phase - ship the `Brain` interface with one working implementation. A second non-Claude provider is deferred to Phase 7 (where the full roster lives); the voice-pipeline risk here is high and the provider-abstraction risk is low, so proving the *loop* comes first, not proving the *abstraction*. Design the interface so a second provider is a later config entry, but do not build one now.
 - Approval flow per §5: pending / approve / reject / expire, one-time tokens verified by bridge; the same approval renders in the app UI. Expensive launches confirm with exact counts; destructive actions confirm visibly.
 - Reference resolution: "the third Codex agent" resolves against live resource state to a stable ID; ambiguity asks, never guesses.
 - Voice-tuned system prompt (short spoken-style replies, numbers spelled out, no markdown/emoji), but exercised via text first.
 - Streaming responses surfaced in the app UI; June reports outcomes only from bridge results/events, never from intent.
-**Exit:** typing "open 5 claude agents and 4 codex agents in this workspace" makes it happen exactly once (retry-safe), June reports started/failed/skipped accurately, and switching the brain provider cannot bypass an approval. If this works typed, voice is mechanical.
+**Exit:** typing "open 5 claude agents and 4 codex agents in this workspace" makes it happen exactly once (retry-safe), June reports started/failed/skipped accurately, and an approval gate cannot be bypassed by the brain (verified in the execution layer, so it holds regardless of provider). If this works typed, voice is mechanical. (The provider-swap-can't-skip-a-gate check moves to Phase 7 when a second brain exists.)
 
 ### Phase 4 - Speech to text
 **Goal:** June hears you.
