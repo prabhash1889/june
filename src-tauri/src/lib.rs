@@ -1,5 +1,7 @@
+mod agent_runner;
 mod keychain;
 mod settings;
+mod stt;
 
 use tauri::tray::TrayIconBuilder;
 
@@ -30,6 +32,13 @@ pub fn run() {
                 .icon(app.default_window_icon().unwrap().clone())
                 .tooltip("June")
                 .build(app)?;
+
+            // Push-to-talk (Phase 4): a real global hold-to-talk hotkey. The plugin's
+            // Pressed/Released states give true hold semantics a terminal can't - the
+            // webview starts capturing on ptt://down and transcribes on ptt://up.
+            #[cfg(desktop)]
+            register_push_to_talk(app.handle())?;
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -38,7 +47,39 @@ pub fn run() {
             keychain::set_api_key,
             keychain::has_api_key,
             keychain::delete_api_key,
+            stt::transcribe,
+            agent_runner::run_agent,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+/// Registers the Ctrl+Shift+Space push-to-talk hotkey and bridges its
+/// Pressed/Released edges to the webview as `ptt://down` / `ptt://up` events.
+///
+/// ponytail: the chord is fixed for now; a user-configurable hotkey is a Phase 7
+/// settings entry (PLAN.md §4 Activation).
+#[cfg(desktop)]
+fn register_push_to_talk(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> {
+    use tauri::Emitter;
+    use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
+
+    let ptt = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::Space);
+    let ptt_for_handler = ptt;
+
+    app.plugin(
+        tauri_plugin_global_shortcut::Builder::new()
+            .with_handler(move |app, shortcut, event| {
+                if shortcut == &ptt_for_handler {
+                    let name = match event.state() {
+                        ShortcutState::Pressed => "ptt://down",
+                        ShortcutState::Released => "ptt://up",
+                    };
+                    let _ = app.emit(name, ());
+                }
+            })
+            .build(),
+    )?;
+    app.global_shortcut().register(ptt)?;
+    Ok(())
 }

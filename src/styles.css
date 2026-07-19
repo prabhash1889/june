@@ -36,17 +36,9 @@ body {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 12px;
+  gap: 16px;
   text-align: center;
   padding: 24px;
-}
-
-.app .dot {
-  width: 40px;
-  height: 40px;
-  border-radius: 50%;
-  background: radial-gradient(circle at 35% 30%, var(--warm), var(--cool) 100%);
-  box-shadow: 0 0 24px rgba(255, 138, 120, 0.45);
 }
 
 .app h1 {
@@ -55,8 +47,105 @@ body {
   margin: 0;
 }
 
-.app p {
+.voice {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  max-width: 320px;
+}
+
+.orb {
+  width: 64px;
+  height: 64px;
+  border: none;
+  border-radius: 50%;
+  cursor: pointer;
+  background: radial-gradient(circle at 35% 30%, var(--warm), var(--cool) 100%);
+  box-shadow: 0 0 24px rgba(255, 138, 120, 0.45);
+  transition: transform 0.08s ease-out;
+}
+
+.orb:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.orb.listening {
+  box-shadow: 0 0 36px rgba(140, 125, 255, 0.7);
+}
+
+.status {
   color: var(--ink-dim);
   font-size: 13px;
   margin: 0;
+  min-height: 1em;
+}
+
+.reply {
+  color: var(--ink);
+  font-size: 14px;
+  line-height: 1.45;
+  margin: 0;
+}
+
+.err {
+  color: var(--warm);
+  font-size: 13px;
+  margin: 0;
+}
+
+.review {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+}
+
+.review textarea,
+.keygate input {
+  width: 100%;
+  resize: vertical;
+  border-radius: 8px;
+  border: 1px solid var(--night-1);
+  background: var(--night-1);
+  color: var(--ink);
+  font: inherit;
+  font-size: 14px;
+  padding: 8px 10px;
+}
+
+.row {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.voice button:not(.orb),
+.keygate button {
+  border: 1px solid var(--cool);
+  background: transparent;
+  color: var(--ink);
+  border-radius: 8px;
+  padding: 6px 12px;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.voice button.primary,
+.keygate button.primary {
+  background: var(--cool);
+}
+
+.voice button:disabled,
+.keygate button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.keygate {
+  gap: 10px;
 }

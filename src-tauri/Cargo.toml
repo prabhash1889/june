@@ -17,6 +17,12 @@ tauri = { version = "2", features = ["tray-icon"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 keyring = "2.1"
+# STT: Whisper transcription happens in Rust so the API key never crosses the IPC
+# boundary to the webview. rustls avoids a native OpenSSL dependency on Windows.
+reqwest = { version = "0.12", default-features = false, features = ["multipart", "rustls-tls", "json"] }
+# Push-to-talk: a real global hold-to-talk hotkey (Pressed/Released), which a
+# terminal harness cannot provide.
+tauri-plugin-global-shortcut = "2"
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 # Opening the app again focuses the existing window instead of starting a second process.
