@@ -803,6 +803,30 @@ button {
   min-width: 220px;
 }
 
+.settings-view textarea.memory-text {
+  width: 100%;
+  resize: vertical;
+  min-height: 96px;
+  border-radius: var(--radius-s);
+  border: 1px solid var(--line);
+  background: var(--bg2);
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+  padding: 8px 9px;
+  transition: border-color 0.15s ease;
+}
+
+.settings-view textarea.memory-text:focus-visible {
+  outline: none;
+  border-color: var(--blue);
+}
+
+.settings-view textarea.memory-text::placeholder {
+  color: var(--dim);
+}
+
 .settings-view input:focus-visible,
 .settings-view select:focus-visible {
   outline: none;

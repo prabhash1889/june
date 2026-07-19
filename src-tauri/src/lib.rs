@@ -88,6 +88,8 @@ pub fn run() {
             agent_runner::pending_approval,
             agent_runner::session_events,
             agent_runner::new_conversation,
+            agent_runner::read_memory,
+            agent_runner::write_memory,
             show_app,
             set_widget_expanded,
         ])

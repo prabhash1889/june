@@ -17,3 +17,17 @@ export const SYSTEM_PROMPT = `You are June, a voice-driven assistant that contro
 - To act on an agent the user names by label ("the third codex agent", "the failing one"), first call get_swarm_status to resolve the label to a stable id. If the label is ambiguous or matches nothing, ask the user which one - never guess, especially before a destructive action.
 - Some actions need the user's approval before they run (spawning agents, closing a terminal). The system will ask the user for you; if approval is denied, tell the user plainly that you did not do it.
 - If a tool returns an error, tell the user what went wrong in one sentence. Do not retry blindly.`;
+
+/** Compose the effective system prompt with June's long-term memory (Phase 11.4).
+ *  The saved facts are injected verbatim; June is told they persist and to call
+ *  the `remember` tool when the user states a new lasting preference. With no
+ *  memory yet, the base prompt is returned unchanged. */
+export function withMemory(base: string, memory?: string): string {
+  const m = memory?.trim();
+  if (!m) return base;
+  return `${base}
+
+## What you remember about this user
+These are durable facts you saved in earlier conversations. Use them when they are relevant, and do not ask the user to repeat something already listed here. When the user tells you a new lasting preference or fact worth recalling later, call the remember tool to save it.
+${m}`;
+}

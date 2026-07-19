@@ -41,6 +41,11 @@ describe("gate policy", () => {
     expect(summarize("write_file", { path: "notes/todo.md" })).toBe("Write file notes/todo.md");
   });
 
+  it("does not gate remembering a fact (Phase 11.4: local, contained, reversible)", () => {
+    expect(isGated(classify("remember"))).toBe(false); // reversible - auto-run
+    expect(summarize("remember", { fact: "prefers Codex agents" })).toBe("Remember: prefers Codex agents");
+  });
+
   it("an unknown action fails closed to destructive (gated), never silently auto-run", () => {
     expect(classify("some_future_action")).toBe("destructive");
     expect(isGated(classify("some_future_action"))).toBe(true);

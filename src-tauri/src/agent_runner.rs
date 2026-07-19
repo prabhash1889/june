@@ -254,6 +254,28 @@ fn files_env(app: &AppHandle) -> Vec<(String, String)> {
     }
 }
 
+/// Absolute path to June's long-term memory file (PLAN.md Phase 11.4),
+/// `<app_data_dir>/june-memory.md`. One host-owned file: the model can only ever
+/// append to THIS path (mcp/memory takes no path argument), so it is
+/// path-contained by construction. The file need not exist yet.
+fn memory_file(app: &AppHandle) -> Result<PathBuf, String> {
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir.join("june-memory.md"))
+}
+
+/// Long-term memory path for the resident (PLAN.md Phase 11.4). Always attached:
+/// memory is local and user-visible (editable/clearable in settings), so it stays
+/// on in every privacy mode, like the audit log. serve.ts reads the file at spawn
+/// and injects it into the system prompt; a settings save / memory edit respawns
+/// the resident so the injected memory stays current.
+fn memory_env(app: &AppHandle) -> Vec<(String, String)> {
+    match memory_file(app) {
+        Ok(p) => vec![("JUNE_MEMORY_FILE".into(), p.to_string_lossy().into_owned())],
+        Err(_) => vec![],
+    }
+}
+
 /// Absolute path to agent/serve.ts, resolved from this crate at compile time
 /// (`<repo>/src-tauri` -> `<repo>/agent/serve.ts`).
 fn serve_script() -> PathBuf {
@@ -276,6 +298,7 @@ fn spawn_serve(app: &AppHandle) -> Result<(ChildStdin, std::process::ChildStdout
 
     let mut brain_vars = brain_env(app);
     brain_vars.extend(files_env(app));
+    brain_vars.extend(memory_env(app));
 
     let mut cmd = if cfg!(windows) {
         let mut c = Command::new("cmd");
@@ -650,6 +673,36 @@ pub fn new_conversation(app: AppHandle, session: State<'_, AgentSession>) -> Res
     let _ = write_request(&session, &serde_json::json!({ "type": "reset" }));
     clear_conversation(&session, &app);
     *session.last_activity.lock().unwrap() = None;
+    Ok(())
+}
+
+/// Read "what June remembers" for the settings surface (PLAN.md Phase 11.4). A
+/// missing file reads as empty, so a fresh install shows a blank, editable memory.
+#[tauri::command]
+pub fn read_memory(app: AppHandle) -> Result<String, String> {
+    let path = memory_file(&app)?;
+    match std::fs::read_to_string(&path) {
+        Ok(s) => Ok(s),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// Save the user-edited memory (PLAN.md Phase 11.4 "what June remembers"; clearing
+/// is just an empty save). Written atomically (temp + rename), then the resident is
+/// shut down so the next turn respawns and re-injects the edited memory into the
+/// system prompt - the same mechanism a settings change uses.
+#[tauri::command]
+pub fn write_memory(
+    app: AppHandle,
+    session: State<'_, AgentSession>,
+    content: String,
+) -> Result<(), String> {
+    let path = memory_file(&app)?;
+    let tmp = path.with_extension("md.tmp");
+    std::fs::write(&tmp, content.as_bytes()).map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, &path).map_err(|e| e.to_string())?;
+    session.shutdown();
     Ok(())
 }
 

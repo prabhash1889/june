@@ -143,6 +143,18 @@ export function deleteKey(service: string): Promise<void> {
   return invoke("delete_api_key", { service });
 }
 
+// --- Long-term memory (Phase 11.4) ---
+// June's one user-editable memory file, kept out of settings.json - it is its own
+// `june-memory.md` in the app data dir. `writeMemory("")` is the "clear" action.
+
+export function readMemory(): Promise<string> {
+  return invoke<string>("read_memory");
+}
+
+export function writeMemory(content: string): Promise<void> {
+  return invoke("write_memory", { content });
+}
+
 /** A stage whose chosen provider is not allowed under the current privacy mode.
  *  Drives both the settings warning and the runtime block. */
 export interface Violation {

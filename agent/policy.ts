@@ -35,6 +35,10 @@ const ACTION_CLASS: Record<string, SafetyClass> = {
   list_files: "observe",
   read_file: "observe",
   write_file: "destructive",
+  // memory capability (Phase 11.4): saving a durable fact to the local, contained
+  // memory file is auto - it is local-only and trivially reversible (the user can
+  // edit or clear "what June remembers" in settings), so it needs no approval.
+  remember: "reversible",
 };
 
 /**
@@ -114,6 +118,8 @@ export function summarize(action: string, input: Record<string, unknown>): strin
       return `Open browser at ${s("url") || "?"}`;
     case "get_swarm_status":
       return "Read swarm status";
+    case "remember":
+      return `Remember: ${s("fact") || "?"}`;
     default:
       return `Run ${action}`;
   }

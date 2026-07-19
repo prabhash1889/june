@@ -30,6 +30,7 @@
 // (barge-in) rather than queueing behind it, so a new command never waits on an
 // abandoned one.
 
+import { promises as fs } from "node:fs";
 import { type Interface, createInterface } from "node:readline";
 import { stdin, stdout } from "node:process";
 
@@ -171,10 +172,19 @@ async function main(): Promise<void> {
   // not persisted under an on-device mode (Phase 11.2).
   const persistSession = !(mode === "strict-offline");
 
+  // Long-term memory (Phase 11.4): the host points us at one june-memory.md; read
+  // it once at spawn and inject it into the system prompt. A settings save or a
+  // memory edit respawns the resident, so this stays current. Missing file -> no
+  // memory yet, which is fine (the remember tool creates it on first use).
+  const memoryFile = process.env.JUNE_MEMORY_FILE?.trim() || undefined;
+  const memory = memoryFile ? await fs.readFile(memoryFile, "utf-8").catch(() => undefined) : undefined;
+
   const agent = createJuneAgent({
     ...brain,
     workspaceId: process.env.JUNE_WORKSPACE_ID ?? "june",
     filesRoot,
+    memoryFile,
+    memory,
     persistSession,
   });
 

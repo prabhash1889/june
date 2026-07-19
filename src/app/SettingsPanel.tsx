@@ -18,9 +18,11 @@ import {
   type JuneSettings,
   loadSettings,
   privacyViolations,
+  readMemory,
   saveSettings,
   setKey,
   voiceAllowed,
+  writeMemory,
 } from "../lib/settings.ts";
 import { transcribe } from "../lib/stt.ts";
 import { synthesize } from "../lib/tts.ts";
@@ -83,6 +85,7 @@ export function SettingsPanel() {
       <PrivacySection settings={settings} update={update} />
       <ActivationSection settings={settings} update={update} />
       <ConversationSection settings={settings} update={update} />
+      <MemorySection />
       <CapabilitiesSection settings={settings} update={update} />
       <DiagnosticsSection />
     </div>
@@ -483,6 +486,68 @@ function ConversationSection({ settings, update }: { settings: JuneSettings; upd
               ? "minutes idle - never resets automatically"
               : "minutes idle"}
           </span>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+// --- Memory ---------------------------------------------------------------
+
+// Long-term memory (PLAN.md Phase 11.4): one user-editable june-memory.md, shown
+// to June at the start of every conversation. June writes durable facts here on
+// its own (the remember tool); this surface lets the user see, edit, or clear
+// them. Kept in its own file, not settings.json, and local-only (no network).
+function MemorySection() {
+  const [text, setText] = useState<string | null>(null);
+  const [saved, setSaved] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    readMemory()
+      .then((m) => {
+        setText(m);
+        setSaved(m);
+      })
+      .catch(() => setText(""));
+  }, []);
+
+  if (text === null) return null;
+  const dirty = text !== saved;
+
+  const save = async (value: string) => {
+    setBusy(true);
+    try {
+      await writeMemory(value);
+      setText(value);
+      setSaved(value);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="settings-section">
+      <h2>Memory</h2>
+      <p className="settings-hint">
+        What June remembers about you across conversations. June saves durable facts here on its own; you can edit or
+        clear them. Stored on-device only.
+      </p>
+      <div className="stage-card">
+        <textarea
+          className="memory-text"
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          placeholder="June hasn't remembered anything yet."
+          rows={6}
+        />
+        <div className="settings-test">
+          <button className="primary" onClick={() => save(text)} disabled={busy || !dirty}>
+            {busy ? "Saving…" : "Save"}
+          </button>
+          <button onClick={() => save("")} disabled={busy || (text.length === 0 && saved.length === 0)}>
+            Clear
+          </button>
         </div>
       </div>
     </section>

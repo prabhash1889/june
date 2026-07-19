@@ -11,7 +11,7 @@ import { type McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import { type Brain, type TurnHooks, type TurnResult } from "./brain.ts";
 import { ClaudeBrain } from "./claude-brain.ts";
 import { OpenAiCompatBrain } from "./openai-brain.ts";
-import { SYSTEM_PROMPT } from "./prompt.ts";
+import { SYSTEM_PROMPT, withMemory } from "./prompt.ts";
 
 /** Absolute path to Phase 2's MCP server, resolved from this file so it works
  *  wherever June is launched from. */
@@ -24,6 +24,11 @@ function filesServerPath(): string {
   return fileURLToPath(new URL("../mcp/files/server.ts", import.meta.url));
 }
 
+/** Absolute path to Phase 11.4's long-term memory capability. */
+function memoryServerPath(): string {
+  return fileURLToPath(new URL("../mcp/memory/server.ts", import.meta.url));
+}
+
 /** The files capability (PLAN.md Phase 9), scoped to a single allowed root. Only
  *  attached when the user has enabled it and pointed it at a folder - proof that
  *  a capability is a server, not new core code. Local + offline-safe. */
@@ -34,6 +39,22 @@ export function filesMcpServer(root: string): Record<string, McpServerConfig> {
       args: ["tsx", filesServerPath()],
       alwaysLoad: true,
       env: { ...process.env, JUNE_FILES_ROOT: root },
+    },
+  };
+}
+
+/** The long-term memory capability (PLAN.md Phase 11.4). Always attached when a
+ *  memory file path is set: memory is local and user-visible, so it stays on in
+ *  every privacy mode. The file need not exist yet - the remember tool creates it. */
+export function memoryMcpServer(file: string): Record<string, McpServerConfig> {
+  return {
+    memory: {
+      command: "npx",
+      args: ["tsx", memoryServerPath()],
+      // Keep the tool in the prompt (like the other servers) so the model with no
+      // built-in tool-search can actually call `remember`.
+      alwaysLoad: true,
+      env: { ...process.env, JUNE_MEMORY_FILE: file },
     },
   };
 }
@@ -66,6 +87,13 @@ export interface JuneAgentOptions {
   /** Allowed root for the files capability (PLAN.md Phase 9). When set, the files
    *  MCP server is attached, scoped to this folder. Unset -> no filesystem access. */
   filesRoot?: string;
+  /** Path to June's long-term memory file (PLAN.md Phase 11.4). When set, the
+   *  memory MCP server is attached so June can save durable facts. Unset -> no
+   *  remember tool. */
+  memoryFile?: string;
+  /** June's current long-term memory (the file's contents), injected into the
+   *  system prompt so a preference stated in a past conversation is recalled. */
+  memory?: string;
   /** Extra MCP capabilities merged over the default (e.g. saple-memory). */
   extraMcpServers?: Record<string, McpServerConfig>;
   /** When false, the Claude brain keeps no session history on disk (Phase 11.2:
@@ -88,14 +116,16 @@ export function createJuneAgent(opts: JuneAgentOptions = {}): JuneAgent {
   const mcpServers = {
     ...defaultMcpServers(opts.workspaceId),
     ...(opts.filesRoot ? filesMcpServer(opts.filesRoot) : {}),
+    ...(opts.memoryFile ? memoryMcpServer(opts.memoryFile) : {}),
     ...opts.extraMcpServers,
   };
+  const systemPrompt = withMemory(SYSTEM_PROMPT, opts.memory);
   const provider = opts.provider ?? "claude";
   const brain: Brain =
     provider === "claude"
       ? new ClaudeBrain({
           model: opts.model,
-          systemPrompt: SYSTEM_PROMPT,
+          systemPrompt,
           mcpServers,
           persistSession: opts.persistSession,
         })
@@ -104,7 +134,7 @@ export function createJuneAgent(opts: JuneAgentOptions = {}): JuneAgent {
           model: opts.model ?? "",
           baseUrl: opts.baseUrl ?? "",
           apiKey: opts.apiKey,
-          systemPrompt: SYSTEM_PROMPT,
+          systemPrompt,
           mcpServers,
         });
   return {
