@@ -126,7 +126,15 @@ pub struct AgentSession {
     /// the idle threshold, that turn starts a fresh conversation. `None` before
     /// the first turn (nothing to age out) and after an explicit new conversation.
     last_activity: Arc<Mutex<Option<Instant>>>,
+    /// Recent per-turn voice-latency samples (Phase 11.5), newest last. The widget
+    /// records them and the full-app Diagnostics panel reads them back - separate
+    /// webviews, so this shared, capped, in-memory buffer is their common ground.
+    latency: Arc<Mutex<Vec<serde_json::Value>>>,
 }
+
+/// ponytail: keep the last N latency samples for the P50/P95 readout; older ones
+/// fall off. Enough to be representative without unbounded growth.
+const MAX_LATENCY: usize = 100;
 
 /// ponytail: hard cap so a tray-resident session can't grow without bound;
 /// the oldest events fall off first. Bump if long sessions truncate too soon.
@@ -662,6 +670,32 @@ pub fn session_events(session: State<'_, AgentSession>) -> Vec<serde_json::Value
     session.events.lock().unwrap().clone()
 }
 
+/// Append a finished turn's latency sample to the shared, capped buffer (Phase
+/// 11.5). Called by the widget after each spoken reply; the payload is the
+/// `{stt, brain, tts, total}` breakdown the webview computed. Best-effort - a
+/// diagnostics record must never disturb the voice pipeline.
+#[tauri::command]
+pub fn record_latency(session: State<'_, AgentSession>, sample: serde_json::Value) {
+    push_capped(&mut session.latency.lock().unwrap(), sample, MAX_LATENCY);
+}
+
+/// Push `item`, then trim the oldest so `buf` never exceeds `cap`. Pure so the
+/// ring behaviour is unit-tested without a live session.
+fn push_capped(buf: &mut Vec<serde_json::Value>, item: serde_json::Value, cap: usize) {
+    buf.push(item);
+    if buf.len() > cap {
+        let excess = buf.len() - cap;
+        buf.drain(..excess);
+    }
+}
+
+/// The recent latency samples, oldest first, for the Diagnostics panel (Phase
+/// 11.5). The panel computes P50/P95 from these.
+#[tauri::command]
+pub fn latency_samples(session: State<'_, AgentSession>) -> Vec<serde_json::Value> {
+    session.latency.lock().unwrap().clone()
+}
+
 /// Start a fresh conversation on demand (Phase 11.2 "new conversation", from
 /// either face). Tells the resident to drop its memory, clears the shared UI
 /// transcript, and resets the idle clock so both windows show an empty session.
@@ -743,6 +777,18 @@ mod tests {
         assert!(!idle_exceeded(Some(Duration::from_secs(9 * 60)), 10));
         assert!(idle_exceeded(Some(Duration::from_secs(10 * 60)), 10));
         assert!(idle_exceeded(Some(Duration::from_secs(11 * 60)), 10));
+    }
+
+    #[test]
+    fn push_capped_keeps_the_newest_window() {
+        let mut buf = Vec::new();
+        for i in 0..(MAX_LATENCY + 5) {
+            push_capped(&mut buf, serde_json::json!({ "total": i }), MAX_LATENCY);
+        }
+        assert_eq!(buf.len(), MAX_LATENCY);
+        // Oldest five dropped; the buffer keeps the newest window.
+        assert_eq!(buf[0]["total"].as_u64(), Some(5));
+        assert_eq!(buf[MAX_LATENCY - 1]["total"].as_u64(), Some(MAX_LATENCY as u64 + 4));
     }
 
     #[test]

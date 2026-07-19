@@ -4,6 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { hasOpenAiKey, runAgent, setOpenAiKey, transcribe } from "../lib/stt.ts";
 import { type Approval, cancelAgent, newConversation, openApp, usePendingApproval } from "../lib/session.ts";
 import { DEFAULT_SETTINGS, type JuneSettings, loadSettings, voiceAllowed, voiceNeedsOpenAiKey } from "../lib/settings.ts";
+import { recordLatency, TurnTimer } from "../lib/latency.ts";
 import { SentenceBuffer, SpeechQueue } from "../lib/tts.ts";
 import { startBargeMonitor, startCapture, type CaptureError, type CaptureHandle } from "../lib/voice-capture.ts";
 import { startWakeListener } from "../lib/wake.ts";
@@ -54,6 +55,10 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
   const streamTextRef = useRef("");
   const replyRef = useRef("");
   const spokeRef = useRef(false);
+  // Latency instrumentation (Phase 11.5): one timer per turn, marked across the
+  // pipeline (capture-end -> transcript -> first token -> first audio). Held from
+  // beginTranscribe through accept into the speech queue; dropped on cancel/barge.
+  const timerRef = useRef<TurnTimer | null>(null);
 
   // The user's chosen voice stack (§4). Loaded once; a load failure (e.g. no
   // backend in tests) leaves the defaults, so the pipeline still works.
@@ -102,9 +107,11 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
     capture.current = null;
     if (!handle) return;
     const tid = ++transcribeRef.current;
+    const timer = new TurnTimer();
     setPhase({ s: "transcribing" });
     try {
       const { audio, mime } = await handle.stop();
+      timer.captureEnded();
       if (transcribeRef.current !== tid) return; // cancelled while stopping
       if (audio.length === 0) {
         setPhase({ s: "error", message: "I didn't catch any audio. Try again." });
@@ -126,6 +133,8 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
         setPhase({ s: "error", message: "I didn't hear a command. Try again." });
         return;
       }
+      timer.gotTranscript();
+      timerRef.current = timer;
       setPhase({ s: "review", transcript: text });
     } catch (e) {
       if (transcribeRef.current !== tid) return;
@@ -177,6 +186,10 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
     streamTextRef.current = "";
     replyRef.current = "";
     spokeRef.current = false;
+    // Latency (Phase 11.5): the brain clock starts now (Send), so the review
+    // pause is excluded; first audio closes the turn's voice-to-voice path.
+    const timer = timerRef.current;
+    timer?.sent();
     // The turn is over only when BOTH the agent has resolved and the speech
     // queue has drained - either can finish first. A drain alone means speech
     // merely caught up with the token stream (e.g. during a slow tool call).
@@ -187,12 +200,17 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
       },
       settingsRef.current.tts.voice,
       settingsRef.current.tts.model,
+      () => {
+        const sample = timer?.firstAudio();
+        if (sample) void recordLatency(sample).catch(() => {});
+      },
     );
     queueRef.current = queue;
     setPhase({ s: "thinking" });
     try {
       const reply = await runAgent(transcript, turn);
       if (turnRef.current !== turn) return; // barged in while generating
+      timer?.firstToken(); // no-op if a text delta already marked it (no-delta brains)
       replyRef.current = reply;
       agentDone = true;
       const tail = splitterRef.current.flush();
@@ -223,6 +241,7 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
       if (e.payload.turn !== turnRef.current) return; // stale (barged-in) turn
       const queue = queueRef.current;
       if (!queue) return;
+      timerRef.current?.firstToken(); // earliest token wins; later deltas are no-ops
       streamTextRef.current += e.payload.delta;
       for (const sentence of splitterRef.current.push(e.payload.delta)) {
         queue.enqueue(sentence);
@@ -329,6 +348,7 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
     capture.current = null;
     queueRef.current?.stop();
     queueRef.current = null;
+    timerRef.current = null; // abandon this turn's latency sample
     turnRef.current += 1;
     transcribeRef.current += 1; // drop any in-flight transcription result
     decide("deny"); // cancelling also rejects any approval left pending

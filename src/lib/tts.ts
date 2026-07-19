@@ -67,17 +67,22 @@ export class SpeechQueue {
   #pending: Promise<Uint8Array>[] = [];
   #playing = false;
   #stopped = false;
+  #spoke = false;
   #audio: HTMLAudioElement | null = null;
   readonly #onIdle: () => void;
+  readonly #onFirstAudio: () => void;
   readonly #voice?: string;
   readonly #model?: string;
 
   /** @param onIdle fired whenever the queue drains. The queue can drain
    *  mid-turn (speech outpacing the token stream), so the caller decides
    *  whether a drain means the turn is over - see VoicePanel.accept.
-   *  @param voice/model the user's TTS choice (§4); passed to each synthesis. */
-  constructor(onIdle: () => void = () => {}, voice?: string, model?: string) {
+   *  @param voice/model the user's TTS choice (§4); passed to each synthesis.
+   *  @param onFirstAudio fired once, when the first sentence begins playing -
+   *  the voice-to-voice latency mark (Phase 11.5). */
+  constructor(onIdle: () => void = () => {}, voice?: string, model?: string, onFirstAudio: () => void = () => {}) {
     this.#onIdle = onIdle;
+    this.#onFirstAudio = onFirstAudio;
     this.#voice = voice;
     this.#model = model;
   }
@@ -121,6 +126,10 @@ export class SpeechQueue {
   }
 
   #play(bytes: Uint8Array): Promise<void> {
+    if (!this.#spoke) {
+      this.#spoke = true;
+      this.#onFirstAudio();
+    }
     return new Promise((resolve) => {
       const url = URL.createObjectURL(new Blob([bytes], { type: "audio/mpeg" }));
       const el = new Audio(url);

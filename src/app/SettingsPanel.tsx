@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 
 import { bridgeHealth, type BridgeHealth, type ProbeResult, testBrain } from "../lib/diagnostics.ts";
+import { type LatencySample, latencySamples, percentile } from "../lib/latency.ts";
 import { PRIVACY_MODES, type PrivacyMode } from "../lib/privacy.ts";
 import {
   keyedProviders,
@@ -608,6 +609,7 @@ function CapabilitiesSection({ settings, update }: { settings: JuneSettings; upd
 
 function DiagnosticsSection() {
   const [health, setHealth] = useState<BridgeHealth | null>(null);
+  const [latency, setLatency] = useState<LatencySample[]>([]);
   const [busy, setBusy] = useState(false);
 
   const refresh = async () => {
@@ -619,6 +621,11 @@ function DiagnosticsSection() {
     } finally {
       setBusy(false);
     }
+    // Latency is best-effort and independent of the bridge probe: no backend
+    // (plain browser / tests) just leaves the readout empty.
+    await latencySamples()
+      .then(setLatency)
+      .catch(() => {});
   };
 
   useEffect(() => {
@@ -640,7 +647,38 @@ function DiagnosticsSection() {
           {busy ? "Checking…" : "Recheck"}
         </button>
       </div>
+      <LatencyReadout samples={latency} />
       <p className="settings-hint">Per-stage latency is shown by each Test button above.</p>
     </section>
+  );
+}
+
+// Voice-to-voice latency (PLAN.md Phase 11.5): P50/P95 of the recent voice turns,
+// with a per-stage P50 breakdown (speech-to-text, brain, text-to-speech). Target
+// line: 800ms median once the local voice stack (Phase 12) lands.
+function LatencyReadout({ samples }: { samples: LatencySample[] }) {
+  if (samples.length === 0) {
+    return <p className="settings-hint">Voice latency: no turns recorded yet - speak a command to see P50/P95.</p>;
+  }
+  const totals = samples.map((s) => s.total);
+  const p50 = percentile(totals, 50);
+  const p95 = percentile(totals, 95);
+  const stage = (pick: (s: LatencySample) => number) => percentile(samples.map(pick), 50);
+  return (
+    <div className="diag-latency">
+      <div className="diag-row">
+        <span className="stage-label">Voice-to-voice</span>
+        <span className={`test-result ${p50 <= 800 ? "ok" : "bad"}`}>
+          P50 {p50} ms · P95 {p95} ms
+        </span>
+        <span className="settings-hint">
+          {samples.length} turn{samples.length === 1 ? "" : "s"} · target 800 ms
+        </span>
+      </div>
+      <p className="settings-hint">
+        Median stages: speech-to-text {stage((s) => s.stt)} ms · brain {stage((s) => s.brain)} ms · text-to-speech{" "}
+        {stage((s) => s.tts)} ms
+      </p>
+    </div>
   );
 }

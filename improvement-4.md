@@ -69,7 +69,7 @@ Goal: June stops being per-utterance amnesiac and per-turn slow.
 
 **Exit:** "open two claude agents" then "now two codex ones as well" works; second-turn overhead < 300ms before first token; barge-in provably stops token spend; June recalls a preference stated yesterday.
 
-**Status (2026-07-19): 11.1 + 11.2 + 11.3 + 11.4 implemented.** 11.5 pending.
+**Status (2026-07-19): 11.1 + 11.2 + 11.3 + 11.4 + 11.5 implemented.** Phase 11 complete.
 
 - **11.1** landed prior (commit `944ba70`): `agent/serve.ts` resident process, both brains long-lived (Claude holds one `query()` in streaming-input mode; OpenAI-compat keeps its `messages` array warm), `agent_runner.rs` respawn-on-crash + per-turn watchdog. `cancel()`/`reset()`/`dispose()` on both brains; `persistSession: false` under `strict-offline`. This already covered the streaming-session and `persistSession` parts of 11.2.
 - **11.2** completed here - the two remaining pieces (idle auto-reset + explicit "new conversation" in both faces):
@@ -94,6 +94,16 @@ Goal: June stops being per-utterance amnesiac and per-turn slow.
   - **No new dependency** - reuses the MCP SDK, the existing prompt/core/serve seam, the policy gate, and the settings/shutdown plumbing.
   - Test: `mcp/memory/store.test.ts` pins the append-and-cap logic; `policy.test.ts` pins that `remember` is ungated and its summary. A headless E2E spawned the real `mcp/memory` server over stdio, called `remember` twice, and confirmed the file is written normalized and `withMemory` injects it into the system prompt (and leaves the prompt unchanged when memory is empty).
   - Verified: 66 TS tests + 9 Rust tests, typecheck, eslint, clippy all green, plus the headless memory E2E above. The full GUI round-trip (a real brain deciding to call `remember` mid-conversation, then a fresh session recalling the fact spoken "yesterday") needs a real brain and mic, so it stays a manual pass.
+- **11.5** completed here - per-turn voice latency instrumentation, surfaced as P50/P95 in Diagnostics.
+  - **The four milestones** are marked in the widget's pipeline (`VoicePanel`), the one place that owns the whole voice turn: capture-end (after `handle.stop()` resolves), transcript-ready (after `transcribe()` returns), first token (the earliest `agent://text` delta, or the reply resolving for a no-delta brain), and first audio (the first sentence beginning to play). The pure `TurnTimer` (`lib/latency.ts`) accumulates the marks and, at first audio, emits the `{stt, brain, tts, total}` breakdown in milliseconds.
+  - **The review pause is excluded on purpose.** The brain clock starts at **Send** (`accept`), not at transcript-ready, so the human time spent reading the review card never inflates the number. `total` is the sum of the three machine stages - the honest voice-to-voice figure against the 800ms target, not wall-clock from mouth-stop to speaker-start. (Phase 14's auto-accept removes the pause entirely; the instrumentation is already correct for both.)
+  - **First-audio mark**: `SpeechQueue` gained a one-shot `onFirstAudio` callback (fired the first time `#play` runs), so the mark is the moment June actually starts speaking, not merely when synthesis was requested. A silent reply (no audio) records no sample - a turn with no voice output has no voice-to-voice latency.
+  - **Cross-window store**: the pipeline runs in the widget webview but Diagnostics lives in the full-app webview - separate windows with no shared JS - so each finished sample is written to the Rust session (`record_latency`) and the panel reads it back (`latency_samples`). A capped (100) in-memory ring buffer, the same shape as the session-event log; not persisted and not audited (it is a diagnostic, not an action). Percentiles are computed in the webview (`percentile`, nearest-rank, unit-tested) so the Rust side stays a dumb store.
+  - **Diagnostics surface**: a new latency readout under the existing Diagnostics section shows P50/P95 voice-to-voice (green at/under the 800ms target line, else red), the sample count, and a median per-stage breakdown (STT / brain / TTS). Empty until the first spoken turn; refreshed on the existing Recheck button (no live push - a diagnostic pane doesn't need one).
+  - **Stale-turn safety**: the timer is per-turn and dropped on Cancel/barge-in; a barged-in turn's speech queue is stopped before it can play, so `onFirstAudio` never fires for it and no misleading sample is recorded.
+  - **No new dependency** - `performance.now()`, one pure module, two thin Tauri commands mirroring the audit/session-log plumbing already in `agent_runner.rs`.
+  - Test: `lib/latency.test.ts` pins the stage maths (review pause excluded, earliest-token wins, no-delta fallback, once-only sample, abandoned-turn null) and the nearest-rank `percentile`; a Rust `push_capped` test pins the ring-buffer cap.
+  - Verified: 74 TS tests + 10 Rust tests, typecheck, eslint, clippy all green. The live P50/P95 readout populating from real spoken turns (and the second-turn <300ms-to-first-token exit check) needs a real brain and mic, so it stays a manual pass.
 
 ### Phase 12 - Local voice stack (~1-2 weeks)
 
