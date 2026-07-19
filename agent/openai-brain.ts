@@ -16,6 +16,11 @@
 // ponytail: non-streaming completions - onText fires once per assistant message.
 // The sentence buffer downstream still splits it for speech, and Claude covers
 // the streaming path. SSE streaming for non-Claude brains is a later refinement.
+//
+// Phase 11.1/11.2: long-lived like ClaudeBrain. MCP servers are connected once
+// and kept warm across turns; the `messages` array persists so the conversation
+// carries over. `cancel()` aborts the in-flight completion; `reset()` clears the
+// history back to the system prompt; `dispose()` closes the warm connections.
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
@@ -70,6 +75,12 @@ export class OpenAiCompatBrain implements Brain {
   #systemPrompt: string;
   #mcpServers: Record<string, McpServerConfig>;
 
+  // Warm state, held across turns (Phase 11.1). `#servers` are connected once;
+  // `#messages` accumulates the conversation so successive turns share context.
+  #servers: Connected[] | null = null;
+  #messages: OpenAiMessage[] = [{ role: "system", content: "" }];
+  #abort: AbortController | null = null;
+
   constructor(cfg: OpenAiCompatBrainConfig) {
     this.id = cfg.id;
     this.model = cfg.model;
@@ -77,30 +88,34 @@ export class OpenAiCompatBrain implements Brain {
     this.#apiKey = cfg.apiKey;
     this.#systemPrompt = cfg.systemPrompt;
     this.#mcpServers = cfg.mcpServers;
+    this.#messages = [{ role: "system", content: this.#systemPrompt }];
   }
 
   async run(prompt: string, hooks: TurnHooks): Promise<TurnResult> {
     let servers: Connected[];
     try {
-      servers = await this.#connect();
+      servers = await this.#ensureConnected();
     } catch (e) {
       return { text: `June could not start its tools: ${errMsg(e)}`, isError: true };
     }
+
+    const abort = new AbortController();
+    this.#abort = abort;
+    // Snapshot the history so a mid-turn failure (or barge-in) can roll back to a
+    // consistent state - the chat API rejects an assistant tool_call with no
+    // matching tool result, so a half-finished turn must never persist.
+    const mark = this.#messages.length;
+    this.#messages.push({ role: "user", content: prompt });
 
     try {
       const tools = servers.flatMap((s) => s.tools);
       const routeOf = (name: string): Client | undefined =>
         servers.find((s) => s.toolNames.has(name))?.client;
 
-      const messages: OpenAiMessage[] = [
-        { role: "system", content: this.#systemPrompt },
-        { role: "user", content: prompt },
-      ];
       let finalText = "";
-
       for (let step = 0; step < MAX_STEPS; step++) {
-        const reply = await this.#complete(messages, tools);
-        messages.push(reply);
+        const reply = await this.#complete(this.#messages, tools, abort.signal);
+        this.#messages.push(reply);
         if (reply.content) {
           finalText = reply.content;
           hooks.onText?.(reply.content);
@@ -110,16 +125,36 @@ export class OpenAiCompatBrain implements Brain {
 
         for (const call of calls) {
           const result = await this.#runToolCall(call, routeOf, hooks);
-          messages.push({ role: "tool", tool_call_id: call.id, content: result });
+          this.#messages.push({ role: "tool", tool_call_id: call.id, content: result });
         }
       }
 
       return { text: finalText || "I didn't produce a reply.", isError: !finalText };
     } catch (e) {
-      return { text: `June hit an error: ${errMsg(e)}`, isError: true };
+      // Drop the failed/aborted turn so the retained history stays valid.
+      this.#messages.length = mark;
+      const aborted = abort.signal.aborted;
+      return {
+        text: aborted ? "" : `June hit an error: ${errMsg(e)}`,
+        isError: !aborted,
+      };
     } finally {
-      await Promise.all(servers.map((s) => s.close().catch(() => {})));
+      if (this.#abort === abort) this.#abort = null;
     }
+  }
+
+  cancel(): void {
+    this.#abort?.abort();
+  }
+
+  reset(): void {
+    this.#messages = [{ role: "system", content: this.#systemPrompt }];
+  }
+
+  async dispose(): Promise<void> {
+    const servers = this.#servers;
+    this.#servers = null;
+    if (servers) await Promise.all(servers.map((s) => s.close().catch(() => {})));
   }
 
   /** Execute one proposed tool call: classify it, run it past the gate, and only
@@ -164,14 +199,16 @@ export class OpenAiCompatBrain implements Brain {
     }
   }
 
-  /** One chat-completions round-trip. Returns the assistant message. */
-  async #complete(messages: OpenAiMessage[], tools: OpenAiTool[]): Promise<OpenAiMessage> {
+  /** One chat-completions round-trip. Returns the assistant message. The abort
+   *  signal lets a barge-in/cancel stop token spend mid-flight. */
+  async #complete(messages: OpenAiMessage[], tools: OpenAiTool[], signal?: AbortSignal): Promise<OpenAiMessage> {
     const headers: Record<string, string> = { "content-type": "application/json" };
     if (this.#apiKey) headers.authorization = `Bearer ${this.#apiKey}`;
 
     const resp = await fetch(`${this.#baseUrl}/chat/completions`, {
       method: "POST",
       headers,
+      signal,
       body: JSON.stringify({
         model: this.model,
         messages,
@@ -188,8 +225,10 @@ export class OpenAiCompatBrain implements Brain {
     return { role: "assistant", content: message.content ?? null, tool_calls: message.tool_calls };
   }
 
-  /** Connect to every configured MCP capability server as a client. */
-  async #connect(): Promise<Connected[]> {
+  /** Connect to every configured MCP capability server as a client, once, and
+   *  keep the connections warm for the life of the brain (Phase 11.1). */
+  async #ensureConnected(): Promise<Connected[]> {
+    if (this.#servers) return this.#servers;
     const out: Connected[] = [];
     for (const cfg of Object.values(this.#mcpServers)) {
       if (!isStdio(cfg)) continue; // June only ships stdio MCP servers today
@@ -206,6 +245,7 @@ export class OpenAiCompatBrain implements Brain {
         tools: tools.map(toOpenAiTool),
       });
     }
+    this.#servers = out;
     return out;
   }
 }

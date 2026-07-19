@@ -8,8 +8,22 @@
 //     gate through, so the brain physically cannot run a gated tool without a
 //     human yes (Phase 3 exit criterion). The gate is supplied per-turn by the
 //     orchestrator, not baked in here - that is what makes it provider-neutral.
+//
+// Phase 11.1/11.2: the brain is now LONG-LIVED. Instead of a fresh query() per
+// turn (which re-spawns the SDK CLI and re-connects every MCP server each time),
+// it holds ONE query() open in streaming-input mode. User turns are pushed into
+// the query's async-iterable prompt; MCP connections and conversation history
+// stay warm across turns, and canUseTool stays in-loop for spoken approvals
+// (Phase 14). `cancel()` interrupts the in-flight turn; `reset()` ends the held
+// session so the next turn starts a fresh conversation.
 
-import { query, type McpServerConfig, type PermissionResult } from "@anthropic-ai/claude-agent-sdk";
+import {
+  query,
+  type McpServerConfig,
+  type PermissionResult,
+  type Query,
+  type SDKUserMessage,
+} from "@anthropic-ai/claude-agent-sdk";
 
 import { type Brain, type TurnHooks, type TurnResult } from "./brain.ts";
 import { actionOf, classify, serverOf, summarize } from "./policy.ts";
@@ -18,6 +32,9 @@ export interface ClaudeBrainConfig {
   model?: string;
   systemPrompt: string;
   mcpServers: Record<string, McpServerConfig>;
+  /** When false, the SDK does not write session history to disk (Phase 11.2:
+   *  strict privacy modes keep nothing on disk). Defaults to true. */
+  persistSession?: boolean;
 }
 
 interface ContentBlock {
@@ -31,51 +48,121 @@ interface ContentBlock {
   is_error?: boolean;
 }
 
+/** A push/pull async queue of user messages feeding the held query's streaming
+ *  prompt. `push` delivers a turn to a waiting `next()` (or buffers it); `end`
+ *  closes the stream so the SDK query finishes. Exported for unit testing the
+ *  buffer/wait ordering, which the streaming-input session relies on. */
+export class MessageQueue implements AsyncIterable<SDKUserMessage> {
+  #buf: SDKUserMessage[] = [];
+  #waiting: ((r: IteratorResult<SDKUserMessage>) => void) | null = null;
+  #ended = false;
+
+  push(msg: SDKUserMessage): void {
+    if (this.#ended) return;
+    const w = this.#waiting;
+    if (w) {
+      this.#waiting = null;
+      w({ value: msg, done: false });
+    } else {
+      this.#buf.push(msg);
+    }
+  }
+
+  end(): void {
+    this.#ended = true;
+    const w = this.#waiting;
+    if (w) {
+      this.#waiting = null;
+      w({ value: undefined as never, done: true });
+    }
+  }
+
+  [Symbol.asyncIterator](): AsyncIterator<SDKUserMessage> {
+    return {
+      next: (): Promise<IteratorResult<SDKUserMessage>> => {
+        const buffered = this.#buf.shift();
+        if (buffered) return Promise.resolve({ value: buffered, done: false });
+        if (this.#ended) return Promise.resolve({ value: undefined as never, done: true });
+        return new Promise((resolve) => {
+          this.#waiting = resolve;
+        });
+      },
+    };
+  }
+}
+
 export class ClaudeBrain implements Brain {
   readonly id = "claude";
   readonly model: string;
   #systemPrompt: string;
   #mcpServers: Record<string, McpServerConfig>;
+  #persistSession: boolean;
+
+  // The held session: lazily created on the first run and kept open across
+  // turns. `#hooks` points at the CURRENT turn's gate/stream so the single
+  // canUseTool closure always routes to the live turn.
+  #query: Query | null = null;
+  #input: MessageQueue | null = null;
+  #hooks: TurnHooks | null = null;
 
   constructor(cfg: ClaudeBrainConfig) {
     this.model = cfg.model ?? "claude-opus-4-8";
     this.#systemPrompt = cfg.systemPrompt;
     this.#mcpServers = cfg.mcpServers;
+    this.#persistSession = cfg.persistSession ?? true;
   }
 
-  async run(prompt: string, hooks: TurnHooks): Promise<TurnResult> {
-    const canUseTool = async (
-      toolName: string,
-      input: Record<string, unknown>,
-    ): Promise<PermissionResult> => {
-      const action = actionOf(toolName);
-      const cls = classify(action, serverOf(toolName));
-      const decision = await hooks.gate({
-        tool: toolName,
-        action,
-        cls,
-        input,
-        summary: summarize(action, input),
-      });
-      return decision.allow
-        ? { behavior: "allow", updatedInput: decision.input ?? input }
-        : { behavior: "deny", message: decision.reason };
-    };
+  /** The permission hook, routed to the current turn's gate. One closure serves
+   *  every turn because it reads `#hooks`, which `run` swaps per turn. */
+  #canUseTool = async (
+    toolName: string,
+    input: Record<string, unknown>,
+  ): Promise<PermissionResult> => {
+    const hooks = this.#hooks;
+    if (!hooks) return { behavior: "deny", message: "No active turn." };
+    const action = actionOf(toolName);
+    const cls = classify(action, serverOf(toolName));
+    const decision = await hooks.gate({
+      tool: toolName,
+      action,
+      cls,
+      input,
+      summary: summarize(action, input),
+    });
+    return decision.allow
+      ? { behavior: "allow", updatedInput: decision.input ?? input }
+      : { behavior: "deny", message: decision.reason };
+  };
 
-    const response = query({
-      prompt,
+  #ensureQuery(): void {
+    if (this.#query) return;
+    const input = new MessageQueue();
+    this.#input = input;
+    this.#query = query({
+      prompt: input,
       options: {
         model: this.model,
         systemPrompt: this.#systemPrompt,
         mcpServers: this.#mcpServers,
-        canUseTool,
+        canUseTool: this.#canUseTool,
         // June's agent has NO built-in tools (no Bash/Read/Edit) and ignores the
         // developer's own Claude Code settings - it may only touch the workspace
         // through the attached MCP servers.
         tools: [],
         settingSources: [],
         permissionMode: "default",
+        persistSession: this.#persistSession,
       },
+    });
+  }
+
+  async run(prompt: string, hooks: TurnHooks): Promise<TurnResult> {
+    this.#ensureQuery();
+    this.#hooks = hooks;
+    this.#input!.push({
+      type: "user",
+      message: { role: "user", content: prompt },
+      parent_tool_use_id: null,
     });
 
     let finalText = "";
@@ -86,33 +173,70 @@ export class ClaudeBrain implements Brain {
     // never rendered on the default brain (10.4).
     const actionById = new Map<string, string>();
 
-    for await (const msg of response) {
-      if (msg.type === "assistant") {
-        for (const block of msg.message.content as ContentBlock[]) {
-          if (block.type === "text" && block.text) hooks.onText?.(block.text);
-          else if (block.type === "tool_use") {
-            const action = actionOf(block.name ?? "");
-            if (block.id) actionById.set(block.id, action);
-            hooks.onToolUse?.({ tool: block.name ?? "", action, input: block.input ?? {} });
-          }
+    try {
+      // Pull the shared query one turn's worth: read until this turn's `result`.
+      // Only one turn runs at a time (the orchestrator serializes), so a single
+      // consumer of the generator is safe.
+      for (;;) {
+        const next = await this.#query!.next();
+        if (next.done) {
+          // The session ended out from under us (crash/reset mid-turn).
+          isError = true;
+          finalText = finalText || "The agent session ended before replying.";
+          break;
         }
-      } else if (msg.type === "user" && hooks.onToolResult) {
-        // Tool results ride back on a synthetic user turn.
-        const content = msg.message.content;
-        if (Array.isArray(content))
-          for (const block of content as ContentBlock[])
-            if (block.type === "tool_result")
-              hooks.onToolResult(
-                (block.tool_use_id && actionById.get(block.tool_use_id)) || "",
-                block.content,
-                block.is_error === true,
-              );
-      } else if (msg.type === "result") {
-        isError = msg.subtype !== "success";
-        finalText = msg.subtype === "success" ? msg.result : `June hit an error: ${msg.subtype}`;
+        const msg = next.value;
+        if (msg.type === "assistant") {
+          for (const block of msg.message.content as ContentBlock[]) {
+            if (block.type === "text" && block.text) hooks.onText?.(block.text);
+            else if (block.type === "tool_use") {
+              const action = actionOf(block.name ?? "");
+              if (block.id) actionById.set(block.id, action);
+              hooks.onToolUse?.({ tool: block.name ?? "", action, input: block.input ?? {} });
+            }
+          }
+        } else if (msg.type === "user" && hooks.onToolResult) {
+          // Tool results ride back on a synthetic user turn.
+          const content = msg.message.content;
+          if (Array.isArray(content))
+            for (const block of content as ContentBlock[])
+              if (block.type === "tool_result")
+                hooks.onToolResult(
+                  (block.tool_use_id && actionById.get(block.tool_use_id)) || "",
+                  block.content,
+                  block.is_error === true,
+                );
+        } else if (msg.type === "result") {
+          isError = msg.subtype !== "success";
+          finalText = msg.subtype === "success" ? msg.result : `June hit an error: ${msg.subtype}`;
+          break;
+        }
       }
+    } finally {
+      this.#hooks = null;
     }
 
     return { text: finalText, isError };
+  }
+
+  cancel(): void {
+    // Interrupt the in-flight turn but keep the session so the conversation
+    // survives (barge-in should not wipe memory). The pending run() loop sees a
+    // `result` with subtype 'interrupt' and returns.
+    this.#query?.interrupt().catch(() => {});
+  }
+
+  reset(): void {
+    // End the held session; the next run lazily opens a fresh one, dropping all
+    // prior conversation.
+    this.#input?.end();
+    void this.#query?.return?.(undefined).catch(() => {});
+    this.#query = null;
+    this.#input = null;
+    this.#hooks = null;
+  }
+
+  async dispose(): Promise<void> {
+    this.reset();
   }
 }

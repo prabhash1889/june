@@ -68,11 +68,20 @@ export interface JuneAgentOptions {
   filesRoot?: string;
   /** Extra MCP capabilities merged over the default (e.g. saple-memory). */
   extraMcpServers?: Record<string, McpServerConfig>;
+  /** When false, the Claude brain keeps no session history on disk (Phase 11.2:
+   *  strict privacy modes). Defaults to true. */
+  persistSession?: boolean;
 }
 
 export interface JuneAgent {
   brain: Brain;
   run(prompt: string, hooks: TurnHooks): Promise<TurnResult>;
+  /** Abort the in-flight turn (barge-in / preemption). */
+  cancel(): void;
+  /** Start a fresh conversation, dropping accumulated history (Phase 11.2). */
+  reset(): void;
+  /** Release warm resources on shutdown. */
+  dispose(): Promise<void>;
 }
 
 export function createJuneAgent(opts: JuneAgentOptions = {}): JuneAgent {
@@ -84,7 +93,12 @@ export function createJuneAgent(opts: JuneAgentOptions = {}): JuneAgent {
   const provider = opts.provider ?? "claude";
   const brain: Brain =
     provider === "claude"
-      ? new ClaudeBrain({ model: opts.model, systemPrompt: SYSTEM_PROMPT, mcpServers })
+      ? new ClaudeBrain({
+          model: opts.model,
+          systemPrompt: SYSTEM_PROMPT,
+          mcpServers,
+          persistSession: opts.persistSession,
+        })
       : new OpenAiCompatBrain({
           id: provider,
           model: opts.model ?? "",
@@ -93,5 +107,11 @@ export function createJuneAgent(opts: JuneAgentOptions = {}): JuneAgent {
           systemPrompt: SYSTEM_PROMPT,
           mcpServers,
         });
-  return { brain, run: (prompt, hooks) => brain.run(prompt, hooks) };
+  return {
+    brain,
+    run: (prompt, hooks) => brain.run(prompt, hooks),
+    cancel: () => brain.cancel(),
+    reset: () => brain.reset(),
+    dispose: () => brain.dispose(),
+  };
 }

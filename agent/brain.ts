@@ -41,6 +41,17 @@ export interface TurnResult {
 export interface Brain {
   readonly id: string; // "claude"
   readonly model: string; // "claude-opus-4-8"
-  /** Run one user turn to completion, streaming through `hooks`. */
+  /** Run one user turn to completion, streaming through `hooks`. A brain is
+   *  now long-lived (Phase 11.1): it keeps its MCP connections warm and its
+   *  conversation history between calls, so successive turns share context. */
   run(prompt: string, hooks: TurnHooks): Promise<TurnResult>;
+  /** Abort the in-flight turn, if any (barge-in / preemption). Idle -> no-op.
+   *  The held session survives so the next turn keeps the conversation. */
+  cancel(): void;
+  /** Drop the accumulated conversation - the next `run` starts a fresh session
+   *  (Phase 11.2 "new conversation"). Keeps warm resources where cheap. */
+  reset(): void;
+  /** Release warm resources (MCP connections, the held query). Called when the
+   *  resident process shuts down. */
+  dispose(): Promise<void>;
 }

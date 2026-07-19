@@ -1,42 +1,43 @@
-// Feeds an accepted transcript to the agent core (PLAN.md Phase 4 exit:
-// "transcription feed the agent"). Rather than re-implement the Node agent loop
-// in Rust, this spawns the existing core through agent/run-once.ts and returns
-// June's final reply - the core is reused verbatim, only the surface differs.
+// Drives the agent core (PLAN.md Phase 4 exit: "transcription feed the agent").
 //
-// Phase 5 adds streaming: run-once.ts emits per-token `{"t":"text"}` lines, so
-// we read stdout line by line and re-emit each delta as an `agent://text` Tauri
-// event, letting the webview speak sentence-by-sentence before the whole answer
-// is generated.
+// Phase 11.1 replaces the per-turn spawn with a RESIDENT process. Phases 4-10
+// spawned a fresh `agent/run-once.ts` for every utterance - `cmd -> npx -> tsx ->
+// connect every MCP server`, each turn - which cost ~seconds of first-token
+// latency and made June amnesiac between turns. Now a single `agent/serve.ts`
+// stays up for the whole app session: this module spawns it once, a background
+// reader thread streams its `{"t":...}` events to the windows, and each
+// `run_agent` writes a `{"type":"run",...}` request and awaits that turn's
+// `final`. MCP connections and conversation history stay warm; second-turn
+// latency drops to the model's own first-token time.
 //
-// Phase 6 adds two things:
-//   1. An interactive approval round-trip. run-once emits `{"t":"approval",...}`
-//      when a gated (expensive/destructive) tool is proposed and blocks on its
-//      stdin for a decision. We hold that stdin here so `resolve_approval` can
-//      write the user's answer back - the gate still lives in June's execution
-//      layer (PLAN.md §5), the brain can't bypass it, and Phases 4/5's
-//      fail-closed stub is now a real approve/reject.
-//   2. Full session broadcast. Every step (user message, tool use/result,
-//      approval, final reply) is emitted as an `agent://*` event to ALL windows,
-//      so the always-on widget and the on-demand full app render the same
-//      session - a command started in one is inspectable/approvable in the other
-//      (PLAN.md Phase 6 exit).
+// The resident is respawned (with backoff) if it crashes, and each turn has a
+// watchdog so a wedged process can't hang the UI forever. Settings changes
+// shut it down so the next run respawns with fresh env (the config is read once
+// at spawn, unlike run-once which re-read it every turn).
 //
-// ponytail: dev-time invocation via `npx tsx`, matching the Phase 1-5 harnesses;
-// a bundled sidecar binary is Phase 9 hardening. Only one turn runs at a time
-// (the widget owns the mic), so a single shared approval channel is enough.
+// The approval round-trip and cross-window broadcast are unchanged from Phase 6:
+// every step is an `agent://*` event tagged with `turn`, and a gated tool call
+// blocks in serve.ts until `resolve_approval` writes a decision back.
 
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
-use std::process::{ChildStdin, Command, Stdio};
+use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use tauri::{AppHandle, Emitter, Manager, State};
 
-/// Append one already-redacted audit record (a `{"t":"audit",...}` line from
-/// run-once, with the turn stamped) to `<app_data_dir>/audit.jsonl` (10.7).
-/// Best-effort: a failed audit write must never break the turn, but it is the
-/// record phases 17-19 rely on, so failures are logged to stderr.
+/// A turn that produces no `final` within this window is abandoned as wedged.
+/// Must exceed the 120s approval timeout so a slow-to-approve turn isn't killed.
+const WATCHDOG: Duration = Duration::from_secs(180);
+
+/// Append one already-redacted, turn-stamped audit record (a `{"t":"audit",...}`
+/// line from serve.ts) to `<app_data_dir>/audit.jsonl` (10.7). Best-effort: a
+/// failed audit write must never break a turn, but it is the record phases 17-19
+/// rely on, so failures are logged to stderr.
 fn append_audit(app: &AppHandle, entry: &serde_json::Value) {
     let dir = match app.path().app_data_dir() {
         Ok(dir) => dir,
@@ -70,24 +71,57 @@ pub struct PendingApproval {
     cls: String,
 }
 
-/// The live agent turn's control channel. `stdin` is the running run-once
-/// process's stdin (how a decision reaches the blocked gate), tagged with its
-/// turn so a barged-in-on turn that finishes late can't clobber the channel of
-/// the newer turn that replaced it; `pending` is the approval currently awaiting
-/// an answer (or `None`). Shared `Arc`s so the blocking read loop and the
-/// `resolve_approval` command touch the same state.
+/// The live resident serve.ts process. `stdin` is how requests reach it;
+/// `child` is kept so a settings change / shutdown can kill it. `gen` tags this
+/// incarnation so a crashed reader thread only clears the resident if it is
+/// still the current one (a respawn may already have replaced it).
+struct Resident {
+    stdin: ChildStdin,
+    child: Child,
+    gen: u64,
+}
+
+/// Respawn backoff after a crash: capped exponential, so a serve.ts that keeps
+/// dying (bad config, missing tsx) doesn't spin. Reset when a fresh process
+/// reports `ready`.
+#[derive(Default)]
+struct Backoff {
+    fails: u32,
+    last_exit: Option<Instant>,
+}
+
+fn backoff_delay(fails: u32) -> Duration {
+    let ms = 250u64.saturating_mul(1u64 << fails.min(5));
+    Duration::from_millis(ms.min(8_000))
+}
+
+/// One turn's reply (or a crash/watchdog error), delivered from the reader
+/// thread back to the awaiting `run_agent`.
+type TurnResult = Result<String, String>;
+
+/// The resident agent session. All state is shared `Arc`s so the async
+/// commands, the blocking spawn/write path, and the stdout reader thread touch
+/// the same process, approval, and event log.
 #[derive(Default, Clone)]
 pub struct AgentSession {
-    stdin: Arc<Mutex<Option<(u64, ChildStdin)>>>,
+    /// The live serve.ts, or `None` before first run / after a crash.
+    resident: Arc<Mutex<Option<Resident>>>,
+    /// The approval currently awaiting a decision (seeds a late-opened window).
     pending: Arc<Mutex<Option<PendingApproval>>>,
-    /// Recorded session events (`{name, payload}`), the source of truth a
-    /// window opened mid-session replays via `session_events`. Text deltas are
-    /// not recorded - the turn's `final` supersedes them and they would
-    /// dominate the log.
+    /// Recorded session events (`{name, payload}`), replayed by a window opened
+    /// mid-session. Text deltas are not recorded (the `final` supersedes them).
     events: Arc<Mutex<Vec<serde_json::Value>>>,
-    /// Stamps every recorded event's `payload.seq` so the replaying window can
-    /// deduplicate the overlap between replay and live delivery.
+    /// Stamps each recorded event's `payload.seq` for replay de-duplication.
     seq: Arc<AtomicU64>,
+    /// Per-turn delivery channels: the reader thread hands each `final` (or a
+    /// crash error) back to the awaiting `run_agent` here.
+    turns: Arc<Mutex<HashMap<u64, Sender<TurnResult>>>>,
+    /// The most recently dispatched turn - a preempted (barged-in-on) turn's
+    /// late approval must not surface over the newer turn's prompt.
+    latest_turn: Arc<AtomicU64>,
+    /// Monotonic incarnation counter for `Resident.gen`.
+    generation: Arc<AtomicU64>,
+    backoff: Arc<Mutex<Backoff>>,
 }
 
 /// ponytail: hard cap so a tray-resident session can't grow without bound;
@@ -119,11 +153,11 @@ fn record(session: &AgentSession, app: &AppHandle, name: &str, payload: serde_js
 }
 
 /// Resolve the brain the user chose (settings.json) into environment variables
-/// for the run-once child (PLAN.md Phase 7). The provider's API key is read from
+/// for the resident child (PLAN.md Phase 7). The provider's API key is read from
 /// the OS keychain HERE, so it reaches the Node agent via the child's env and
-/// never crosses the webview IPC boundary (the same rule the STT/TTS calls
-/// follow). A local brain (Ollama / LM Studio) needs no key. Absent settings ->
-/// no overrides -> run-once defaults to Claude, exactly as before Phase 7.
+/// never crosses the webview IPC boundary. A local brain (Ollama / LM Studio)
+/// needs no key. The resident reads these ONCE at spawn - a settings change
+/// respawns it (see `AgentSession::shutdown`).
 fn brain_env(app: &AppHandle) -> Vec<(String, String)> {
     let s = crate::settings::read_settings(app);
     let brain = s.get("brain");
@@ -168,10 +202,9 @@ fn brain_env(app: &AppHandle) -> Vec<(String, String)> {
     env
 }
 
-/// Resolve the files capability (PLAN.md Phase 9) into env for the run-once
-/// child. Attached only when the user enabled it AND pointed it at a folder;
-/// otherwise no env var, so run-once leaves the filesystem untouched. It is a
-/// local/offline-safe capability, so no privacy mode gates it here.
+/// Resolve the files capability (PLAN.md Phase 9) into env for the resident.
+/// Attached only when the user enabled it AND pointed it at a folder; otherwise
+/// no env var, so serve.ts leaves the filesystem untouched.
 fn files_env(app: &AppHandle) -> Vec<(String, String)> {
     let s = crate::settings::read_settings(app);
     let files = s.get("files");
@@ -191,19 +224,235 @@ fn files_env(app: &AppHandle) -> Vec<(String, String)> {
     }
 }
 
-/// Absolute path to agent/run-once.ts, resolved from this crate at compile time
-/// (`<repo>/src-tauri` -> `<repo>/agent/run-once.ts`).
-fn run_once_script() -> PathBuf {
+/// Absolute path to agent/serve.ts, resolved from this crate at compile time
+/// (`<repo>/src-tauri` -> `<repo>/agent/serve.ts`).
+fn serve_script() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
-        .map(|repo| repo.join("agent").join("run-once.ts"))
-        .unwrap_or_else(|| PathBuf::from("agent/run-once.ts"))
+        .map(|repo| repo.join("agent").join("serve.ts"))
+        .unwrap_or_else(|| PathBuf::from("agent/serve.ts"))
+}
+
+/// Spawn the resident serve.ts, returning its stdin, stdout, and the child. On
+/// Windows `npx` is a `.cmd` shim that can't be exec'd directly, so go through
+/// the shell (the same fix openai-brain applies for its MCP clients).
+fn spawn_serve(app: &AppHandle) -> Result<(ChildStdin, std::process::ChildStdout, Child), String> {
+    let script = serve_script();
+    let cwd = script
+        .parent()
+        .and_then(|agent_dir| agent_dir.parent())
+        .map(|p| p.to_path_buf())
+        .ok_or("Could not locate the June project root.")?;
+
+    let mut brain_vars = brain_env(app);
+    brain_vars.extend(files_env(app));
+
+    let mut cmd = if cfg!(windows) {
+        let mut c = Command::new("cmd");
+        c.arg("/C").arg("npx");
+        c
+    } else {
+        Command::new("npx")
+    };
+    let mut child = cmd
+        .arg("tsx")
+        .arg(&script)
+        .envs(brain_vars)
+        .current_dir(&cwd)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .map_err(|e| format!("Could not start the agent: {e}"))?;
+
+    let stdin = child.stdin.take().ok_or("The agent has no stdin.")?;
+    let stdout = child.stdout.take().ok_or("The agent produced no output stream.")?;
+    Ok((stdin, stdout, child))
+}
+
+/// Ensure a live resident exists, respawning (with backoff) if it is absent or
+/// has exited. Blocking - call inside `spawn_blocking`.
+fn ensure_resident(app: &AppHandle, session: &AgentSession) -> Result<(), String> {
+    {
+        let mut guard = session.resident.lock().unwrap();
+        if let Some(r) = guard.as_mut() {
+            match r.child.try_wait() {
+                Ok(None) => return Ok(()), // still running
+                _ => *guard = None,        // exited or unknown - respawn below
+            }
+        }
+    }
+
+    // Back off if a recent incarnation crashed, so a broken config can't spin.
+    let delay = {
+        let b = session.backoff.lock().unwrap();
+        b.last_exit.map(|last| {
+            let want = backoff_delay(b.fails);
+            want.checked_sub(last.elapsed()).unwrap_or_default()
+        })
+    };
+    if let Some(d) = delay {
+        if !d.is_zero() {
+            std::thread::sleep(d);
+        }
+    }
+
+    let gen = session.generation.fetch_add(1, Ordering::Relaxed) + 1;
+    let (stdin, stdout, child) = spawn_serve(app)?;
+    spawn_reader(session.clone(), app.clone(), stdout, gen);
+    *session.resident.lock().unwrap() = Some(Resident { stdin, child, gen });
+    Ok(())
+}
+
+/// Write one JSON request line to the resident's stdin. On write failure the
+/// resident is presumed dead and dropped so the next call respawns it.
+fn write_request(session: &AgentSession, req: &serde_json::Value) -> Result<(), String> {
+    let mut guard = session.resident.lock().unwrap();
+    let resident = guard.as_mut().ok_or("The agent is not running.")?;
+    let line = format!("{req}\n");
+    let write = resident
+        .stdin
+        .write_all(line.as_bytes())
+        .and_then(|_| resident.stdin.flush());
+    if write.is_err() {
+        *guard = None;
+    }
+    write.map_err(|e| format!("Could not reach the agent: {e}"))
+}
+
+/// The stdout reader thread for one resident incarnation. Streams each JSONL
+/// event to the windows and delivers `final`s to the awaiting turns. On EOF the
+/// child has exited: it clears the resident (if still this incarnation) and
+/// fails every pending turn so no `run_agent` hangs.
+fn spawn_reader(session: AgentSession, app: AppHandle, stdout: std::process::ChildStdout, gen: u64) {
+    std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines() {
+            let Ok(line) = line else { break };
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) else {
+                continue;
+            };
+            let turn = v.get("turn").and_then(|x| x.as_u64()).unwrap_or(0);
+            let str_at = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
+            match v.get("t").and_then(|t| t.as_str()) {
+                Some("ready") => {
+                    // A fresh process is up: clear the crash backoff.
+                    let mut b = session.backoff.lock().unwrap();
+                    b.fails = 0;
+                    b.last_exit = None;
+                }
+                Some("text") => {
+                    if let Some(delta) = v.get("delta").and_then(|d| d.as_str()) {
+                        let _ = app.emit(
+                            "agent://text",
+                            serde_json::json!({ "turn": turn, "delta": delta }),
+                        );
+                    }
+                }
+                Some("tool") => record(
+                    &session,
+                    &app,
+                    "agent://tool",
+                    serde_json::json!({ "turn": turn, "action": v.get("action"), "input": v.get("input") }),
+                ),
+                Some("result") => record(
+                    &session,
+                    &app,
+                    "agent://result",
+                    serde_json::json!({ "turn": turn, "action": v.get("action"), "res": v.get("res"), "isError": v.get("isError") }),
+                ),
+                Some("approval") => {
+                    // A preempted (barged-in-on) turn's approval must not surface
+                    // over the newer turn: serve.ts self-denies it, so a decision
+                    // could never be delivered anyway.
+                    if turn == session.latest_turn.load(Ordering::Relaxed) {
+                        let pa = PendingApproval {
+                            turn,
+                            id: v.get("id").and_then(|x| x.as_u64()).unwrap_or(0),
+                            action: str_at("action"),
+                            summary: str_at("summary"),
+                            cls: str_at("cls"),
+                        };
+                        *session.pending.lock().unwrap() = Some(pa.clone());
+                        let _ = app.emit("agent://approval", pa);
+                    }
+                }
+                Some("approval-expired") => {
+                    let id = v.get("id").and_then(|x| x.as_u64()).unwrap_or(0);
+                    let mut guard = session.pending.lock().unwrap();
+                    if matches!(guard.as_ref(), Some(p) if p.turn == turn && p.id == id) {
+                        *guard = None;
+                        drop(guard);
+                        let _ = app.emit(
+                            "agent://approval-resolved",
+                            serde_json::json!({ "turn": turn, "id": id, "decision": "deny" }),
+                        );
+                    }
+                }
+                Some("audit") => append_audit(&app, &v),
+                Some("final") => {
+                    let text = str_at("text");
+                    let is_error = v.get("isError").and_then(|b| b.as_bool()).unwrap_or(false);
+                    record(
+                        &session,
+                        &app,
+                        "agent://final",
+                        serde_json::json!({ "turn": turn, "text": text, "isError": is_error }),
+                    );
+                    // Clear a dangling approval for this finished turn.
+                    {
+                        let mut guard = session.pending.lock().unwrap();
+                        if matches!(guard.as_ref(), Some(p) if p.turn == turn) {
+                            *guard = None;
+                        }
+                    }
+                    if let Some(tx) = session.turns.lock().unwrap().remove(&turn) {
+                        // June speaks the text even on an error final, matching the
+                        // pre-11 behaviour; the recorded event carries isError for UI.
+                        let _ = tx.send(Ok(text));
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // EOF: the child exited. If we are still the current incarnation, drop it,
+        // record the crash for backoff, and fail every in-flight turn so no
+        // command hangs waiting for a `final` that will never come.
+        let mut guard = session.resident.lock().unwrap();
+        if matches!(guard.as_ref(), Some(r) if r.gen == gen) {
+            *guard = None;
+            drop(guard);
+            {
+                let mut b = session.backoff.lock().unwrap();
+                b.fails = b.fails.saturating_add(1);
+                b.last_exit = Some(Instant::now());
+            }
+            *session.pending.lock().unwrap() = None;
+            let mut turns = session.turns.lock().unwrap();
+            for (_, tx) in turns.drain() {
+                let _ = tx.send(Err("The agent stopped unexpectedly.".to_string()));
+            }
+        }
+    });
+}
+
+impl AgentSession {
+    /// Kill the resident so the next `run_agent` respawns it - called when
+    /// settings change (the child reads its config once at spawn).
+    pub fn shutdown(&self) {
+        if let Some(mut r) = self.resident.lock().unwrap().take() {
+            let _ = r.child.kill();
+        }
+    }
 }
 
 /// Run one agent turn from the given transcript and return June's spoken-style
-/// reply. Every step is broadcast as an `agent://*` event tagged with `turn` so
-/// the surface can drop events from a turn that was barged in on. Errors come
-/// back as `Err` so the UI can surface them instead of pretending success.
+/// reply. Streams every step as an `agent://*` event tagged with `turn`. Errors
+/// come back as `Err` so the UI can surface them instead of pretending success.
 #[tauri::command]
 pub async fn run_agent(
     app: AppHandle,
@@ -216,19 +465,13 @@ pub async fn run_agent(
         return Err("Nothing to send: the transcript was empty.".to_string());
     }
 
-    let script = run_once_script();
-    let cwd = script
-        .parent()
-        .and_then(|agent_dir| agent_dir.parent())
-        .map(|p| p.to_path_buf())
-        .ok_or("Could not locate the June project root.")?;
-
     let session = session.inner().clone();
-    // Resolve the chosen brain (+ its key) and any enabled capabilities into env
-    // before we cross into the blocking spawn; the child reads these to pick its
-    // provider and attach the files capability.
-    let mut brain_vars = brain_env(&app);
-    brain_vars.extend(files_env(&app));
+    session.latest_turn.store(turn, Ordering::Relaxed);
+
+    // Register this turn's delivery channel BEFORE the run request, so the reader
+    // can never deliver a `final` before we are listening.
+    let (tx, rx): (Sender<TurnResult>, Receiver<TurnResult>) = std::sync::mpsc::channel();
+    session.turns.lock().unwrap().insert(turn, tx);
 
     // Mirror the user's message to any open window before June starts working.
     record(
@@ -238,176 +481,39 @@ pub async fn run_agent(
         serde_json::json!({ "turn": turn, "text": transcript }),
     );
 
-    // Blocking child + line reads off the async runtime (Tauri has no tokio
-    // "process" feature enabled). We emit each streamed line as it arrives.
-    let app_task = app.clone();
-    let session_task = session.clone();
-    let (final_text, stderr) = tauri::async_runtime::spawn_blocking(move || {
-        // On Windows `npx` is a .cmd shim that can't be exec'd directly, so go
-        // through the shell. Elsewhere invoke npx directly.
-        let mut cmd = if cfg!(windows) {
-            let mut c = Command::new("cmd");
-            c.arg("/C").arg("npx");
-            c
-        } else {
-            Command::new("npx")
-        };
-        // NOTE: the transcript is NOT an argument. It is untrusted spoken text and
-        // this spawn goes through `cmd /C npx` on Windows, where a transcript in
-        // argv is an OS command-injection vector. It is sent as the first stdin
-        // JSONL line below, where it is inert data (10.2).
-        let mut child = cmd
-            .arg("tsx")
-            .arg(&script)
-            .envs(brain_vars)
-            .current_dir(&cwd)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| format!("Could not start the agent: {e}"))?;
-
-        // Hand the child its command as the first stdin line, then hold the same
-        // stdin so `resolve_approval` can answer a gated call on it. json! escapes
-        // any newline/quote in the transcript, so it stays a single JSON line.
-        if let Some(mut stdin) = child.stdin.take() {
-            let line = serde_json::json!({ "transcript": transcript }).to_string();
-            let _ = writeln!(stdin, "{line}");
-            let _ = stdin.flush();
-            *session_task.stdin.lock().unwrap() = Some((turn, stdin));
-        }
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or("The agent produced no output stream.")?;
-
-        // run-once.ts emits JSONL; forward each kind as an `agent://*` event.
-        let mut final_text: Option<String> = None;
-        for line in BufReader::new(stdout).lines() {
-            let line = line.unwrap_or_default();
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) else {
-                continue;
-            };
-            let str_at = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
-            match v.get("t").and_then(|t| t.as_str()) {
-                Some("text") => {
-                    if let Some(delta) = v.get("delta").and_then(|d| d.as_str()) {
-                        let _ = app_task.emit(
-                            "agent://text",
-                            serde_json::json!({ "turn": turn, "delta": delta }),
-                        );
-                    }
-                }
-                Some("tool") => {
-                    record(
-                        &session_task,
-                        &app_task,
-                        "agent://tool",
-                        serde_json::json!({ "turn": turn, "action": v.get("action"), "input": v.get("input") }),
-                    );
-                }
-                Some("result") => {
-                    record(
-                        &session_task,
-                        &app_task,
-                        "agent://result",
-                        serde_json::json!({ "turn": turn, "action": v.get("action"), "res": v.get("res"), "isError": v.get("isError") }),
-                    );
-                }
-                Some("approval") => {
-                    // Only the turn that still owns the decision channel may
-                    // surface a prompt. A turn that was barged in on lost its
-                    // stdin to the newer turn - its gate self-denies (closed
-                    // channel), so showing its prompt would offer a decision
-                    // that can never be delivered.
-                    let owns_channel = matches!(
-                        session_task.stdin.lock().unwrap().as_ref(),
-                        Some((t, _)) if *t == turn
-                    );
-                    if owns_channel {
-                        let pa = PendingApproval {
-                            turn,
-                            id: v.get("id").and_then(|x| x.as_u64()).unwrap_or(0),
-                            action: str_at("action"),
-                            summary: str_at("summary"),
-                            cls: str_at("cls"),
-                        };
-                        *session_task.pending.lock().unwrap() = Some(pa.clone());
-                        let _ = app_task.emit("agent://approval", pa);
-                    }
-                }
-                Some("approval-expired") => {
-                    // The gate timed out and denied; clear the dead prompt in
-                    // every window so a late click can't look accepted.
-                    let id = v.get("id").and_then(|x| x.as_u64()).unwrap_or(0);
-                    let mut guard = session_task.pending.lock().unwrap();
-                    if matches!(guard.as_ref(), Some(p) if p.turn == turn && p.id == id) {
-                        *guard = None;
-                        drop(guard);
-                        let _ = app_task.emit(
-                            "agent://approval-resolved",
-                            serde_json::json!({ "turn": turn, "id": id, "decision": "deny" }),
-                        );
-                    }
-                }
-                Some("audit") => {
-                    // One record per tool call (10.7). Stamp the turn (run-once
-                    // doesn't know it) and append to the local audit log. This is
-                    // the reviewable trail every unattended feature (17-19) needs.
-                    let mut entry = v.clone();
-                    entry["turn"] = turn.into();
-                    append_audit(&app_task, &entry);
-                }
-                Some("final") => {
-                    final_text = Some(str_at("text"));
-                }
-                _ => {}
-            }
-        }
-
-        let output = child
-            .wait_with_output()
-            .map_err(|e| format!("Agent process failed: {e}"))?;
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        Ok::<_, String>((final_text, stderr))
-    })
-    .await
-    .map_err(|e| format!("Agent task failed: {e}"))??;
-
-    // The turn is over: drop the control channel and any dangling approval - but
-    // only if they still belong to THIS turn. A barged-in-on turn finishes late,
-    // after a newer turn may have installed its own channel; clearing here would
-    // strand that newer turn's approval gate until its 120s deny timeout.
-    {
-        let mut guard = session.stdin.lock().unwrap();
-        if matches!(guard.as_ref(), Some((t, _)) if *t == turn) {
-            *guard = None;
-        }
-    }
-    {
-        let mut guard = session.pending.lock().unwrap();
-        if matches!(guard.as_ref(), Some(p) if p.turn == turn) {
-            *guard = None;
-        }
-    }
-
-    match final_text {
-        Some(text) => {
-            record(
+    // Ensure the resident is up and hand it the run request - both blocking.
+    let ensure = {
+        let app = app.clone();
+        let session = session.clone();
+        let transcript = transcript.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            ensure_resident(&app, &session)?;
+            write_request(
                 &session,
-                &app,
-                "agent://final",
-                serde_json::json!({ "turn": turn, "text": text, "isError": false }),
-            );
-            Ok(text)
-        }
-        None => {
-            let msg = format!("The agent produced no reply. {}", stderr.trim());
-            // Still emit a final so mirrored windows stop showing "working".
+                &serde_json::json!({ "type": "run", "turn": turn, "transcript": transcript }),
+            )
+        })
+        .await
+        .map_err(|e| format!("Agent task failed: {e}"))?
+    };
+    if let Err(e) = ensure {
+        session.turns.lock().unwrap().remove(&turn);
+        return Err(e);
+    }
+
+    // Await this turn's `final` (or a crash error) with a watchdog: a wedged
+    // resident must not hang the UI. On timeout, shut it down so the next run
+    // gets a fresh process.
+    let outcome = tauri::async_runtime::spawn_blocking(move || rx.recv_timeout(WATCHDOG))
+        .await
+        .map_err(|e| format!("Agent task failed: {e}"))?;
+
+    match outcome {
+        Ok(result) => result,
+        Err(_) => {
+            session.turns.lock().unwrap().remove(&turn);
+            session.shutdown();
+            let msg = "The agent did not respond in time.".to_string();
             record(
                 &session,
                 &app,
@@ -419,9 +525,9 @@ pub async fn run_agent(
     }
 }
 
-/// Answer the pending approval by writing a decision line to the running agent's
-/// stdin, then broadcast the resolution so every window clears its prompt.
-/// `decision` is "allow" or "deny" (anything else is treated as deny).
+/// Answer the pending approval by writing a decision to the resident's stdin,
+/// then broadcast the resolution so every window clears its prompt. `decision`
+/// is "allow" or "deny" (anything else is treated as deny).
 #[tauri::command]
 pub fn resolve_approval(
     app: AppHandle,
@@ -430,33 +536,19 @@ pub fn resolve_approval(
     decision: String,
 ) -> Result<(), String> {
     let decision = if decision == "allow" { "allow" } else { "deny" };
-    // Validate against the pending approval before touching any stdin: a
-    // decision for an approval that is no longer pending (expired, already
-    // decided in the other window) must not reach the live turn's channel,
-    // and the write must go to the pending approval's own turn - never to
-    // whichever turn happens to hold the channel now.
+    // Validate against the pending approval before touching stdin: a decision for
+    // an approval that is no longer pending (expired, decided in the other window)
+    // must not reach the resident.
     let turn = match session.pending.lock().unwrap().as_ref() {
         Some(p) if p.id == id => p.turn,
         _ => return Err("That approval is no longer pending.".to_string()),
     };
 
-    {
-        let mut guard = session.stdin.lock().unwrap();
-        let stdin = match guard.as_mut() {
-            Some((t, stdin)) if *t == turn => stdin,
-            _ => return Err("That approval is no longer pending.".to_string()),
-        };
-        let line = format!(
-            "{}\n",
-            serde_json::json!({ "approvalId": id, "decision": decision })
-        );
-        stdin
-            .write_all(line.as_bytes())
-            .map_err(|e| format!("Could not deliver the decision: {e}"))?;
-        stdin
-            .flush()
-            .map_err(|e| format!("Could not deliver the decision: {e}"))?;
-    }
+    write_request(
+        session.inner(),
+        &serde_json::json!({ "type": "approve", "approvalId": id, "decision": decision }),
+    )?;
+
     *session.pending.lock().unwrap() = None;
     let _ = app.emit(
         "agent://approval-resolved",
@@ -474,9 +566,7 @@ pub fn pending_approval(session: State<'_, AgentSession>) -> Option<PendingAppro
 }
 
 /// The recorded session log, oldest first. A window opened mid-session replays
-/// this before applying live events (deduplicated by each payload's `seq`), so
-/// the full app always shows the conversation the widget drove (PLAN.md Phase
-/// 6: "one app with two faces, sharing a single agent core").
+/// this before applying live events (deduplicated by each payload's `seq`).
 #[tauri::command]
 pub fn session_events(session: State<'_, AgentSession>) -> Vec<serde_json::Value> {
     session.events.lock().unwrap().clone()
@@ -507,5 +597,13 @@ mod tests {
             log[MAX_EVENTS - 1]["payload"]["seq"].as_u64(),
             Some(MAX_EVENTS as u64 + 10)
         );
+    }
+
+    #[test]
+    fn backoff_delay_is_capped_and_grows() {
+        assert_eq!(backoff_delay(0), Duration::from_millis(250));
+        assert_eq!(backoff_delay(1), Duration::from_millis(500));
+        // Capped at 8s no matter how many failures.
+        assert_eq!(backoff_delay(20), Duration::from_millis(8_000));
     }
 }

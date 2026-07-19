@@ -59,6 +59,13 @@ pub fn save_settings(app: tauri::AppHandle, settings: Value) -> Result<(), Strin
     // Live settings propagation (10.5): tell open windows to reload so wake/TTS/
     // privacy changes apply without an app restart. Best-effort broadcast.
     let _ = app.emit("settings://changed", ());
+    // The resident agent (Phase 11.1) reads its brain/privacy/files config once at
+    // spawn, so a settings change must respawn it - otherwise a live brain or
+    // privacy-mode switch wouldn't take effect until an app restart. Shut it down;
+    // the next turn spawns a fresh process with the new env.
+    if let Some(session) = app.try_state::<crate::agent_runner::AgentSession>() {
+        session.shutdown();
+    }
     Ok(())
 }
 
