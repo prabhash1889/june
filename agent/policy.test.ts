@@ -26,6 +26,13 @@ describe("gate policy", () => {
     expect(summarize("spawn_agents", { provider: "claude", count: 1 })).toBe("Spawn 1 claude agent (paid, uses network)");
   });
 
+  it("gates a file write but not a file read (Phase 9 §5 external effect)", () => {
+    expect(isGated(classify("write_file"))).toBe(true); // overwrites a file - confirm
+    expect(isGated(classify("read_file"))).toBe(false); // observe
+    expect(isGated(classify("list_files"))).toBe(false); // observe
+    expect(summarize("write_file", { path: "notes/todo.md" })).toBe("Write file notes/todo.md");
+  });
+
   it("an unknown action defaults to reversible, never silently gated off", () => {
     expect(classify("some_future_action")).toBe("reversible");
     expect(summarize("some_future_action", {})).toBe("Run some_future_action");

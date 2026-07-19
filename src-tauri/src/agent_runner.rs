@@ -146,6 +146,22 @@ fn brain_env(app: &AppHandle) -> Vec<(String, String)> {
     env
 }
 
+/// Resolve the files capability (PLAN.md Phase 9) into env for the run-once
+/// child. Attached only when the user enabled it AND pointed it at a folder;
+/// otherwise no env var, so run-once leaves the filesystem untouched. It is a
+/// local/offline-safe capability, so no privacy mode gates it here.
+fn files_env(app: &AppHandle) -> Vec<(String, String)> {
+    let s = crate::settings::read_settings(app);
+    let files = s.get("files");
+    let enabled = files.and_then(|f| f.get("enabled")).and_then(|v| v.as_bool()).unwrap_or(false);
+    let root = files.and_then(|f| f.get("root")).and_then(|v| v.as_str()).unwrap_or("").trim();
+    if enabled && !root.is_empty() {
+        vec![("JUNE_FILES_ROOT".into(), root.to_string())]
+    } else {
+        vec![]
+    }
+}
+
 /// Absolute path to agent/run-once.ts, resolved from this crate at compile time
 /// (`<repo>/src-tauri` -> `<repo>/agent/run-once.ts`).
 fn run_once_script() -> PathBuf {
@@ -179,9 +195,11 @@ pub async fn run_agent(
         .ok_or("Could not locate the June project root.")?;
 
     let session = session.inner().clone();
-    // Resolve the chosen brain (+ its key) into env before we cross into the
-    // blocking spawn; the child reads these to pick its provider.
-    let brain_vars = brain_env(&app);
+    // Resolve the chosen brain (+ its key) and any enabled capabilities into env
+    // before we cross into the blocking spawn; the child reads these to pick its
+    // provider and attach the files capability.
+    let mut brain_vars = brain_env(&app);
+    brain_vars.extend(files_env(&app));
 
     // Mirror the user's message to any open window before June starts working.
     record(&session, &app, "agent://user", serde_json::json!({ "turn": turn, "text": transcript }));

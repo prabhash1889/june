@@ -22,6 +22,11 @@ const ACTION_CLASS: Record<string, SafetyClass> = {
   spawn_agents: "expensive", // launches paid agents - confirm with exact count
   close_terminal: "destructive", // closes a terminal pane - confirm visibly
   get_swarm_status: "observe", // read-only roster
+  // files capability (Phase 9): reads are automatic; a write is an external
+  // effect (§5) - it overwrites a file - so it must be confirmed before it runs.
+  list_files: "observe",
+  read_file: "observe",
+  write_file: "destructive",
 };
 
 /** MCP tools arrive as `mcp__<server>__<action>`; recover the bare action. */
@@ -56,6 +61,12 @@ export function summarize(action: string, input: Record<string, unknown>): strin
     }
     case "close_terminal":
       return `Close terminal ${s("pane_id") || "?"}`;
+    case "write_file":
+      return `Write file ${s("path") || "?"}`;
+    case "read_file":
+      return `Read file ${s("path") || "?"}`;
+    case "list_files":
+      return `List files${input.subdir ? ` in ${s("subdir")}` : ""}`;
     case "assign_task":
       return `Assign a task to agent ${s("agent_id") || "?"}`;
     case "send_to_terminal":

@@ -26,6 +26,15 @@ export interface WakeConfig {
   sensitivity: number;
 }
 
+/** The local files capability (PLAN.md Phase 9) - a non-saple MCP server proving
+ *  June is general-purpose. Off by default: the filesystem is only exposed once
+ *  the user opts in and scopes it to a folder. Local/offline-safe. */
+export interface FilesConfig {
+  enabled: boolean;
+  /** Absolute path to the one folder June may read/write. */
+  root: string;
+}
+
 export interface JuneSettings {
   stt: StageChoice;
   brain: StageChoice & { effort: Effort };
@@ -34,6 +43,7 @@ export interface JuneSettings {
   brainBaseUrl: string;
   privacyMode: PrivacyMode;
   wake: WakeConfig;
+  files: FilesConfig;
 }
 
 export const DEFAULT_SETTINGS: JuneSettings = {
@@ -43,6 +53,7 @@ export const DEFAULT_SETTINGS: JuneSettings = {
   brainBaseUrl: "",
   privacyMode: "standard",
   wake: { enabled: false, phrase: "hey june", sensitivity: 0.5 },
+  files: { enabled: false, root: "" },
 };
 
 /** Raw bag persisted by Rust. Kept alongside the typed view so a save can merge
@@ -74,6 +85,7 @@ function coerce(raw: RawSettings): JuneSettings {
   const brainEffort = obj("brain").effort;
   const mode = raw.privacyMode;
   const wake = obj("wake");
+  const files = obj("files");
   return {
     stt: stage("stt", d.stt),
     brain: {
@@ -87,6 +99,10 @@ function coerce(raw: RawSettings): JuneSettings {
       enabled: typeof wake.enabled === "boolean" ? wake.enabled : d.wake.enabled,
       phrase: str(wake.phrase, d.wake.phrase),
       sensitivity: unit(wake.sensitivity, d.wake.sensitivity),
+    },
+    files: {
+      enabled: typeof files.enabled === "boolean" ? files.enabled : d.files.enabled,
+      root: str(files.root, d.files.root),
     },
   };
 }

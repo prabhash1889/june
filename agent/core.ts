@@ -19,6 +19,25 @@ function bridgeControlServerPath(): string {
   return fileURLToPath(new URL("../mcp/saple-bridge-control/server.ts", import.meta.url));
 }
 
+/** Absolute path to Phase 9's non-saple files capability. */
+function filesServerPath(): string {
+  return fileURLToPath(new URL("../mcp/files/server.ts", import.meta.url));
+}
+
+/** The files capability (PLAN.md Phase 9), scoped to a single allowed root. Only
+ *  attached when the user has enabled it and pointed it at a folder - proof that
+ *  a capability is a server, not new core code. Local + offline-safe. */
+export function filesMcpServer(root: string): Record<string, McpServerConfig> {
+  return {
+    files: {
+      command: "npx",
+      args: ["tsx", filesServerPath()],
+      alwaysLoad: true,
+      env: { ...process.env, JUNE_FILES_ROOT: root },
+    },
+  };
+}
+
 /** The committed capability: the saple-bridge-control MCP server, run with tsx. */
 export function defaultMcpServers(workspaceId?: string): Record<string, McpServerConfig> {
   return {
@@ -44,6 +63,9 @@ export interface JuneAgentOptions {
   /** Provider API key (non-Claude brains). Claude reads ANTHROPIC_API_KEY. */
   apiKey?: string;
   workspaceId?: string;
+  /** Allowed root for the files capability (PLAN.md Phase 9). When set, the files
+   *  MCP server is attached, scoped to this folder. Unset -> no filesystem access. */
+  filesRoot?: string;
   /** Extra MCP capabilities merged over the default (e.g. saple-memory). */
   extraMcpServers?: Record<string, McpServerConfig>;
 }
@@ -54,7 +76,11 @@ export interface JuneAgent {
 }
 
 export function createJuneAgent(opts: JuneAgentOptions = {}): JuneAgent {
-  const mcpServers = { ...defaultMcpServers(opts.workspaceId), ...opts.extraMcpServers };
+  const mcpServers = {
+    ...defaultMcpServers(opts.workspaceId),
+    ...(opts.filesRoot ? filesMcpServer(opts.filesRoot) : {}),
+    ...opts.extraMcpServers,
+  };
   const provider = opts.provider ?? "claude";
   const brain: Brain =
     provider === "claude"

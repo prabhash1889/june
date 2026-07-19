@@ -82,6 +82,7 @@ export function SettingsPanel() {
       <KeysSection />
       <PrivacySection settings={settings} update={update} />
       <ActivationSection settings={settings} update={update} />
+      <CapabilitiesSection settings={settings} update={update} />
       <DiagnosticsSection />
     </div>
   );
@@ -448,6 +449,56 @@ function ActivationSection({ settings, update }: { settings: JuneSettings; updat
 
         {voiceOff && (
           <p className="settings-hint">Wake word is unavailable in your current privacy mode. Switch to Standard to use it.</p>
+        )}
+      </div>
+    </section>
+  );
+}
+
+// --- Capabilities ---------------------------------------------------------
+
+// The MCP capability surface (PLAN.md §4). Phase 9 ships the first non-saple
+// capability: local files. It proves June is general-purpose (a capability is a
+// server, not new core code) and is local/offline-safe, so it stays on under
+// Strict offline. Off by default - the filesystem is exposed only on opt-in, and
+// only for the one folder chosen here. saple-bridge-control is always attached.
+function CapabilitiesSection({ settings, update }: { settings: JuneSettings; update: (s: JuneSettings) => void }) {
+  const files = settings.files;
+  const setFiles = (next: Partial<JuneSettings["files"]>) => update({ ...settings, files: { ...files, ...next } });
+  const rootMissing = files.enabled && !files.root.trim();
+
+  return (
+    <section className="settings-section">
+      <h2>Capabilities</h2>
+      <p className="settings-hint">
+        Capabilities are MCP servers. <strong>saple-bridge-control</strong> is always connected; enable others below.
+      </p>
+
+      <div className="stage-card">
+        <label className="wake-toggle">
+          <input type="checkbox" checked={files.enabled} onChange={(e) => setFiles({ enabled: e.target.checked })} />
+          <span>
+            <span className="privacy-name">Files (local folder)</span>
+            <span className="privacy-desc">
+              Let June read and write files inside one folder you choose. Runs entirely on-device - no network - so it
+              stays available in every privacy mode. Reads are automatic; writing a file always asks first.
+            </span>
+          </span>
+        </label>
+
+        {files.enabled && (
+          <div className="stage-row">
+            <span className="stage-label">Folder</span>
+            <input
+              className="wide"
+              value={files.root}
+              onChange={(e) => setFiles({ root: e.target.value })}
+              placeholder="C:\Users\you\Documents\june-files"
+            />
+          </div>
+        )}
+        {rootMissing && (
+          <p className="settings-hint err">Choose a folder - June needs one allowed folder before it can touch files.</p>
         )}
       </div>
     </section>

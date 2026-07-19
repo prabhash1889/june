@@ -138,7 +138,16 @@ async function main(): Promise<void> {
     return;
   }
 
-  const agent = createJuneAgent({ ...brain, workspaceId: process.env.JUNE_WORKSPACE_ID ?? "june" });
+  // The files capability (Phase 9) is attached only when the host passes a root
+  // (user enabled it + chose a folder). It is local/offline-safe, so no privacy
+  // mode blocks it - a Strict-offline session can still read and write files.
+  const filesRoot = process.env.JUNE_FILES_ROOT?.trim() || undefined;
+
+  const agent = createJuneAgent({
+    ...brain,
+    workspaceId: process.env.JUNE_WORKSPACE_ID ?? "june",
+    filesRoot,
+  });
   const result = await agent.run(transcript, {
     gate: makeGate(),
     onText: (delta) => emit({ t: "text", delta }),
