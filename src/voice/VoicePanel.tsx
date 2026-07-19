@@ -6,6 +6,7 @@ import { type Approval, openApp, usePendingApproval } from "../lib/session.ts";
 import { DEFAULT_SETTINGS, type JuneSettings, loadSettings, voiceAllowed } from "../lib/settings.ts";
 import { SentenceBuffer, SpeechQueue } from "../lib/tts.ts";
 import { startBargeMonitor, startCapture, type CaptureError, type CaptureHandle } from "../lib/voice-capture.ts";
+import { startWakeListener } from "../lib/wake.ts";
 
 // The voice surface: hold Ctrl+Shift+Space (or press the orb), speak, review the
 // transcript, then June works and speaks the answer back (PLAN.md Phase 4 + 5).
@@ -59,6 +60,9 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
   const settingsRef = useRef<JuneSettings>(DEFAULT_SETTINGS);
   const voiceBlockedRef = useRef(false);
   const [voiceBlocked, setVoiceBlocked] = useState(false);
+  // Wake config in state (not just the ref) so the hands-free listener effect
+  // re-arms when settings load or the user toggles it.
+  const [wake, setWake] = useState(DEFAULT_SETTINGS.wake);
 
   // Prompt for the OpenAI key up front if it's missing - speech in and out both
   // need it, and this keeps the failure actionable instead of a mid-flow 401.
@@ -77,6 +81,7 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
       .then((s) => {
         if (!alive) return;
         settingsRef.current = s;
+        setWake(s.wake);
         const blocked = !voiceAllowed(s);
         voiceBlockedRef.current = blocked;
         setVoiceBlocked(blocked);
@@ -282,6 +287,24 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
       void unlistenUp.then((f) => f());
     };
   }, [activate, stopListening]);
+
+  // Hands-free wake word (PLAN.md Phase 8): while June is at rest and voice is
+  // allowed, listen ambiently for the phrase and activate on it - exactly what a
+  // push-to-talk press does. Only runs when idle so the mic isn't contended while
+  // June is already capturing, thinking, or speaking; the effect tears the
+  // listener down the moment activation moves us out of "idle".
+  useEffect(() => {
+    if (!wake.enabled || voiceBlocked || approval || phase.s !== "idle") return;
+    let alive = true;
+    let stop = () => {};
+    startWakeListener({ phrase: wake.phrase, sensitivity: wake.sensitivity, onWake: () => alive && activate() })
+      .then((h) => (alive ? (stop = h.stop) : h.stop()))
+      .catch(() => {}); // no mic -> hands-free unavailable; PTT and the orb still work
+    return () => {
+      alive = false;
+      stop();
+    };
+  }, [wake, voiceBlocked, approval, phase.s, activate]);
 
   // Tell the shell to expand whenever June is doing anything (or awaiting an
   // approval), and collapse back to the bare orb at rest.

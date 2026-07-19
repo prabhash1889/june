@@ -17,6 +17,15 @@ export interface StageChoice {
   model: string;
 }
 
+/** Hands-free activation (PLAN.md Phase 8). Off by default: PTT is the
+ *  zero-false-trigger baseline; wake word is opt-in. */
+export interface WakeConfig {
+  enabled: boolean;
+  phrase: string;
+  /** 0..1; higher = stricter phrase match (fewer false triggers, lower recall). */
+  sensitivity: number;
+}
+
 export interface JuneSettings {
   stt: StageChoice;
   brain: StageChoice & { effort: Effort };
@@ -24,6 +33,7 @@ export interface JuneSettings {
   /** Base URL for the brain when its provider allows a custom endpoint. */
   brainBaseUrl: string;
   privacyMode: PrivacyMode;
+  wake: WakeConfig;
 }
 
 export const DEFAULT_SETTINGS: JuneSettings = {
@@ -32,6 +42,7 @@ export const DEFAULT_SETTINGS: JuneSettings = {
   tts: { provider: "openai", model: "tts-1", voice: "alloy" },
   brainBaseUrl: "",
   privacyMode: "standard",
+  wake: { enabled: false, phrase: "hey june", sensitivity: 0.5 },
 };
 
 /** Raw bag persisted by Rust. Kept alongside the typed view so a save can merge
@@ -40,6 +51,11 @@ type RawSettings = Record<string, unknown>;
 
 function str(v: unknown, fallback: string): string {
   return typeof v === "string" && v.length > 0 ? v : fallback;
+}
+
+/** Clamp an arbitrary value to a 0..1 number, falling back when it isn't one. */
+function unit(v: unknown, fallback: number): number {
+  return typeof v === "number" && Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : fallback;
 }
 
 /** Coerce an arbitrary bag into a valid JuneSettings, falling back per-field to
@@ -57,6 +73,7 @@ function coerce(raw: RawSettings): JuneSettings {
   const modes: PrivacyMode[] = ["standard", "local-voice", "strict-offline"];
   const brainEffort = obj("brain").effort;
   const mode = raw.privacyMode;
+  const wake = obj("wake");
   return {
     stt: stage("stt", d.stt),
     brain: {
@@ -66,6 +83,11 @@ function coerce(raw: RawSettings): JuneSettings {
     tts: { ...stage("tts", d.tts), voice: str(obj("tts").voice, d.tts.voice) },
     brainBaseUrl: str(raw.brainBaseUrl, d.brainBaseUrl),
     privacyMode: modes.includes(mode as PrivacyMode) ? (mode as PrivacyMode) : d.privacyMode,
+    wake: {
+      enabled: typeof wake.enabled === "boolean" ? wake.enabled : d.wake.enabled,
+      phrase: str(wake.phrase, d.wake.phrase),
+      sensitivity: unit(wake.sensitivity, d.wake.sensitivity),
+    },
   };
 }
 

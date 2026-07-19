@@ -99,15 +99,24 @@ export interface CaptureOptions {
  *  is handled by the browser's native acoustic echo cancellation: we open the mic
  *  with `echoCancellation` so June's speaker output is removed from the mic signal
  *  before it reaches the VAD. The sustain window rejects the residual blips AEC
- *  leaves. ponytail: energy VAD + browser AEC is the honest first cut; Silero +
- *  tuned turn-taking is the Phase 8 "refine barge-in" work. */
+ *  leaves.
+ *
+ *  Phase 8 refinement ("refine barge-in", low false triggers): the trip threshold
+ *  now floats above the room's measured noise floor. We spend the first few frames
+ *  learning the ambient level (which, thanks to AEC, includes June's own residual
+ *  leak while it speaks) and require speech to clear floor + margin, not a fixed
+ *  0.05 that a loud room or AEC leak trips on its own. `threshold` is the FLOOR of
+ *  that adaptive level, so a dead-silent room still needs real speech.
+ *  ponytail: adaptive energy VAD + browser AEC is the honest cut; Silero VAD /
+ *  Pipecat SmartTurn swap in here only if turn-taking measurably needs it. */
 export async function startBargeMonitor(opts: {
   onSpeech: () => void;
   threshold?: number;
   sustainMs?: number;
 }): Promise<() => void> {
-  const threshold = opts.threshold ?? 0.05; // higher than capture's 0.015: only clear speech barges in
+  const minThreshold = opts.threshold ?? 0.05; // floor; only clear speech above the room barges in
   const sustainMs = opts.sustainMs ?? 350;
+  const CALIBRATION_FRAMES = 5; // ~500ms to learn the room's (AEC-residual) noise floor
 
   let stream: MediaStream;
   try {
@@ -130,9 +139,20 @@ export async function startBargeMonitor(opts: {
   const FRAME_MS = 100;
   let speechMs = 0;
   let fired = false;
+  let calibrated = 0;
+  let floorSum = 0;
+  let threshold = minThreshold;
   const tick = window.setInterval(() => {
     analyser.getFloatTimeDomainData(buf);
-    speechMs = rms(buf) >= threshold ? speechMs + FRAME_MS : 0;
+    const level = rms(buf);
+    // Learn the noise floor before arming, so the first frames of June's speech
+    // (its AEC residual) can't be mistaken for a barge-in.
+    if (calibrated < CALIBRATION_FRAMES) {
+      floorSum += level;
+      if (++calibrated === CALIBRATION_FRAMES) threshold = Math.max(minThreshold, (floorSum / calibrated) * 2 + 0.03);
+      return;
+    }
+    speechMs = level >= threshold ? speechMs + FRAME_MS : 0;
     if (!fired && speechMs >= sustainMs) {
       fired = true;
       opts.onSpeech();

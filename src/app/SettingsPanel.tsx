@@ -20,6 +20,7 @@ import {
   privacyViolations,
   saveSettings,
   setKey,
+  voiceAllowed,
 } from "../lib/settings.ts";
 import { transcribe } from "../lib/stt.ts";
 import { synthesize } from "../lib/tts.ts";
@@ -80,7 +81,7 @@ export function SettingsPanel() {
       <ModelsSection settings={settings} update={update} />
       <KeysSection />
       <PrivacySection settings={settings} update={update} />
-      <ActivationSection />
+      <ActivationSection settings={settings} update={update} />
       <DiagnosticsSection />
     </div>
   );
@@ -386,14 +387,69 @@ function PrivacySection({ settings, update }: { settings: JuneSettings; update: 
 
 // --- Activation -----------------------------------------------------------
 
-function ActivationSection() {
+function ActivationSection({ settings, update }: { settings: JuneSettings; update: (s: JuneSettings) => void }) {
+  const wake = settings.wake;
+  const setWake = (next: Partial<JuneSettings["wake"]>) => update({ ...settings, wake: { ...wake, ...next } });
+  // Wake uses cloud STT today, so it can't run under a mode that keeps voice
+  // on-device (there is no local voice provider yet) - say so instead of failing.
+  const voiceOff = !voiceAllowed(settings);
+
   return (
     <section className="settings-section">
       <h2>Activation</h2>
       <p className="settings-hint">
-        Push to talk: <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>Space</kbd>. A configurable hotkey and wake word arrive in
-        a later phase.
+        Push to talk: <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>Space</kbd>. A configurable hotkey arrives in a later
+        phase.
       </p>
+
+      <div className="stage-card">
+        <label className="wake-toggle">
+          <input
+            type="checkbox"
+            checked={wake.enabled}
+            disabled={voiceOff}
+            onChange={(e) => setWake({ enabled: e.target.checked })}
+          />
+          <span>
+            <span className="privacy-name">Wake word (hands-free)</span>
+            <span className="privacy-desc">
+              Say the phrase to start a command without touching the keyboard. Uses cloud speech-to-text to listen for the
+              phrase, so it stays off in privacy modes that keep voice on-device.
+            </span>
+          </span>
+        </label>
+
+        {wake.enabled && (
+          <>
+            <div className="stage-row">
+              <span className="stage-label">Phrase</span>
+              <input
+                value={wake.phrase}
+                onChange={(e) => setWake({ phrase: e.target.value })}
+                placeholder="hey june"
+              />
+            </div>
+            <div className="stage-row">
+              <span className="stage-label">Sensitivity</span>
+              <input
+                type="range"
+                min={0}
+                max={1}
+                step={0.05}
+                value={wake.sensitivity}
+                onChange={(e) => setWake({ sensitivity: Number(e.target.value) })}
+              />
+              <span className="settings-hint">
+                {wake.sensitivity >= 0.75 ? "Strict - fewest false triggers" : wake.sensitivity <= 0.35 ? "Loose - easiest to trigger" : "Balanced"}
+              </span>
+            </div>
+          </>
+        )}
+
+        {voiceOff && (
+          <p className="settings-hint">Wake word is unavailable in your current privacy mode. Switch to Standard to use it.</p>
+        )}
+      </div>
     </section>
   );
 }
