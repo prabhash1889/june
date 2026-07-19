@@ -28,6 +28,14 @@ export function openApp(): Promise<void> {
   return invoke("show_app");
 }
 
+/** Abort an in-flight turn (Phase 11.3). Barge-in and Cancel call this so the
+ *  resident interrupts the brain mid-generation - the turn stops spending tokens
+ *  at once instead of running to completion unheard. Fire-and-forget: an already
+ *  finished turn (or no live resident) is a harmless no-op on the backend. */
+export function cancelAgent(turn: number): Promise<void> {
+  return invoke("cancel_agent", { turn });
+}
+
 /** Start a fresh conversation (Phase 11.2). Drops the resident's memory and
  *  clears the shared transcript in every window; the backend broadcasts
  *  `agent://reset` so both faces empty out. */

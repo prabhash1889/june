@@ -69,7 +69,7 @@ Goal: June stops being per-utterance amnesiac and per-turn slow.
 
 **Exit:** "open two claude agents" then "now two codex ones as well" works; second-turn overhead < 300ms before first token; barge-in provably stops token spend; June recalls a preference stated yesterday.
 
-**Status (2026-07-19): 11.1 + 11.2 implemented.** 11.3-11.5 pending.
+**Status (2026-07-19): 11.1 + 11.2 + 11.3 implemented.** 11.4-11.5 pending.
 
 - **11.1** landed prior (commit `944ba70`): `agent/serve.ts` resident process, both brains long-lived (Claude holds one `query()` in streaming-input mode; OpenAI-compat keeps its `messages` array warm), `agent_runner.rs` respawn-on-crash + per-turn watchdog. `cancel()`/`reset()`/`dispose()` on both brains; `persistSession: false` under `strict-offline`. This already covered the streaming-session and `persistSession` parts of 11.2.
 - **11.2** completed here - the two remaining pieces (idle auto-reset + explicit "new conversation" in both faces):
@@ -78,6 +78,12 @@ Goal: June stops being per-utterance amnesiac and per-turn slow.
   - Settings gain `conversationIdleMinutes` (typed + coerced, non-negative int) with a "New conversation after N minutes idle" control in a new Conversation section. Read fresh per turn on the Rust side, so a change needs no restart.
   - **Deviation from the doc:** the SDK `resume` fallback was not needed - the streaming-input `query()` session from 11.1 carries conversation memory directly, so there was nothing to fall back to. No `resume`/cwd-pinning code was added.
   - Verified: 59 TS tests + 9 Rust tests (incl. the new `idle_exceeded` case), typecheck, eslint, clippy all green. Live GUI round-trip (speak, pause 10+ min, confirm the next command starts fresh; click "New conversation" in each face) stays a manual pass - it needs a real brain and mic.
+- **11.3** completed here - real turn cancel wired end-to-end. The abort *mechanism* already existed from 11.1 (`ClaudeBrain.cancel()` -> `query.interrupt()`; `OpenAiCompatBrain.cancel()` -> `AbortController.abort()` on the in-flight completion) and serve.ts already had a `{"type":"cancel","turn":N}` handler, but **nothing ever sent it**: the widget's `bargeIn()`/`cancel()` only bumped the local turn ref and abandoned the turn, so the resident kept generating tokens to completion (the exact "orphaned spending process" 11.3 targets). The barge-in-with-new-command path preempted via `handleRun`, but a plain Cancel - or a barge-in that captured no follow-up command - left the turn spending unheard.
+  - New `cancel_agent(turn)` Tauri command (`agent_runner.rs`, registered in `lib.rs`) writes the cancel request to the resident; best-effort, since serve.ts interrupts only if `turn` is still active and self-denies its pending gate, so cancelling a finished turn or with no resident is a harmless no-op.
+  - `session.ts` gains `cancelAgent(turn)`; `VoicePanel`'s `bargeIn()` and `cancel()` both call it **before** bumping `turnRef` (the dying turn is the current ref value), so a barge-in or Cancel aborts the in-flight turn on the backend immediately instead of only locally.
+  - **No new dependency, no new machinery** - this is purely the missing wire between the existing frontend intent and the existing backend abort. The `run_agent` await still resolves cleanly (an interrupted brain emits a `final`), so nothing hangs.
+  - Test: `openai-brain.test.ts` now drives `cancel()` headlessly against a `fetch` that only settles on its abort signal, proving the completion aborts, `run()` returns `{text:"",isError:false}` (no user-facing error, no spoken text), and the turn rolls back - a direct check that barge-in stops token spend.
+  - Verified: 60 TS tests + 9 Rust tests, typecheck, eslint, clippy all green. Live GUI barge-in (interrupt June mid-sentence, confirm token spend stops) stays a manual pass - it needs a real brain and mic.
 
 ### Phase 12 - Local voice stack (~1-2 weeks)
 

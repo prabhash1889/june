@@ -609,6 +609,21 @@ pub fn resolve_approval(
     Ok(())
 }
 
+/// Abort an in-flight turn (Phase 11.3 barge-in / Cancel): tell the resident to
+/// interrupt the brain mid-generation so a barged-in-on or cancelled turn stops
+/// spending tokens at once instead of running to completion unheard. serve.ts
+/// interrupts only if `turn` is still the active turn and self-denies its pending
+/// gate, so cancelling an already-finished turn (or with no resident) is a
+/// harmless no-op - hence best-effort.
+#[tauri::command]
+pub fn cancel_agent(session: State<'_, AgentSession>, turn: u64) -> Result<(), String> {
+    let _ = write_request(
+        session.inner(),
+        &serde_json::json!({ "type": "cancel", "turn": turn }),
+    );
+    Ok(())
+}
+
 /// The approval currently awaiting a decision, if any. A full-app window opened
 /// mid-approval calls this on mount so it can approve a command the widget
 /// started before the window existed.

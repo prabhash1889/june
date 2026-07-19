@@ -83,6 +83,7 @@ pub fn run() {
             diagnostics::bridge_health,
             diagnostics::test_brain,
             agent_runner::run_agent,
+            agent_runner::cancel_agent,
             agent_runner::resolve_approval,
             agent_runner::pending_approval,
             agent_runner::session_events,

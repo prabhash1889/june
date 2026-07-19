@@ -2,7 +2,7 @@ import { type CSSProperties, useCallback, useEffect, useRef, useState } from "re
 import { listen } from "@tauri-apps/api/event";
 
 import { hasOpenAiKey, runAgent, setOpenAiKey, transcribe } from "../lib/stt.ts";
-import { type Approval, newConversation, openApp, usePendingApproval } from "../lib/session.ts";
+import { type Approval, cancelAgent, newConversation, openApp, usePendingApproval } from "../lib/session.ts";
 import { DEFAULT_SETTINGS, type JuneSettings, loadSettings, voiceAllowed, voiceNeedsOpenAiKey } from "../lib/settings.ts";
 import { SentenceBuffer, SpeechQueue } from "../lib/tts.ts";
 import { startBargeMonitor, startCapture, type CaptureError, type CaptureHandle } from "../lib/voice-capture.ts";
@@ -158,10 +158,12 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
   }, [stopListening]);
 
   // Barge-in: stop June talking and start capturing the new command. Bumping the
-  // turn invalidates the in-flight turn's deltas and onIdle; the abandoned agent
-  // turn (if still running) finishes harmlessly - its tools are idempotent, so
-  // nothing double-executes (PLAN.md Phase 5 exit: "no duplicate execution").
+  // turn invalidates the in-flight turn's deltas and onIdle; `cancelAgent` also
+  // aborts that turn on the backend so it stops spending tokens immediately
+  // (Phase 11.3) rather than running to completion unheard while the user speaks
+  // the next command. Cancel BEFORE bumping - the dying turn is the current one.
   const bargeIn = useCallback(() => {
+    void cancelAgent(turnRef.current);
     turnRef.current += 1;
     queueRef.current?.stop();
     queueRef.current = null;
@@ -322,6 +324,7 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
   useEffect(() => () => queueRef.current?.stop(), []);
 
   const cancel = useCallback(() => {
+    void cancelAgent(turnRef.current); // abort any in-flight turn on the backend (Phase 11.3)
     capture.current?.cancel();
     capture.current = null;
     queueRef.current?.stop();
