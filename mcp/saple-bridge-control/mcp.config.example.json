@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "saple-bridge-control": {
+      "command": "npx",
+      "args": ["tsx", "C:/Users/Prabhash/Documents/code/project/SAPLE-ALL/june/mcp/saple-bridge-control/server.ts"],
+      "env": {
+        "JUNE_WORKSPACE_ID": "june"
+      }
+    }
+  }
+}

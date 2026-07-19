@@ -44,6 +44,23 @@ export default tseslint.config(
     },
   },
 
+  // saple-bridge-control MCP server (Node + TypeScript, no browser/React).
+  {
+    files: ["mcp/**/*.ts"],
+    extends: [js.configs.recommended, ...tseslint.configs.recommended],
+    languageOptions: {
+      ecmaVersion: 2022,
+      sourceType: "module",
+      globals: globals.node,
+    },
+    rules: {
+      "@typescript-eslint/no-unused-vars": [
+        "error",
+        { argsIgnorePattern: "^_", varsIgnorePattern: "^_" },
+      ],
+    },
+  },
+
   // Turns off ESLint rules that would conflict with Prettier formatting.
   prettier,
 );

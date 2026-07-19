@@ -3,7 +3,7 @@
 > A local-first voice agent that controls the SAPLE ecosystem (and more) by voice.
 > Tell June what to do; it does it, answers back, and stays out of your way.
 
-**Status:** Phase 0 and Phase 1 complete. Phase 1's exit criterion passed live on 2026-07-19 (`scripts/phase1-smoke.ps1` against a running bridge: spawn, idempotent replay, and `observe` resume all confirmed). Phase 2 is unblocked.
+**Status:** Phases 0-2 complete. Phase 2's exit criterion passed live on 2026-07-19: an MCP client (SDK stdio) listed all six `saple-bridge-control` tools and `spawn_agents` started one real Claude agent in the running bridge, with contract batch counts surfaced verbatim. Phase 3 (text-only agent core) is unblocked.
 **Owner:** prabhash1889
 **Repo:** `SAPLE-ALL/june` (standalone; sibling of `saple-bridge`, `saple-mcp`, `artemis`, `sentry`)
 **Last updated:** 2026-07-15 (Phase 1: contract frozen in june; control endpoint + renderer dispatcher + settings toggle landed in saple-bridge)
@@ -255,12 +255,18 @@ conventions.
   logical `workspace_id` and bridge's internal workspace key (Phase 3), and WS streaming for
   `observe` (polling suffices now).
 
-### Phase 2 - `saple-bridge-control` MCP server
+### Phase 2 - `saple-bridge-control` MCP server ✅
 **Goal:** the control endpoint is an MCP tool surface.
 - MCP server wrapping the Phase 1 endpoint: `spawn_agents`, `send_to_terminal`, `close_terminal`, `open_browser`, `assign_task`, `get_swarm_status`.
 - Tool results surface the contract's error codes and batch counts verbatim - no swallowing partial failures.
 - Publish config so any MCP client can attach it.
 **Exit:** an MCP client (e.g. Claude Code) can spawn agents in saple-bridge by tool call.
+
+**Done:** a stdio MCP server at `mcp/saple-bridge-control/` (run with `tsx`, no build step), wrapping the Phase 1 endpoint as six tools.
+- **Transport (`mcp/saple-bridge-control/bridge.ts`):** finds bridge via its discovery record (`%APPDATA%/ai.saple.bridge/june-control.json`), vetting protocol version and pid liveness before any call (any failure → one contract `bridge_unavailable`); speaks the localhost `/capabilities` `/command` endpoint. Reuses June's frozen contract (`CONTRACT_VERSION`, `Action`) as the single source of truth - no re-declared action list. Discovery vetting is unit-tested (4 tests, no bridge needed).
+- **Server (`mcp/saple-bridge-control/server.ts`):** six tools mapping one-to-one to contract actions (`send_to_terminal`→`write_terminal`; the rest by name). Bridge's `CommandResponse` is returned **verbatim** - error codes and batch counts never swallowed. Mutating tools take an optional `request_id` for idempotent retries (bridge replays); each omitted id is a fresh `randomUUID()`. Optional `workspace_id` (default `june`) scopes observe routing.
+- **Publish:** `mcp.config.example.json` + `README.md` show how to attach it (`claude mcp add ...`). `typecheck`/`lint`/`test` extended to cover `mcp/**`; all green.
+- **Gate (met 2026-07-19):** driven as a real MCP client over stdio (SDK `Client` + `StdioClientTransport`) against a live bridge - `listTools` returned all six, `get_swarm_status` read the roster, and `spawn_agents` started one real Claude agent (`counts.started: 1`, agent id returned). Deferred to Phase 3: approval-token args on gated tools, and June's logical→bridge workspace mapping.
 
 ### Phase 3 - Agent core (text-only) ★ key de-risking milestone
 **Goal:** the whole control loop works, typed, no voice.

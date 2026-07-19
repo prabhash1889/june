@@ -8,7 +8,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p mcp/saple-bridge-control/tsconfig.json",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write \"src/**/*.{ts,tsx,css}\" \"*.{ts,js,json}\"",
@@ -18,15 +18,18 @@
     "tauri": "tauri"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@tauri-apps/api": "^2",
     "react": "^19.1.0",
-    "react-dom": "^19.1.0"
+    "react-dom": "^19.1.0",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.4",
     "@tauri-apps/cli": "^2",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
+    "@types/node": "^26.1.1",
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",
     "@vitejs/plugin-react": "^4.6.0",
@@ -37,9 +40,14 @@
     "globals": "^15.15.0",
     "jsdom": "^29.1.1",
     "prettier": "^3.9.4",
+    "tsx": "^4.23.1",
     "typescript": "~5.8.3",
     "typescript-eslint": "^8.62.1",
     "vite": "^6.0.0",
     "vitest": "^4.1.9"
+  },
+  "allowScripts": {
+    "esbuild@0.25.12": true,
+    "esbuild@0.28.1": true
   }
 }
