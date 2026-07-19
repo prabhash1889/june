@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Core webview access for the June main window.",
-  "windows": ["main"],
-  "permissions": ["core:default", "core:event:default"]
+  "description": "Core webview access for June's widget and full application windows.",
+  "windows": ["main", "app"],
+  "permissions": ["core:default", "core:event:default", "core:window:allow-start-dragging"]
 }

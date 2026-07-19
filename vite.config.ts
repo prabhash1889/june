@@ -6,6 +6,12 @@ import { defineConfig } from "vite";
 export default defineConfig({
   plugins: [react()],
   clearScreen: false,
-  server: { port: 1421, strictPort: true },
+  server: {
+    port: 1421,
+    strictPort: true,
+    // Never watch the Rust build tree: cargo holds locks on artifacts mid-build
+    // and vite's watcher crashes with EBUSY (kills the whole dev server).
+    watch: { ignored: ["**/src-tauri/**"] },
+  },
   build: { target: "es2022", outDir: "dist" },
 });

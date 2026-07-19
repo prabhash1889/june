@@ -5,26 +5,24 @@ const invoke = vi.hoisted(() => vi.fn());
 vi.mock("@tauri-apps/api/core", () => ({ invoke }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: () => Promise.resolve(() => {}) }));
 
-import { App } from "./App.tsx";
+import { VoicePanel } from "./VoicePanel.tsx";
 
-it("shows the push-to-talk prompt once a key is present", async () => {
+function mockCommands(has: boolean) {
   invoke.mockImplementation((cmd: string) => {
-    if (cmd === "has_api_key") return Promise.resolve(true);
+    if (cmd === "has_api_key") return Promise.resolve(has);
+    if (cmd === "pending_approval") return Promise.resolve(null);
     throw new Error(`unexpected command ${cmd}`);
   });
+}
 
-  render(<App />);
-
+it("shows the push-to-talk prompt once a key is present", async () => {
+  mockCommands(true);
+  render(<VoicePanel />);
   expect(await screen.findByText(/Hold Ctrl \+ Shift \+ Space/)).toBeInTheDocument();
 });
 
 it("prompts for an OpenAI key when none is set", async () => {
-  invoke.mockImplementation((cmd: string) => {
-    if (cmd === "has_api_key") return Promise.resolve(false);
-    throw new Error(`unexpected command ${cmd}`);
-  });
-
-  render(<App />);
-
+  mockCommands(false);
+  render(<VoicePanel />);
   expect(await screen.findByText(/Add an OpenAI API key/)).toBeInTheDocument();
 });

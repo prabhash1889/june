@@ -14,10 +14,14 @@
       {
         "label": "main",
         "title": "June",
-        "width": 420,
-        "height": 320,
-        "minWidth": 360,
-        "minHeight": 240
+        "width": 88,
+        "height": 88,
+        "resizable": false,
+        "decorations": false,
+        "transparent": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "shadow": true
       }
     ],
     "security": {

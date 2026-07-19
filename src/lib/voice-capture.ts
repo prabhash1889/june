@@ -90,6 +90,62 @@ export interface CaptureOptions {
   maxMs?: number;
 }
 
+/** Listen for the user starting to speak while June is talking, so speech can
+ *  interrupt TTS (PLAN.md Phase 5 barge-in). Fires `onSpeech` once, after
+ *  `sustainMs` of continuous above-threshold input, then keeps monitoring is the
+ *  caller's job (they tear us down via the returned stop fn).
+ *
+ *  "June's own audio must never be picked up as a confirmation" (PLAN.md Phase 5)
+ *  is handled by the browser's native acoustic echo cancellation: we open the mic
+ *  with `echoCancellation` so June's speaker output is removed from the mic signal
+ *  before it reaches the VAD. The sustain window rejects the residual blips AEC
+ *  leaves. ponytail: energy VAD + browser AEC is the honest first cut; Silero +
+ *  tuned turn-taking is the Phase 8 "refine barge-in" work. */
+export async function startBargeMonitor(opts: {
+  onSpeech: () => void;
+  threshold?: number;
+  sustainMs?: number;
+}): Promise<() => void> {
+  const threshold = opts.threshold ?? 0.05; // higher than capture's 0.015: only clear speech barges in
+  const sustainMs = opts.sustainMs ?? 350;
+
+  let stream: MediaStream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+    });
+  } catch (err) {
+    // A missing/denied mic just means no voice barge-in; the caller can still
+    // interrupt by pressing push-to-talk. Fail soft rather than crash the reply.
+    throw classifyGetUserMediaError(err);
+  }
+
+  const audioCtx = new AudioContext();
+  const source = audioCtx.createMediaStreamSource(stream);
+  const analyser = audioCtx.createAnalyser();
+  analyser.fftSize = 1024;
+  source.connect(analyser);
+  const buf = new Float32Array(analyser.fftSize);
+
+  const FRAME_MS = 100;
+  let speechMs = 0;
+  let fired = false;
+  const tick = window.setInterval(() => {
+    analyser.getFloatTimeDomainData(buf);
+    speechMs = rms(buf) >= threshold ? speechMs + FRAME_MS : 0;
+    if (!fired && speechMs >= sustainMs) {
+      fired = true;
+      opts.onSpeech();
+    }
+  }, FRAME_MS);
+
+  return () => {
+    window.clearInterval(tick);
+    stream.getTracks().forEach((t) => t.stop());
+    void audioCtx.close();
+  };
+}
+
 /** Start capturing the mic. Rejects with a {@link CaptureError} if the mic can't
  *  be opened. The returned handle stops/cancels and reads the live level. */
 export async function startCapture(opts: CaptureOptions = {}): Promise<CaptureHandle> {
@@ -146,13 +202,27 @@ export async function startCapture(opts: CaptureOptions = {}): Promise<CaptureHa
     },
     stop: () =>
       new Promise((resolve) => {
-        recorder.onstop = () => {
+        let done = false;
+        const finish = () => {
+          if (done) return;
+          done = true;
           teardown();
           const blob = new Blob(chunks, { type: mime });
-          blob.arrayBuffer().then((ab) => resolve({ audio: new Uint8Array(ab), mime }));
+          void blob.arrayBuffer().then((ab) => resolve({ audio: new Uint8Array(ab), mime }));
         };
-        if (recorder.state !== "inactive") recorder.stop();
-        else resolve({ audio: new Uint8Array(), mime });
+        // WebView2 can drop the recorder's stop event outright; resolve with
+        // whatever chunks we have rather than hanging the pipeline on it.
+        const failSafe = window.setTimeout(finish, 2000);
+        recorder.onstop = () => {
+          window.clearTimeout(failSafe);
+          finish();
+        };
+        if (recorder.state !== "inactive") {
+          recorder.stop();
+        } else {
+          window.clearTimeout(failSafe);
+          finish();
+        }
       }),
   };
 }

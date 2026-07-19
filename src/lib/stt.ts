@@ -11,9 +11,11 @@ export function transcribe(audio: Uint8Array, mime: string): Promise<string> {
   return invoke<string>("transcribe", { audio: Array.from(audio), mime });
 }
 
-/** Feed an accepted transcript to the agent core and return June's reply. */
-export function runAgent(transcript: string): Promise<string> {
-  return invoke<string>("run_agent", { transcript });
+/** Feed an accepted transcript to the agent core and return June's reply. Text
+ *  deltas stream out as `agent://text` events tagged with `turn`, so a caller
+ *  that barges in can drop deltas from the interrupted turn. */
+export function runAgent(transcript: string, turn: number): Promise<string> {
+  return invoke<string>("run_agent", { transcript, turn });
 }
 
 /** Whether an OpenAI key is present, so the UI can prompt for one up front. */

@@ -14,7 +14,10 @@ use crate::keychain::get_api_key_inner;
 const OPENAI_KEY_SERVICE: &str = "june_provider_openai_api_key";
 const WHISPER_URL: &str = "https://api.openai.com/v1/audio/transcriptions";
 const WHISPER_MODEL: &str = "whisper-1";
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+// Voice UX: fail fast. A stalled connection (VPN hiccup) must surface as an
+// error in seconds, not pin the UI in "Transcribing…" for half a minute.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// One transcription backend. `audio` is a complete encoded clip (e.g. webm/opus
 /// straight from the browser MediaRecorder); `mime` is its content type. Returns
@@ -45,6 +48,7 @@ impl SttProvider for OpenAiStt {
             .part("file", part);
 
         let client = reqwest::Client::builder()
+            .connect_timeout(CONNECT_TIMEOUT)
             .timeout(REQUEST_TIMEOUT)
             .build()
             .map_err(|e| e.to_string())?;
