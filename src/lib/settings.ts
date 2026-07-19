@@ -41,6 +41,9 @@ export interface JuneSettings {
   tts: StageChoice & { voice: string };
   /** Base URL for the brain when its provider allows a custom endpoint. */
   brainBaseUrl: string;
+  /** Start a fresh conversation after this many idle minutes (Phase 11.2).
+   *  0 = never auto-reset; the conversation persists until "new conversation". */
+  conversationIdleMinutes: number;
   privacyMode: PrivacyMode;
   wake: WakeConfig;
   files: FilesConfig;
@@ -51,6 +54,7 @@ export const DEFAULT_SETTINGS: JuneSettings = {
   brain: { provider: "claude", model: "claude-opus-4-8", effort: "high" },
   tts: { provider: "openai", model: "tts-1", voice: "alloy" },
   brainBaseUrl: "",
+  conversationIdleMinutes: 10,
   privacyMode: "standard",
   wake: { enabled: false, phrase: "hey june", sensitivity: 0.5 },
   files: { enabled: false, root: "" },
@@ -67,6 +71,11 @@ function str(v: unknown, fallback: string): string {
 /** Clamp an arbitrary value to a 0..1 number, falling back when it isn't one. */
 function unit(v: unknown, fallback: number): number {
   return typeof v === "number" && Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : fallback;
+}
+
+/** Coerce to a non-negative whole number, falling back when it isn't one. */
+function nonNegInt(v: unknown, fallback: number): number {
+  return typeof v === "number" && Number.isFinite(v) && v >= 0 ? Math.floor(v) : fallback;
 }
 
 /** Coerce an arbitrary bag into a valid JuneSettings, falling back per-field to
@@ -94,6 +103,7 @@ function coerce(raw: RawSettings): JuneSettings {
     },
     tts: { ...stage("tts", d.tts), voice: str(obj("tts").voice, d.tts.voice) },
     brainBaseUrl: str(raw.brainBaseUrl, d.brainBaseUrl),
+    conversationIdleMinutes: nonNegInt(raw.conversationIdleMinutes, d.conversationIdleMinutes),
     privacyMode: modes.includes(mode as PrivacyMode) ? (mode as PrivacyMode) : d.privacyMode,
     wake: {
       enabled: typeof wake.enabled === "boolean" ? wake.enabled : d.wake.enabled,

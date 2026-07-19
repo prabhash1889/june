@@ -82,6 +82,7 @@ export function SettingsPanel() {
       <KeysSection />
       <PrivacySection settings={settings} update={update} />
       <ActivationSection settings={settings} update={update} />
+      <ConversationSection settings={settings} update={update} />
       <CapabilitiesSection settings={settings} update={update} />
       <DiagnosticsSection />
     </div>
@@ -450,6 +451,39 @@ function ActivationSection({ settings, update }: { settings: JuneSettings; updat
         {voiceOff && (
           <p className="settings-hint">Wake word is unavailable in your current privacy mode. Switch to Standard to use it.</p>
         )}
+      </div>
+    </section>
+  );
+}
+
+// --- Conversation ---------------------------------------------------------
+
+// Conversation memory (PLAN.md Phase 11.2). June now carries context across
+// turns; this sets how long an idle gap must be before the next command starts a
+// fresh conversation. 0 = never auto-reset (use "New conversation" to clear it).
+function ConversationSection({ settings, update }: { settings: JuneSettings; update: (s: JuneSettings) => void }) {
+  return (
+    <section className="settings-section">
+      <h2>Conversation</h2>
+      <p className="settings-hint">June remembers the current conversation across turns. Use “New conversation” in either window to clear it.</p>
+      <div className="stage-card">
+        <div className="stage-row">
+          <span className="stage-label">New conversation after</span>
+          <input
+            type="number"
+            min={0}
+            step={1}
+            value={settings.conversationIdleMinutes}
+            onChange={(e) =>
+              update({ ...settings, conversationIdleMinutes: Math.max(0, Math.floor(Number(e.target.value) || 0)) })
+            }
+          />
+          <span className="settings-hint">
+            {settings.conversationIdleMinutes === 0
+              ? "minutes idle - never resets automatically"
+              : "minutes idle"}
+          </span>
+        </div>
       </div>
     </section>
   );

@@ -28,6 +28,13 @@ export function openApp(): Promise<void> {
   return invoke("show_app");
 }
 
+/** Start a fresh conversation (Phase 11.2). Drops the resident's memory and
+ *  clears the shared transcript in every window; the backend broadcasts
+ *  `agent://reset` so both faces empty out. */
+export function newConversation(): Promise<void> {
+  return invoke("new_conversation");
+}
+
 /**
  * The current pending approval, shared across windows. Seeds from the backend on
  * mount (a full-app window opened mid-approval still sees the prompt), then

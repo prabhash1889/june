@@ -86,6 +86,7 @@ pub fn run() {
             agent_runner::resolve_approval,
             agent_runner::pending_approval,
             agent_runner::session_events,
+            agent_runner::new_conversation,
             show_app,
             set_widget_expanded,
         ])

@@ -122,6 +122,10 @@ pub struct AgentSession {
     /// Monotonic incarnation counter for `Resident.gen`.
     generation: Arc<AtomicU64>,
     backoff: Arc<Mutex<Backoff>>,
+    /// When the last turn ran. Phase 11.2: if the gap to the next turn exceeds
+    /// the idle threshold, that turn starts a fresh conversation. `None` before
+    /// the first turn (nothing to age out) and after an explicit new conversation.
+    last_activity: Arc<Mutex<Option<Instant>>>,
 }
 
 /// ponytail: hard cap so a tray-resident session can't grow without bound;
@@ -150,6 +154,32 @@ fn record_event(
 fn record(session: &AgentSession, app: &AppHandle, name: &str, payload: serde_json::Value) {
     let payload = record_event(&session.events, &session.seq, name, payload);
     let _ = app.emit(name, payload);
+}
+
+/// Whether `elapsed` idle time crosses the reset threshold (Phase 11.2). Pure so
+/// the idle rule is unit-tested without a live clock. `idle_minutes == 0` disables
+/// the auto-reset; `None` elapsed (no prior turn) never resets.
+fn idle_exceeded(elapsed: Option<Duration>, idle_minutes: u64) -> bool {
+    idle_minutes > 0 && matches!(elapsed, Some(d) if d >= Duration::from_secs(idle_minutes * 60))
+}
+
+/// Minutes of idle after which a turn starts a fresh conversation (settings.json,
+/// default 10; 0 disables). Read fresh per turn like the rest of the config.
+fn idle_reset_minutes(app: &AppHandle) -> u64 {
+    crate::settings::read_settings(app)
+        .get("conversationIdleMinutes")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(10)
+}
+
+/// Drop the shared conversation UI: clear the recorded session log and any
+/// pending approval, then broadcast `agent://reset` so every window clears its
+/// transcript. Does NOT touch the resident's own memory - callers pair this with
+/// a `{"type":"reset"}` write for that (Phase 11.2).
+fn clear_conversation(session: &AgentSession, app: &AppHandle) {
+    session.events.lock().unwrap().clear();
+    *session.pending.lock().unwrap() = None;
+    let _ = app.emit("agent://reset", serde_json::json!({}));
 }
 
 /// Resolve the brain the user chose (settings.json) into environment variables
@@ -468,6 +498,19 @@ pub async fn run_agent(
     let session = session.inner().clone();
     session.latest_turn.store(turn, Ordering::Relaxed);
 
+    // Phase 11.2: if too long has passed since the last turn, this turn starts a
+    // fresh conversation - clear the UI now (before the new user message) and tell
+    // the resident to drop its memory below (before the run request). Then stamp
+    // the activity clock so the NEXT turn's idle gap is measured from here.
+    let reset_first = idle_exceeded(
+        session.last_activity.lock().unwrap().map(|t| t.elapsed()),
+        idle_reset_minutes(&app),
+    );
+    if reset_first {
+        clear_conversation(&session, &app);
+    }
+    *session.last_activity.lock().unwrap() = Some(Instant::now());
+
     // Register this turn's delivery channel BEFORE the run request, so the reader
     // can never deliver a `final` before we are listening.
     let (tx, rx): (Sender<TurnResult>, Receiver<TurnResult>) = std::sync::mpsc::channel();
@@ -488,6 +531,15 @@ pub async fn run_agent(
         let transcript = transcript.clone();
         tauri::async_runtime::spawn_blocking(move || {
             ensure_resident(&app, &session)?;
+            // Drop the resident's conversation before the run so this turn starts
+            // fresh. Best-effort: a freshly (re)spawned resident is already empty,
+            // so a failed/no-op reset is harmless; the run below is what matters.
+            if reset_first {
+                let _ = write_request(
+                    &session,
+                    &serde_json::json!({ "type": "reset" }),
+                );
+            }
             write_request(
                 &session,
                 &serde_json::json!({ "type": "run", "turn": turn, "transcript": transcript }),
@@ -572,6 +624,20 @@ pub fn session_events(session: State<'_, AgentSession>) -> Vec<serde_json::Value
     session.events.lock().unwrap().clone()
 }
 
+/// Start a fresh conversation on demand (Phase 11.2 "new conversation", from
+/// either face). Tells the resident to drop its memory, clears the shared UI
+/// transcript, and resets the idle clock so both windows show an empty session.
+#[tauri::command]
+pub fn new_conversation(app: AppHandle, session: State<'_, AgentSession>) -> Result<(), String> {
+    let session = session.inner().clone();
+    // Best-effort: with no resident yet there is nothing to drop, but the UI is
+    // still cleared so the button always gives immediate, honest feedback.
+    let _ = write_request(&session, &serde_json::json!({ "type": "reset" }));
+    clear_conversation(&session, &app);
+    *session.last_activity.lock().unwrap() = None;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -597,6 +663,18 @@ mod tests {
             log[MAX_EVENTS - 1]["payload"]["seq"].as_u64(),
             Some(MAX_EVENTS as u64 + 10)
         );
+    }
+
+    #[test]
+    fn idle_exceeded_respects_threshold_and_disable() {
+        // No prior turn -> never reset, whatever the threshold.
+        assert!(!idle_exceeded(None, 10));
+        // Disabled (0 minutes) -> never reset, even after a long gap.
+        assert!(!idle_exceeded(Some(Duration::from_secs(3600)), 0));
+        // Under the threshold stays; at/over it resets.
+        assert!(!idle_exceeded(Some(Duration::from_secs(9 * 60)), 10));
+        assert!(idle_exceeded(Some(Duration::from_secs(10 * 60)), 10));
+        assert!(idle_exceeded(Some(Duration::from_secs(11 * 60)), 10));
     }
 
     #[test]

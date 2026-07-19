@@ -69,6 +69,16 @@ Goal: June stops being per-utterance amnesiac and per-turn slow.
 
 **Exit:** "open two claude agents" then "now two codex ones as well" works; second-turn overhead < 300ms before first token; barge-in provably stops token spend; June recalls a preference stated yesterday.
 
+**Status (2026-07-19): 11.1 + 11.2 implemented.** 11.3-11.5 pending.
+
+- **11.1** landed prior (commit `944ba70`): `agent/serve.ts` resident process, both brains long-lived (Claude holds one `query()` in streaming-input mode; OpenAI-compat keeps its `messages` array warm), `agent_runner.rs` respawn-on-crash + per-turn watchdog. `cancel()`/`reset()`/`dispose()` on both brains; `persistSession: false` under `strict-offline`. This already covered the streaming-session and `persistSession` parts of 11.2.
+- **11.2** completed here - the two remaining pieces (idle auto-reset + explicit "new conversation" in both faces):
+  - **Idle auto-reset** is lazy-on-next-turn, not a background timer: `agent_runner.rs::run_agent` records `last_activity` per turn and, if the gap to the next turn exceeds `conversationIdleMinutes` (settings, default 10; 0 disables), resets the conversation *before* that turn. Behaviorally identical to a 10-min timer (nothing observes the conversation between turns), with no timer thread. The idle rule is a pure `idle_exceeded()` unit-tested for the None/disabled/threshold cases.
+  - **Explicit "new conversation"** is a `new_conversation` Tauri command that writes `{"type":"reset"}` to the resident (drops brain memory), clears the shared session log + pending approval, and broadcasts `agent://reset`. A button surfaces it in **both faces**: the full-app header (`AppWindow`, which clears its transcript on `agent://reset`) and the widget header (`VoicePanel`, which tears down any in-flight capture/speech first, same teardown as Cancel).
+  - Settings gain `conversationIdleMinutes` (typed + coerced, non-negative int) with a "New conversation after N minutes idle" control in a new Conversation section. Read fresh per turn on the Rust side, so a change needs no restart.
+  - **Deviation from the doc:** the SDK `resume` fallback was not needed - the streaming-input `query()` session from 11.1 carries conversation memory directly, so there was nothing to fall back to. No `resume`/cwd-pinning code was added.
+  - Verified: 59 TS tests + 9 Rust tests (incl. the new `idle_exceeded` case), typecheck, eslint, clippy all green. Live GUI round-trip (speak, pause 10+ min, confirm the next command starts fresh; click "New conversation" in each face) stays a manual pass - it needs a real brain and mic.
+
 ### Phase 12 - Local voice stack (~1-2 weeks)
 
 Goal: Local-voice and Strict-offline become real configurations instead of "mic off". All inference in the existing Rust process via ONNX Runtime - one dependency, no Python sidecars (the Handy blueprint: same Tauri+Rust stack, in-process ORT). Models are **download-on-demand with checksum + progress UI** (improvement-2's addition), never bundled in the installer. ~650MB full-stack footprint.

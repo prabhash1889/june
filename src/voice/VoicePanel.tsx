@@ -2,7 +2,7 @@ import { type CSSProperties, useCallback, useEffect, useRef, useState } from "re
 import { listen } from "@tauri-apps/api/event";
 
 import { hasOpenAiKey, runAgent, setOpenAiKey, transcribe } from "../lib/stt.ts";
-import { type Approval, openApp, usePendingApproval } from "../lib/session.ts";
+import { type Approval, newConversation, openApp, usePendingApproval } from "../lib/session.ts";
 import { DEFAULT_SETTINGS, type JuneSettings, loadSettings, voiceAllowed, voiceNeedsOpenAiKey } from "../lib/settings.ts";
 import { SentenceBuffer, SpeechQueue } from "../lib/tts.ts";
 import { startBargeMonitor, startCapture, type CaptureError, type CaptureHandle } from "../lib/voice-capture.ts";
@@ -332,6 +332,14 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
     setPhase({ s: "idle" });
   }, [decide]);
 
+  // "New conversation" (Phase 11.2): drop June's memory of this session. Stop any
+  // in-flight capture/speech first (same teardown as cancel), then tell the
+  // backend to reset the resident and clear the shared transcript in both faces.
+  const startNewConversation = useCallback(() => {
+    cancel();
+    void newConversation();
+  }, [cancel]);
+
   const speakingText = phase.s === "speaking" ? phase.text : phase.s === "reply" ? phase.text : "";
   const orbState =
     phase.s === "listening"
@@ -352,6 +360,22 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
             </svg>
           </span>
           <span className="voice-title">June</span>
+          <button
+            className="new-convo-orb"
+            title="New conversation - June forgets this session"
+            aria-label="Start a new conversation"
+            onClick={startNewConversation}
+          >
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+              <path
+                d="M12 7A5 5 0 1 1 10.5 3.5M10.5 1v2.5H8"
+                stroke="currentColor"
+                strokeWidth="1.4"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          </button>
           <button
             className="open-app"
             title="Open the full June window"

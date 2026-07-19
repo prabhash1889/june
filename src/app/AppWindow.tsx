@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
-import { type Approval, usePendingApproval } from "../lib/session.ts";
+import { type Approval, newConversation, usePendingApproval } from "../lib/session.ts";
 import { SettingsPanel } from "./SettingsPanel.tsx";
 
 // The full application window (PLAN.md Phase 6). It shares the agent session with
@@ -57,6 +57,14 @@ function useConversation(): { entries: Entry[]; working: boolean } {
 
     const apply = (name: string, payload: Record<string, unknown>) => {
       switch (name) {
+        case "agent://reset": {
+          // A new conversation (explicit button or idle auto-reset) - empty the
+          // transcript so this window reflects the fresh session.
+          active.current.clear();
+          setWorking(false);
+          setEntries([]);
+          break;
+        }
         case "agent://user": {
           const p = payload as { turn: number; text: string };
           active.current.add(p.turn);
@@ -142,7 +150,7 @@ function useConversation(): { entries: Entry[]; working: boolean } {
       apply(name, payload);
     };
 
-    const unlisten = ["agent://user", "agent://text", "agent://tool", "agent://result", "agent://final"].map((n) =>
+    const unlisten = ["agent://user", "agent://text", "agent://tool", "agent://result", "agent://final", "agent://reset"].map((n) =>
       listen<Record<string, unknown>>(n, (e) => receive(n, e.payload)),
     );
 
@@ -190,6 +198,14 @@ export function AppWindow() {
           </button>
           <button className={view === "settings" ? "active" : ""} onClick={() => setView("settings")}>
             Settings
+          </button>
+          <button
+            className="new-convo"
+            title="Start a new conversation - June forgets the current one"
+            disabled={entries.length === 0 && !working}
+            onClick={() => void newConversation()}
+          >
+            New conversation
           </button>
         </nav>
         <div className="app-sub">

@@ -152,7 +152,8 @@ button {
   letter-spacing: -0.01em;
 }
 
-.open-app {
+.open-app,
+.new-convo-orb {
   display: grid;
   place-items: center;
   width: 28px;
@@ -169,7 +170,8 @@ button {
     color 0.15s ease;
 }
 
-.open-app:hover {
+.open-app:hover,
+.new-convo-orb:hover {
   background: var(--blue-tint);
   color: var(--ink);
 }
@@ -430,7 +432,7 @@ button {
 
 /* ---- Buttons (one vocabulary across both faces) --------------------------- */
 
-.voice button:not(.orb):not(.open-app),
+.voice button:not(.orb):not(.open-app):not(.new-convo-orb),
 .app-window button {
   border: 1px solid var(--line-strong);
   background: transparent;
@@ -446,13 +448,13 @@ button {
     transform 0.1s ease;
 }
 
-.voice button:not(.orb):not(.open-app):hover:enabled,
+.voice button:not(.orb):not(.open-app):not(.new-convo-orb):hover:enabled,
 .app-window button:hover:enabled {
   background: var(--blue-tint);
   border-color: var(--blue);
 }
 
-.voice button:not(.orb):not(.open-app):active:enabled,
+.voice button:not(.orb):not(.open-app):not(.new-convo-orb):active:enabled,
 .app-window button:active:enabled {
   transform: translateY(1px);
 }
@@ -713,6 +715,11 @@ button {
   color: var(--ink);
   background: var(--blue-tint);
   border-color: var(--blue);
+}
+
+/* "New conversation" is an action, not a view tab - set it apart from the pair. */
+.app-window .app-nav button.new-convo {
+  margin-left: 8px;
 }
 
 /* Push the status text to the far right of the header, past the nav. */
