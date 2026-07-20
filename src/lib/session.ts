@@ -2,6 +2,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { coerceMission, type Mission } from "./missions.ts";
+
 // Cross-window session glue (PLAN.md Phase 6). The Rust backend broadcasts every
 // step of an agent turn as an `agent://*` event to ALL windows, so the always-on
 // widget and the on-demand full app render the same session. Approvals are shared
@@ -87,4 +89,47 @@ export function usePendingApproval(): {
   }, []);
 
   return { approval, decide };
+}
+
+// --- Missions (Phase 19.1) ---
+// The current mission board, persisted by Rust as `june-mission.json` and
+// broadcast as `mission://updated` so BOTH faces stay in sync. `writeMission`
+// stores the JSON (an empty string clears it); the app's runner drives it, the
+// widget just watches.
+
+/** Read the current mission board (null when there is no active mission). The whole
+ *  body is guarded so a missing backend, a rejected invoke, or a corrupt file all
+ *  read as "no mission" instead of throwing into the mount effect. */
+export async function readMission(): Promise<Mission | null> {
+  try {
+    const raw = await invoke<string>("read_mission");
+    if (!raw.trim()) return null;
+    return coerceMission(JSON.parse(raw));
+  } catch {
+    return null;
+  }
+}
+
+/** Persist the mission board and broadcast it to both faces. Pass null to clear. */
+export function writeMission(mission: Mission | null): Promise<void> {
+  return invoke("write_mission", { content: mission ? JSON.stringify(mission) : "" });
+}
+
+/** The current mission, shared across windows. Seeds from the backend on mount,
+ *  then tracks `mission://updated`, so the widget's chip and the app's board
+ *  render the same live board. */
+export function useMission(): Mission | null {
+  const [mission, setMission] = useState<Mission | null>(null);
+  useEffect(() => {
+    let alive = true;
+    void readMission().then((m) => {
+      if (alive) setMission(m);
+    });
+    const unlisten = listen<unknown>("mission://updated", (e) => setMission(coerceMission(e.payload)));
+    return () => {
+      alive = false;
+      void unlisten.then((f) => f());
+    };
+  }, []);
+  return mission;
 }

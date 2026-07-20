@@ -11,6 +11,7 @@ function mockCommands(has: boolean) {
   invoke.mockImplementation((cmd: string) => {
     if (cmd === "has_api_key") return Promise.resolve(has);
     if (cmd === "pending_approval") return Promise.resolve(null);
+    if (cmd === "read_mission") return Promise.resolve(""); // no active mission (Phase 19.1)
     throw new Error(`unexpected command ${cmd}`);
   });
 }

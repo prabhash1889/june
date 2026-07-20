@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
 import { type Approval, newConversation, usePendingApproval } from "../lib/session.ts";
+import { MissionBoard } from "./MissionBoard.tsx";
 import { SettingsPanel } from "./SettingsPanel.tsx";
 
 // The full application window (PLAN.md Phase 6). It shares the agent session with
@@ -173,7 +174,7 @@ function useConversation(): { entries: Entry[]; working: boolean } {
   return { entries, working };
 }
 
-type View = "chat" | "settings";
+type View = "chat" | "missions" | "settings";
 
 export function AppWindow() {
   const { entries, working } = useConversation();
@@ -195,6 +196,9 @@ export function AppWindow() {
         <nav className="app-nav">
           <button className={view === "chat" ? "active" : ""} onClick={() => setView("chat")}>
             Conversation
+          </button>
+          <button className={view === "missions" ? "active" : ""} onClick={() => setView("missions")}>
+            Missions
           </button>
           <button className={view === "settings" ? "active" : ""} onClick={() => setView("settings")}>
             Settings
@@ -220,6 +224,8 @@ export function AppWindow() {
 
       {view === "settings" ? (
         <SettingsPanel />
+      ) : view === "missions" ? (
+        <MissionBoard />
       ) : (
         <>
           <div className="conversation" ref={scroller}>

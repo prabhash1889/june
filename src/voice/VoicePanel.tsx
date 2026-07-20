@@ -3,7 +3,8 @@ import { listen } from "@tauri-apps/api/event";
 
 import { matchApproval } from "../lib/approval-voice.ts";
 import { hasOpenAiKey, injectText, runAgent, setOpenAiKey, transcribe } from "../lib/stt.ts";
-import { type Approval, cancelAgent, newConversation, openApp, usePendingApproval } from "../lib/session.ts";
+import { type Approval, cancelAgent, newConversation, openApp, useMission, usePendingApproval } from "../lib/session.ts";
+import { missionProgress } from "../lib/missions.ts";
 import { DEFAULT_SETTINGS, type HandsFreeConfig, type JuneSettings, loadSettings, saveSettings, voiceAllowed, voiceNeedsOpenAiKey } from "../lib/settings.ts";
 import { captureCorrections, cleanTranscript } from "../lib/transcript.ts";
 import { recordLatency, TurnTimer } from "../lib/latency.ts";
@@ -48,6 +49,10 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
   const [phase, setPhase] = useState<Phase>({ s: "idle" });
   const [levels, setLevels] = useState<number[]>([]);
   const { approval, decide } = usePendingApproval();
+  // Mission state (Phase 19.1), shared with the full app. The widget shows a compact
+  // chip while a mission is active so both faces reflect the same board.
+  const mission = useMission();
+  const missionActive = mission?.status === "active";
   const capture = useRef<CaptureHandle | null>(null);
   // Guard the async stop path so a hotkey-up and a VAD endpoint can't both fire it.
   const stopping = useRef(false);
@@ -539,8 +544,8 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
   }, [approval, handsFree.spokenApprovals, decide]);
 
   // Tell the shell to expand whenever June is doing anything (or awaiting an
-  // approval), and collapse back to the bare orb at rest.
-  const active = phase.s !== "idle" || approval != null;
+  // approval, or a mission is running), and collapse back to the bare orb at rest.
+  const active = phase.s !== "idle" || approval != null || missionActive;
   useEffect(() => {
     onActiveChange?.(active);
   }, [active, onActiveChange]);
@@ -587,6 +592,7 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
   return (
     <div className="voice" data-tauri-drag-region>
       <div className="voice-card">
+        {mission && <MissionChip mission={mission} />}
         <header className="voice-head" data-tauri-drag-region>
           <span className="voice-logo" aria-hidden="true">
             <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor">
@@ -720,6 +726,24 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
           <path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
         </svg>
       </button>
+    </div>
+  );
+}
+
+// A compact read-only mission indicator for the widget (Phase 19.1). The full
+// board lives in the app window; here it's just "Mission N/M · current task" so the
+// second face reflects the same state without owning the orchestration.
+function MissionChip({ mission }: { mission: NonNullable<ReturnType<typeof useMission>> }) {
+  const { done, failed, total } = missionProgress(mission);
+  const current = mission.tasks.find((t) => t.status === "active");
+  return (
+    <div className={`mission-chip ${mission.status}`} title={mission.outcome}>
+      <span className="mission-chip-count">
+        {done + failed}/{total}
+      </span>
+      <span className="mission-chip-text">
+        {mission.status === "active" ? (current?.title ?? mission.outcome) : `Mission ${mission.status}`}
+      </span>
     </div>
   );
 }

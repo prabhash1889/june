@@ -887,6 +887,45 @@ pub fn write_lessons(
     Ok(())
 }
 
+/// Absolute path to the current mission board (improvement-4 Phase 19.1),
+/// `<app_data_dir>/june-mission.json`, next to june-memory.md. One host-owned file
+/// holding at most one active mission (a voice agent works one mission at a time).
+fn mission_file(app: &AppHandle) -> Result<PathBuf, String> {
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir.join("june-mission.json"))
+}
+
+/// Read the current mission board for either face (Phase 19.1). A missing file
+/// reads as empty (no active mission), so a fresh install shows a blank board.
+#[tauri::command]
+pub fn read_mission(app: AppHandle) -> Result<String, String> {
+    let path = mission_file(&app)?;
+    match std::fs::read_to_string(&path) {
+        Ok(s) => Ok(s),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// Persist the mission board and broadcast `mission://updated` so BOTH faces show
+/// the same board live (Phase 19.1: "both faces can show mission state"). The app
+/// window's runner writes it as tasks progress; the widget renders a compact chip.
+/// Written atomically (temp + rename). Clearing is an empty save (no active mission).
+/// Unlike memory/lessons this does NOT respawn the resident - the board is UI state,
+/// not part of the system prompt.
+#[tauri::command]
+pub fn write_mission(app: AppHandle, content: String) -> Result<(), String> {
+    let path = mission_file(&app)?;
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, content.as_bytes()).map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, &path).map_err(|e| e.to_string())?;
+    // Broadcast the new board (parsed, or null when cleared) to every window.
+    let payload = serde_json::from_str::<serde_json::Value>(&content).unwrap_or(serde_json::Value::Null);
+    let _ = app.emit("mission://updated", payload);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
