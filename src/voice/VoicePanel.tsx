@@ -323,7 +323,12 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
     if (!wake.enabled || voiceBlocked || approval || phase.s !== "idle") return;
     let alive = true;
     let stop = () => {};
-    startWakeListener({ phrase: wake.phrase, sensitivity: wake.sensitivity, onWake: () => alive && activate() })
+    startWakeListener({
+      phrase: wake.phrase,
+      sensitivity: wake.sensitivity,
+      onWake: () => alive && activate(),
+      allowCloudFallback: !voiceBlocked,
+    })
       .then((h) => (alive ? (stop = h.stop) : h.stop()))
       .catch(() => {}); // no mic -> hands-free unavailable; PTT and the orb still work
     return () => {

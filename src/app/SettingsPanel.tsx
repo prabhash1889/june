@@ -419,8 +419,9 @@ function ActivationSection({ settings, update }: { settings: JuneSettings; updat
           <span>
             <span className="privacy-name">Wake word (hands-free)</span>
             <span className="privacy-desc">
-              Say the phrase to start a command without touching the keyboard. Uses cloud speech-to-text to listen for the
-              phrase, so it stays off in privacy modes that keep voice on-device.
+              Say the wake word to start a command without touching the keyboard. Detected on-device (openWakeWord); the
+              command itself still uses your speech-to-text provider, so hands-free stays off in privacy modes that keep
+              voice on-device.
             </span>
           </span>
         </label>
@@ -435,6 +436,10 @@ function ActivationSection({ settings, update }: { settings: JuneSettings; updat
                 placeholder="hey june"
               />
             </div>
+            <p className="settings-hint">
+              The on-device wake word is currently <strong>"hey jarvis"</strong> (a trained "hey june" model is coming).
+              This phrase applies only to the cloud fallback used if the local model can't load.
+            </p>
             <div className="stage-row">
               <span className="stage-label">Sensitivity</span>
               <input

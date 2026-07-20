@@ -6,6 +6,9 @@
   "description": "A local-first voice agent that controls the SAPLE ecosystem (and more) by voice.",
   "scripts": {
     "dev": "vite",
+    "fetch-models": "node scripts/fetch-models.mjs",
+    "predev": "node scripts/fetch-models.mjs",
+    "prebuild": "node scripts/fetch-models.mjs",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit && tsc --noEmit -p mcp/saple-bridge-control/tsconfig.json && tsc --noEmit -p mcp/files/tsconfig.json && tsc --noEmit -p mcp/memory/tsconfig.json && tsc --noEmit -p agent/tsconfig.json",
@@ -21,7 +24,9 @@
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.215",
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "@ricky0123/vad-web": "^0.0.30",
     "@tauri-apps/api": "^2",
+    "onnxruntime-web": "^1.27.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "zod": "^4.4.3"

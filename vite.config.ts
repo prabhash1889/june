@@ -6,6 +6,13 @@ import { defineConfig } from "vite";
 export default defineConfig({
   plugins: [react()],
   clearScreen: false,
+  // Phase 12: use onnxruntime-web's external-wasm build so Vite doesn't inline the
+  // ~13MB ORT wasm into the bundle. The wasm is served from public/models/ort/
+  // (staged by scripts/fetch-models.mjs) via ort.env.wasm.wasmPaths, so it stays a
+  // single offline copy instead of being duplicated in dist.
+  // (defaults kept explicitly - `conditions` replaces Vite's default list, and
+  // dropping `browser`/`module` would mis-resolve other deps at runtime.)
+  resolve: { conditions: ["module", "browser", "development|production", "onnxruntime-web-use-extern-wasm"] },
   server: {
     port: 1421,
     strictPort: true,

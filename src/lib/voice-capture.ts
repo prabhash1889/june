@@ -1,13 +1,21 @@
 // Mic capture + end-of-utterance detection for June's push-to-talk (PLAN.md
 // Phase 4). getUserMedia + MediaRecorder do the platform-native capture (device
 // pick, permission prompt, resampling) so we don't reinvent any of it in Rust.
+//
+// Phase 12.1: endpointing and barge-in run on Silero VAD v5 (vad.ts) driven by
+// real speech probability, not the RMS energy gate below. The RMS `SilenceDetector`
+// / adaptive-RMS paths are kept as the fallback for when the Silero model can't
+// load (missing assets, unsupported webview), so voice never breaks outright.
+//
+// vad.ts (which imports onnxruntime-web's wasm build) is loaded dynamically inside
+// the capture functions, so tests can import the RMS helpers here without ORT.
 
 /** End-of-utterance detector: energy-threshold VAD with a silence hangover.
  *
- *  ponytail: a simple RMS-energy gate, not Silero. For push-to-talk it only has
- *  to decide "the user stopped talking" as a convenience auto-stop (the hotkey
- *  release is the real end signal). Swap in Silero VAD here if barge-in or
- *  open-mic (Phase 8) needs robust speech/noise discrimination. */
+ *  ponytail: the RMS fallback for Silero (12.1). For push-to-talk it only has to
+ *  decide "the user stopped talking" as a convenience auto-stop (the hotkey
+ *  release is the real end signal), so an energy gate is an acceptable degraded
+ *  mode when the Silero model is unavailable. */
 export class SilenceDetector {
   #speechSeen = false;
   #silenceMs = 0;
@@ -91,33 +99,25 @@ export interface CaptureOptions {
 }
 
 /** Listen for the user starting to speak while June is talking, so speech can
- *  interrupt TTS (PLAN.md Phase 5 barge-in). Fires `onSpeech` once, after
- *  `sustainMs` of continuous above-threshold input, then keeps monitoring is the
- *  caller's job (they tear us down via the returned stop fn).
+ *  interrupt TTS (PLAN.md Phase 5 barge-in). Fires `onSpeech` once when Silero
+ *  confirms speech (12.1); keeping monitoring / teardown is the caller's job (via
+ *  the returned stop fn).
  *
  *  "June's own audio must never be picked up as a confirmation" (PLAN.md Phase 5)
- *  is handled by the browser's native acoustic echo cancellation: we open the mic
- *  with `echoCancellation` so June's speaker output is removed from the mic signal
- *  before it reaches the VAD. The sustain window rejects the residual blips AEC
+ *  is handled by the browser's native acoustic echo cancellation: the mic is
+ *  opened with `echoCancellation` so June's speaker output is removed before it
+ *  reaches the VAD, and Silero's `minSpeechMs` rejects the residual blips AEC
  *  leaves.
  *
- *  Phase 8 refinement ("refine barge-in", low false triggers): the trip threshold
- *  now floats above the room's measured noise floor. We spend the first few frames
- *  learning the ambient level (which, thanks to AEC, includes June's own residual
- *  leak while it speaks) and require speech to clear floor + margin, not a fixed
- *  0.05 that a loud room or AEC leak trips on its own. `threshold` is the FLOOR of
- *  that adaptive level, so a dead-silent room still needs real speech.
- *  ponytail: adaptive energy VAD + browser AEC is the honest cut; Silero VAD /
- *  Pipecat SmartTurn swap in here only if turn-taking measurably needs it. */
+ *  Fallback (Silero model unavailable): the pre-12.1 adaptive energy VAD, whose
+ *  trip threshold floats above the room's measured noise floor (learned over the
+ *  first few frames, AEC residual included) so a loud room or leak can't self-trip.
+ *  `threshold`/`sustainMs` tune only that fallback. */
 export async function startBargeMonitor(opts: {
   onSpeech: () => void;
   threshold?: number;
   sustainMs?: number;
 }): Promise<() => void> {
-  const minThreshold = opts.threshold ?? 0.05; // floor; only clear speech above the room barges in
-  const sustainMs = opts.sustainMs ?? 350;
-  const CALIBRATION_FRAMES = 5; // ~500ms to learn the room's (AEC-residual) noise floor
-
   let stream: MediaStream;
   try {
     stream = await navigator.mediaDevices.getUserMedia({
@@ -129,6 +129,28 @@ export async function startBargeMonitor(opts: {
     throw classifyGetUserMediaError(err);
   }
 
+  let fired = false;
+  const trip = () => {
+    if (fired) return;
+    fired = true;
+    opts.onSpeech();
+  };
+
+  // Silero speech onset is the barge signal; fall back to the RMS monitor if the
+  // model can't load.
+  const silero = await import("./vad.ts")
+    .then((m) => m.startSilero(stream, { onSpeechStart: () => trip() }, m.BARGE_VAD))
+    .catch(() => null);
+  if (silero) {
+    return () => {
+      void silero.stop();
+      stream.getTracks().forEach((t) => t.stop());
+    };
+  }
+
+  const minThreshold = opts.threshold ?? 0.05; // floor; only clear speech above the room barges in
+  const sustainMs = opts.sustainMs ?? 350;
+  const CALIBRATION_FRAMES = 5; // ~500ms to learn the room's (AEC-residual) noise floor
   const audioCtx = new AudioContext();
   const source = audioCtx.createMediaStreamSource(stream);
   const analyser = audioCtx.createAnalyser();
@@ -138,25 +160,19 @@ export async function startBargeMonitor(opts: {
 
   const FRAME_MS = 100;
   let speechMs = 0;
-  let fired = false;
   let calibrated = 0;
   let floorSum = 0;
   let threshold = minThreshold;
   const tick = window.setInterval(() => {
     analyser.getFloatTimeDomainData(buf);
     const level = rms(buf);
-    // Learn the noise floor before arming, so the first frames of June's speech
-    // (its AEC residual) can't be mistaken for a barge-in.
     if (calibrated < CALIBRATION_FRAMES) {
       floorSum += level;
       if (++calibrated === CALIBRATION_FRAMES) threshold = Math.max(minThreshold, (floorSum / calibrated) * 2 + 0.03);
       return;
     }
     speechMs = level >= threshold ? speechMs + FRAME_MS : 0;
-    if (!fired && speechMs >= sustainMs) {
-      fired = true;
-      opts.onSpeech();
-    }
+    if (speechMs >= sustainMs) trip();
   }, FRAME_MS);
 
   return () => {
@@ -184,34 +200,61 @@ export async function startCapture(opts: CaptureOptions = {}): Promise<CaptureHa
   };
   recorder.start();
 
-  // Energy metering / VAD via Web Audio, independent of the recorder encoding.
-  const audioCtx = new AudioContext();
-  const source = audioCtx.createMediaStreamSource(stream);
-  const analyser = audioCtx.createAnalyser();
-  analyser.fftSize = 1024;
-  source.connect(analyser);
-  const buf = new Float32Array(analyser.fftSize);
-
-  const detector = new SilenceDetector();
   let lastLevel = 0;
-  const FRAME_MS = 100;
-  const started = performance.now();
   let ended = false;
-  const tick = window.setInterval(() => {
-    analyser.getFloatTimeDomainData(buf);
-    const level = rms(buf);
-    lastLevel = level;
-    const overTime = opts.maxMs !== undefined && performance.now() - started >= opts.maxMs;
-    if (!ended && (detector.push(level, FRAME_MS) || overTime)) {
-      ended = true;
-      opts.onEndpoint?.();
-    }
-  }, FRAME_MS);
+  const started = performance.now();
+  const overtime = () => opts.maxMs !== undefined && performance.now() - started >= opts.maxMs;
+  const endpoint = () => {
+    if (ended) return;
+    ended = true;
+    opts.onEndpoint?.();
+  };
+
+  // Endpointing on Silero speech probability (12.1); the level meter reads RMS off
+  // the same 16kHz frames. Fall back to the RMS AnalyserNode gate if Silero can't
+  // load. `stopVad` tears down whichever path is live.
+  let stopVad: () => void = () => {};
+  const silero = await import("./vad.ts")
+    .then((m) =>
+      m.startSilero(
+        stream,
+        {
+          onSpeechEnd: () => endpoint(),
+          onFrame: (_isSpeech, frame) => {
+            lastLevel = rms(frame);
+            if (overtime()) endpoint(); // frames arrive during silence too, so the cap always fires
+          },
+        },
+        m.ENDPOINT_VAD,
+      ),
+    )
+    .catch(() => null);
+
+  if (silero) {
+    stopVad = () => void silero.stop();
+  } else {
+    const audioCtx = new AudioContext();
+    const source = audioCtx.createMediaStreamSource(stream);
+    const analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 1024;
+    source.connect(analyser);
+    const buf = new Float32Array(analyser.fftSize);
+    const detector = new SilenceDetector();
+    const FRAME_MS = 100;
+    const tick = window.setInterval(() => {
+      analyser.getFloatTimeDomainData(buf);
+      lastLevel = rms(buf);
+      if (detector.push(lastLevel, FRAME_MS) || overtime()) endpoint();
+    }, FRAME_MS);
+    stopVad = () => {
+      window.clearInterval(tick);
+      void audioCtx.close();
+    };
+  }
 
   function teardown(): void {
-    window.clearInterval(tick);
+    stopVad();
     stream.getTracks().forEach((t) => t.stop());
-    void audioCtx.close();
   }
 
   return {

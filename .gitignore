@@ -12,3 +12,6 @@ graphify-out/
 
 # saple-bridge's own workspace config for this folder as a project, not part of June itself.
 .saple/
+
+# Phase 12 local-voice model assets (staged by scripts/fetch-models.mjs, checksum-pinned).
+public/models/

@@ -1,18 +1,24 @@
-// Hands-free wake word (PLAN.md Phase 8): listen ambiently for "Hey June" and
-// fire the same activation a push-to-talk press does, so the user never has to
-// touch the keyboard.
+// Hands-free wake word (PLAN.md Phase 8): listen ambiently for the wake phrase
+// and fire the same activation a push-to-talk press does, so the user never has
+// to touch the keyboard.
 //
-// ponytail: this is the committed first cut. It reuses the already-wired cloud
-// STT: an on-device energy VAD segments short speech bursts and only those get
-// transcribed and phrase-matched, so June isn't streaming the room to the cloud
-// continuously - but it IS a cloud activity (honest cost/privacy note surfaced in
-// settings), and it is disabled under any privacy mode that blocks cloud voice
-// (there is no local voice provider yet). A fully-local openWakeWord ONNX
-// "Hey June" model swaps in behind the same `onWake` callback once a trained
-// model exists - the callback is the seam, so the caller never changes.
+// Phase 12.2: the primary path is now a fully-local openWakeWord ONNX model
+// (wakeword.ts), gated by Silero (12.1) - no audio leaves the machine and wake
+// works offline. The cloud-STT burst path below is kept as the fallback for when
+// the local models can't load AND the privacy mode still permits cloud voice; it
+// segments short speech bursts with an energy VAD and phrase-matches the
+// transcript. `onWake` is the shared seam, so callers never change.
+//
+// Stand-in note: the bundled classifier is openWakeWord's "hey jarvis" (the
+// only ready-made model); a trained "hey june" classifier drops into
+// wakeword.ts's `createWakeRunners` with no code change. Until then the local
+// wake phrase is "hey jarvis".
 
 import { transcribe } from "./stt.ts";
 import { classifyGetUserMediaError, pickMimeType, rms, SilenceDetector } from "./voice-capture.ts";
+// wakeword.ts (local openWakeWord) is imported dynamically in startWakeListener so
+// tests can import phraseMatches/wakeBackoffUntil without pulling in ORT.
+import type { WakeHandle as LocalWakeHandle } from "./wakeword.ts";
 
 /** Lowercase, drop punctuation, collapse whitespace - so "Hey, June!" and
  *  "hey june" compare equal. */
@@ -98,11 +104,16 @@ const STOP_FAILSAFE_MS = 2000; // WebView2 can drop MediaRecorder.onstop; don't 
  *  denied/absent mic just means hands-free is unavailable, PTT still works, so
  *  callers fail soft. Fires `onWake` each time the phrase is heard; the caller
  *  typically tears the listener down (via `stop`) as it begins capturing the
- *  command, then restarts it when it returns to rest. */
+ *  command, then restarts it when it returns to rest.
+ *
+ *  Primary path is local openWakeWord (offline, 12.2). If its models can't load,
+ *  falls back to the cloud-STT burst path only when `allowCloudFallback` is set
+ *  (i.e. the privacy mode permits cloud voice); otherwise wake is unavailable. */
 export async function startWakeListener(opts: {
   phrase: string;
   sensitivity: number;
   onWake: () => void;
+  allowCloudFallback?: boolean;
 }): Promise<WakeHandle> {
   let stream: MediaStream;
   try {
@@ -113,6 +124,29 @@ export async function startWakeListener(opts: {
     });
   } catch (err) {
     throw classifyGetUserMediaError(err);
+  }
+
+  // Local openWakeWord first (offline). It borrows the stream via Silero.
+  let local: LocalWakeHandle | null = null;
+  try {
+    const { startLocalWake } = await import("./wakeword.ts");
+    local = await startLocalWake({ stream, sensitivity: opts.sensitivity, onWake: opts.onWake });
+  } catch {
+    local = null;
+  }
+  if (local) {
+    return {
+      stop: () => {
+        local.stop();
+        stream.getTracks().forEach((t) => t.stop());
+      },
+    };
+  }
+
+  // Local models unavailable. Only stream to the cloud if the mode allows it.
+  if (!opts.allowCloudFallback) {
+    stream.getTracks().forEach((t) => t.stop());
+    throw new Error("Local wake models are unavailable and cloud voice is blocked by the privacy mode.");
   }
 
   const mime = pickMimeType();
