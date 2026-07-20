@@ -1,9 +1,11 @@
 import { type CSSProperties, useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 
+import { humanizeAction } from "../lib/actions.ts";
 import { matchApproval } from "../lib/approval-voice.ts";
 import { useApprovalKeys } from "../lib/approval-hooks.ts";
 import { ApprovalMeta } from "../lib/approval-ui.tsx";
+import { hotkeyLabel } from "../lib/hotkey.ts";
 import { hasOpenAiKey, injectText, runAgent, setOpenAiKey, transcribe } from "../lib/stt.ts";
 import { type Approval, cancelAgent, interactiveTurnBase, newConversation, openApp, useMission, usePendingApproval } from "../lib/session.ts";
 import { missionProgress } from "../lib/missions.ts";
@@ -13,8 +15,8 @@ import { followBottom } from "../lib/scroll.ts";
 import { DEFAULT_SETTINGS, type HandsFreeConfig, type JuneSettings, loadSettings, saveSettings, voiceAllowed, voiceNeedsOpenAiKey, type WakeConfig } from "../lib/settings.ts";
 import { captureCorrections, cleanTranscript } from "../lib/transcript.ts";
 import { recordLatency, TurnTimer } from "../lib/latency.ts";
-import { SentenceBuffer, SpeechQueue } from "../lib/tts.ts";
-import { startBargeMonitor, startCapture, type CaptureError, type CaptureHandle } from "../lib/voice-capture.ts";
+import { SentenceBuffer, setOutputVolume, SpeechQueue } from "../lib/tts.ts";
+import { LEVEL_GAIN, startBargeMonitor, startCapture, type CaptureError, type CaptureHandle } from "../lib/voice-capture.ts";
 import { startWakeListener } from "../lib/wake.ts";
 
 // The voice surface: hold Ctrl+Shift+Space (or press the orb), speak, review the
@@ -68,8 +70,10 @@ function sameHandsFree(a: HandsFreeConfig, b: HandsFreeConfig): boolean {
 
 // `onActiveChange` lets the widget shell expand into a card while June is doing
 // anything (and collapse back to a bare orb at rest) - the shell owns the window
-// geometry, VoicePanel owns the pipeline (PLAN.md Phase 6 widget spec).
-export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boolean) => void }) {
+// geometry, VoicePanel owns the pipeline (PLAN.md Phase 6 widget spec). It also
+// reports the card's content height (improvement-5 P2 6.11) so the shell can
+// size the window to fit instead of opening a fixed mostly-empty slab.
+export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boolean, cardPx: number) => void }) {
   const [phase, setPhase] = useState<Phase>({ s: "idle" });
   const [levels, setLevels] = useState<number[]>([]);
   const { approval, decide, expired } = usePendingApproval();
@@ -79,10 +83,19 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
   // One-shot "June couldn't speak" note (improvement-5 P0.7): the reply continues
   // as text, but a dead TTS stack must not be silent. Cleared on the next turn.
   const [ttsIssue, setTtsIssue] = useState<string | null>(null);
+  // The running tool call's humanized name (improvement-5 P2 6.7), shown as a
+  // compact line while June works so a long tool call isn't a blank "Working…".
+  const [toolLine, setToolLine] = useState<string | null>(null);
+  // The PTT chord's human label (improvement-5 P2 6.6) - configurable now, so
+  // every prompt string renders it from settings instead of a hardcoded chord.
+  const [pttLabel, setPttLabel] = useState(hotkeyLabel(DEFAULT_SETTINGS.pttHotkey));
   // Mission state (Phase 19.1), shared with the full app. The widget shows a compact
   // chip while a mission is active so both faces reflect the same board.
   const mission = useMission();
   const missionActive = mission?.status === "active";
+  // The scrolling card element: streamed replies follow its bottom (P0.8) and
+  // the shell sizes the window from its content height (6.11).
+  const cardRef = useRef<HTMLDivElement>(null);
   const capture = useRef<CaptureHandle | null>(null);
   // Guard the async open path (improvement-5 P0.6): two overlapping startCapture
   // calls both open getUserMedia, and the second overwrites `capture.current` -
@@ -156,6 +169,8 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
   const refreshSettings = useCallback(async () => {
     const s = await loadSettings().catch(() => DEFAULT_SETTINGS);
     settingsRef.current = s;
+    setPttLabel(hotkeyLabel(s.pttHotkey));
+    setOutputVolume(s.outputVolume);
     // Keep the previous object identity when the value is unchanged (B2.3) so the
     // wake / hands-free effects don't needlessly re-arm the mic on every save.
     setWake((prev) => (sameWake(prev, s.wake) ? prev : s.wake));
@@ -277,7 +292,11 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
     stopping.current = false;
     releaseDuringSetup.current = false;
     try {
-      capture.current = await startCapture({ onEndpoint: () => stopListening(), maxMs: MAX_CAPTURE_MS });
+      capture.current = await startCapture({
+        onEndpoint: () => stopListening(),
+        maxMs: MAX_CAPTURE_MS,
+        deviceId: settingsRef.current.micDeviceId || undefined,
+      });
       setPhase({ s: "listening" });
       // A PTT release landed while the mic was still opening (B4.8): stop now so a
       // quick tap doesn't sit recording until the 15s cap.
@@ -305,9 +324,24 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
     queueRef.current = null;
     ackRef.current?.stop(); // silence any "on it" backchannel too (14.4)
     ackRef.current = null;
+    setToolLine(null);
     decide("deny"); // interrupting also withdraws any approval the old turn was awaiting
     void startListening();
   }, [startListening, decide]);
+
+  // Stop-speaking (improvement-5 P2 6.5): silence June without opening the mic.
+  // Aborts the turn like a barge-in, but keeps the streamed text on screen
+  // instead of starting a new capture.
+  const stopSpeaking = useCallback(() => {
+    void cancelAgent(turnRef.current);
+    turnRef.current += 1;
+    queueRef.current?.stop();
+    queueRef.current = null;
+    ackRef.current?.stop();
+    ackRef.current = null;
+    setToolLine(null);
+    setPhase({ s: "reply", text: streamTextRef.current || replyRef.current });
+  }, []);
 
   // Learn corrections from a review-gate edit (Phase 15.2): if the user changed
   // words before sending, capture the 1:1 substitutions into the personal
@@ -357,10 +391,12 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
       },
     );
     queueRef.current = queue;
+    setToolLine(null); // a fresh turn hasn't called any tool yet (6.7)
     setPhase({ s: "thinking" });
     try {
       const { text: reply } = await runAgent(transcript, turn);
       if (turnRef.current !== turn) return; // barged in while generating
+      setToolLine(null); // the turn is over; drop the tool line (6.7)
       // Learn the review-gate correction only now the turn is dispatched and done
       // (B2.2): growing the dictionary persists settings, which respawns the
       // resident - doing it before the turn killed the very command being sent.
@@ -415,8 +451,11 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
   // acknowledge over its own voice - and only once per turn. Spoken on a dedicated
   // one-shot queue so it stays out of the reply's latency mark.
   useEffect(() => {
-    const unlisten = listen<{ turn: number }>("agent://tool", (e) => {
+    const unlisten = listen<{ turn: number; action: string }>("agent://tool", (e) => {
       if (e.payload.turn !== turnRef.current) return; // stale (barged-in) turn
+      // Show which tool June is running (improvement-5 P2 6.7) - the widget's
+      // compact sibling of the app window's tool chips.
+      setToolLine(humanizeAction(e.payload.action));
       if (!settingsRef.current.handsFree.backchannel || spokeRef.current) return;
       if (approvalRef.current) return; // B4.10: never "On it." over a spoken repeat-back
       if (ackTurnRef.current === e.payload.turn) return; // one "on it" per turn
@@ -440,7 +479,7 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
     if (phase.s !== "speaking" || approval) return;
     let active = true;
     let stop = () => {};
-    startBargeMonitor({ onSpeech: () => active && bargeIn() })
+    startBargeMonitor({ onSpeech: () => active && bargeIn(), deviceId: settingsRef.current.micDeviceId || undefined })
       .then((s) => (active ? (stop = s) : s()))
       .catch(() => {});
     return () => {
@@ -561,6 +600,7 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
       onWake: () => alive && activate(),
       allowCloudFallback: !voiceBlocked,
       stt: settingsRef.current.stt, // B4.6: burst fallback uses the user's STT choice
+      deviceId: settingsRef.current.micDeviceId || undefined,
     })
       .then((h) => (alive ? (stop = h.stop) : h.stop()))
       .catch(() => {}); // no mic -> hands-free unavailable; PTT and the orb still work
@@ -593,6 +633,7 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
         stop();
         activate(); // in "reply", this starts a fresh capture
       },
+      deviceId: settingsRef.current.micDeviceId || undefined,
     })
       .then((s) => (alive ? (stop = s) : s()))
       .catch(() => {}); // no mic -> follow-up unavailable; PTT and the orb still work
@@ -655,7 +696,11 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
     const prompt = new SpeechQueue(() => {
       if (!alive || listening) return;
       listening = true;
-      startCapture({ onEndpoint: () => void endCapture(), maxMs: SPOKEN_APPROVAL_MS })
+      startCapture({
+        onEndpoint: () => void endCapture(),
+        maxMs: SPOKEN_APPROVAL_MS,
+        deviceId: settingsRef.current.micDeviceId || undefined,
+      })
         .then((h) => (alive ? (cap = h) : h.cancel()))
         .catch(() => finish("deny", "I couldn't open the microphone, so I cancelled that."));
     }, tts);
@@ -674,9 +719,14 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
   // its on/off toggle and "dictation on" status are reachable (the orb is disabled
   // in this mode), matching 15.4's "visible indicator throughout".
   const active = phase.s !== "idle" || approval != null || missionActive || dictation;
+  // No dependency array (improvement-5 P2 6.11): the card's content height moves
+  // with every render (streamed text, status changes), and reading scrollHeight
+  // is cheap. The shell quantizes and dedupes before touching the window. The
+  // card is flex `0 1 auto`, so its scrollHeight tracks content when shrinking
+  // too, not just when overflowing.
   useEffect(() => {
-    onActiveChange?.(active);
-  }, [active, onActiveChange]);
+    onActiveChange?.(active, cardRef.current?.scrollHeight ?? 0);
+  });
 
   // Stop any audio if the panel unmounts mid-reply.
   useEffect(() => () => {
@@ -697,6 +747,7 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
     transcribeRef.current += 1; // drop any in-flight transcription result
     decide("deny"); // cancelling also rejects any approval left pending
     setTtsIssue(null);
+    setToolLine(null);
     setPhase({ s: "idle" });
   }, [decide]);
 
@@ -728,7 +779,6 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
 
   // Follow a streaming reply down the card (improvement-5 P0.8): without this a
   // long answer scrolls its newest sentences out of view while June reads them.
-  const cardRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (phase.s === "speaking") followBottom(cardRef.current);
   }, [phase]);
@@ -758,7 +808,7 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
             className={`dictation-toggle${dictation ? " on" : ""}`}
             title={
               dictation
-                ? "Dictation on - hold Ctrl+Shift+Space to type into your focused app. Click to turn off."
+                ? `Dictation on - hold ${pttLabel} to type into your focused app. Click to turn off.`
                 : "Dictation mode - type your speech into the focused app"
             }
             aria-label="Toggle dictation mode"
@@ -816,19 +866,34 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
           <KeyGate onSaved={() => setPhase({ s: "idle" })} />
         ) : (
           <>
-            <Status phase={phase} approval={approval} dictation={dictation} />
+            <Status phase={phase} approval={approval} dictation={dictation} pttLabel={pttLabel} />
+            {phase.s === "thinking" && toolLine && (
+              <p className="status tool-line" role="status">
+                {toolLine}…
+              </p>
+            )}
             {modelDownload && (
-              <p className="status">
+              <p className="status" role="status">
                 <span className="status-dot busy" aria-hidden="true" />
                 Downloading the {modelDownload.label}
                 {modelDownload.pct != null ? ` - ${modelDownload.pct}%` : "…"} (one time)
               </p>
             )}
             {voiceBlocked && (
-              <p className="err">Voice is off in your privacy mode. Change it in the full app settings.</p>
+              <p className="err" role="alert">
+                Voice is off in your privacy mode. Change it in the full app settings.
+              </p>
             )}
-            {expired && <p className="err">That approval timed out, so June didn't act.</p>}
-            {ttsIssue && <p className="err">{ttsIssue}</p>}
+            {expired && (
+              <p className="err" role="alert">
+                That approval timed out, so June didn't act.
+              </p>
+            )}
+            {ttsIssue && (
+              <p className="err" role="alert">
+                {ttsIssue}
+              </p>
+            )}
             {approval && <ApprovalCard approval={approval} onDecide={decide} />}
             {phase.s === "review" && (
               <ReviewCard
@@ -851,7 +916,16 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
                 <p className="reply">{speakingText}</p>
               </div>
             )}
-            {phase.s === "error" && <p className="err">{phase.message}</p>}
+            {phase.s === "speaking" && (
+              <div className="row">
+                <button onClick={stopSpeaking}>Stop speaking</button>
+              </div>
+            )}
+            {phase.s === "error" && (
+              <p className="err" role="alert">
+                {phase.message}
+              </p>
+            )}
             {phase.s === "listening" && <Waveform levels={levels} />}
           </>
         )}
@@ -859,7 +933,7 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
 
       <button
         className={`orb ${orbState}`}
-        style={phase.s === "listening" ? ({ "--level": Math.min(level * 6, 1) } as CSSProperties) : undefined}
+        style={phase.s === "listening" ? ({ "--level": Math.min(level * LEVEL_GAIN, 1) } as CSSProperties) : undefined}
         // Disabled in dictation mode: injection must come only from a held PTT
         // press (never a click, which would focus June and mis-target the text).
         disabled={phase.s === "need-key" || dictation}
@@ -919,21 +993,36 @@ function Waveform({ levels }: { levels: number[] }) {
   return (
     <div className="wave" aria-hidden="true">
       {levels.map((v, i) => (
-        <span key={i} style={{ height: `${6 + Math.min(v * 8, 1) * 30}px` }} />
+        <span key={i} style={{ height: `${6 + Math.min(v * LEVEL_GAIN, 1) * 30}px` }} />
       ))}
     </div>
   );
 }
 
-function Status({ phase, approval, dictation }: { phase: Phase; approval: Approval | null; dictation: boolean }) {
-  if (approval) return <p className="status">June needs your OK before it can continue.</p>;
+function Status({
+  phase,
+  approval,
+  dictation,
+  pttLabel,
+}: {
+  phase: Phase;
+  approval: Approval | null;
+  dictation: boolean;
+  pttLabel: string;
+}) {
+  if (approval)
+    return (
+      <p className="status" role="status">
+        June needs your OK before it can continue.
+      </p>
+    );
   // Dictation mode (15.4) rewords the resting/listening prompts: the target is the
   // user's focused app, and the orb is disabled, so the hint points at the hotkey.
   const text: Record<Phase["s"], string> = {
     "need-key": "",
     idle: dictation
-      ? "Dictation on - hold Ctrl + Shift + Space and speak; text goes to your focused app."
-      : "Hold Ctrl + Shift + Space, or click the orb, and speak.",
+      ? `Dictation on - hold ${pttLabel} and speak; text goes to your focused app.`
+      : `Hold ${pttLabel}, or click the orb, and speak.`,
     listening: dictation ? "Dictating…" : "Listening…",
     transcribing: dictation ? "Writing it out…" : "Transcribing… press the orb to start over.",
     review: "Is this right?",
@@ -946,7 +1035,7 @@ function Status({ phase, approval, dictation }: { phase: Phase; approval: Approv
   const busy = phase.s === "listening" || phase.s === "transcribing" || phase.s === "thinking" || phase.s === "speaking";
   if (!text[phase.s]) return null;
   return (
-    <p className="status">
+    <p className="status" role="status">
       {busy && <span className="status-dot busy" aria-hidden="true" />}
       {text[phase.s]}
     </p>
@@ -965,7 +1054,10 @@ function ApprovalCard({ approval, onDecide }: { approval: Approval; onDecide: (d
       <div className="approval-head">
         <ApprovalMeta approval={approval} />
       </div>
-      <p className="approval-what">{approval.summary}?</p>
+      {/* role="alert" so the gate is announced the moment it appears (6.4). */}
+      <p className="approval-what" role="alert">
+        {approval.summary}?
+      </p>
       <div className="row">
         <button className="primary" onClick={() => onDecide("allow")}>
           Approve
@@ -999,6 +1091,23 @@ function ReviewCard({
   const [paused, setPaused] = useState(!autoAccept);
   const [remaining, setRemaining] = useState(AUTO_ACCEPT_SECONDS);
   const pause = () => setPaused(true);
+  // Keyboard path (improvement-5 P2 6.3): the textarea gets focus so an edit can
+  // start immediately - but only when auto-accept is off, since focusing pauses
+  // the countdown (14.1) and would defeat the hands-free opt-in.
+  const taRef = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => {
+    if (!autoAccept) taRef.current?.focus();
+  }, [autoAccept]);
+  // Ctrl+Enter sends, Esc cancels - window-level (like the approval gate's Esc)
+  // so they work even when the countdown owns the card and nothing has focus.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onCancel();
+      else if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && text.trim()) onAccept(text.trim(), transcript);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [text, transcript, onAccept, onCancel]);
   useEffect(() => {
     if (paused) return;
     if (!text.trim()) {
@@ -1016,7 +1125,9 @@ function ReviewCard({
     <div className="review">
       <span className="who">You said</span>
       <textarea
+        ref={taRef}
         value={text}
+        aria-label="Your command, as June heard it - edit before sending"
         onChange={(e) => {
           pause();
           setText(e.target.value);
@@ -1053,25 +1164,36 @@ function KeyGate({ onSaved }: { onSaved: () => void }) {
   const [key, setKey] = useState("");
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const save = () => {
+    if (!key.trim() || saving) return;
+    setSaving(true);
+    setErr(null);
+    setOpenAiKey(key.trim())
+      .then(onSaved)
+      .catch((e) => setErr(e instanceof Error ? e.message : String(e)))
+      .finally(() => setSaving(false));
+  };
   return (
     <div className="keygate">
       <p className="status">Add an OpenAI API key to enable speech. It's stored in your OS keychain.</p>
-      <input type="password" placeholder="sk-…" value={key} onChange={(e) => setKey(e.target.value)} />
-      <button
-        className="primary"
-        disabled={!key.trim() || saving}
-        onClick={() => {
-          setSaving(true);
-          setErr(null);
-          setOpenAiKey(key.trim())
-            .then(onSaved)
-            .catch((e) => setErr(e instanceof Error ? e.message : String(e)))
-            .finally(() => setSaving(false));
+      <input
+        type="password"
+        placeholder="sk-…"
+        aria-label="OpenAI API key"
+        value={key}
+        onChange={(e) => setKey(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") save(); // 6.3: Enter saves, same as the button
         }}
-      >
+      />
+      <button className="primary" disabled={!key.trim() || saving} onClick={save}>
         Save key
       </button>
-      {err && <p className="err">{err}</p>}
+      {err && (
+        <p className="err" role="alert">
+          {err}
+        </p>
+      )}
     </div>
   );
 }

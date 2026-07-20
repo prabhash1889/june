@@ -26,6 +26,26 @@
   --radius-m: 12px;
   --radius-l: 20px;
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+
+  /* Type scale (improvement-5 P2 6.10): five sizes instead of nine ad-hoc ones.
+     xs = uppercase micro-labels and badges, s = hints/meta/chips, m = body and
+     controls, l = chat bubbles and approval text, xl = the window title. */
+  --fs-xs: 10.5px;
+  --fs-s: 12px;
+  --fs-m: 13px;
+  --fs-l: 14px;
+  --fs-xl: 16px;
+
+  /* Spacing scale: 4px base. */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+
+  /* Focus treatment for fields that replace the global outline with a border
+     tint (6.4): the ring restores parity with the strong :focus-visible outline. */
+  --focus-ring: 0 0 0 3px rgba(79, 140, 255, 0.28);
 }
 
 * {
@@ -76,7 +96,7 @@ button {
   width: 100%;
   display: flex;
   /* The padding frame around the content is a window drag handle. */
-  padding: 12px;
+  padding: var(--sp-3);
 }
 
 .voice {
@@ -84,7 +104,7 @@ button {
   flex-direction: column;
   align-items: flex-end;
   justify-content: flex-end;
-  gap: 12px;
+  gap: var(--sp-3);
   width: 100%;
   height: 100%;
   min-height: 0;
@@ -106,8 +126,8 @@ button {
   scrollbar-color: var(--bg2) transparent;
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  padding: 14px 16px 16px;
+  gap: var(--sp-3);
+  padding: var(--sp-4);
   background: linear-gradient(180deg, #161c30, #101524);
   border: 1px solid var(--line);
   border-radius: var(--radius-l);
@@ -131,7 +151,7 @@ button {
 .voice-head {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--sp-2);
 }
 
 .voice-logo {
@@ -147,7 +167,7 @@ button {
 
 .voice-title {
   flex: 1;
-  font-size: 13px;
+  font-size: var(--fs-m);
   font-weight: 600;
   letter-spacing: -0.01em;
 }
@@ -312,7 +332,7 @@ button {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 3px;
+  gap: var(--sp-1);
   height: 40px;
   flex: none;
 }
@@ -330,9 +350,9 @@ button {
 .status {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: var(--sp-2);
   color: var(--dim);
-  font-size: 13px;
+  font-size: var(--fs-m);
   line-height: 1.45;
   margin: 0;
 }
@@ -352,6 +372,24 @@ button {
   animation: dot-pulse 1.2s ease-in-out infinite;
 }
 
+/* Compact tool-name line in the widget while a tool call runs (improvement-5
+   P2 6.7) - the widget's sibling of the app window's tool chips. */
+.status.tool-line {
+  font-size: var(--fs-s);
+  padding-left: 14px; /* aligns under the status text, past the busy dot */
+  animation: tool-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes tool-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
 @keyframes dot-pulse {
   0%,
   100% {
@@ -363,7 +401,7 @@ button {
 }
 
 .who {
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-weight: 600;
   color: var(--blue);
 }
@@ -375,24 +413,24 @@ button {
 .reply-block {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--sp-2);
   align-self: stretch;
 }
 
 .reply {
   margin: 0;
-  padding: 9px 12px;
+  padding: var(--sp-2) var(--sp-3);
   background: var(--bg2);
   border: 1px solid var(--line);
   border-radius: var(--radius-m);
-  font-size: 13.5px;
+  font-size: var(--fs-m);
   line-height: 1.5;
   text-wrap: pretty;
 }
 
 .err {
   color: var(--warm);
-  font-size: 13px;
+  font-size: var(--fs-m);
   line-height: 1.45;
   margin: 0;
 }
@@ -400,7 +438,7 @@ button {
 .review {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--sp-2);
   align-self: stretch;
 }
 
@@ -419,9 +457,9 @@ button {
   background: var(--bg2);
   color: var(--ink);
   font: inherit;
-  font-size: 13.5px;
+  font-size: var(--fs-m);
   line-height: 1.45;
-  padding: 9px 11px;
+  padding: var(--sp-2) var(--sp-3);
   transition: border-color 0.15s ease;
 }
 
@@ -429,6 +467,7 @@ button {
 .keygate input:focus-visible {
   outline: none;
   border-color: var(--blue);
+  box-shadow: var(--focus-ring);
 }
 
 .review textarea::placeholder,
@@ -438,14 +477,14 @@ button {
 
 .row {
   display: flex;
-  gap: 8px;
+  gap: var(--sp-2);
   flex-wrap: wrap;
 }
 
 .keygate {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: var(--sp-2);
   align-self: stretch;
 }
 
@@ -457,8 +496,8 @@ button {
   background: transparent;
   color: var(--ink);
   border-radius: var(--radius-s);
-  padding: 7px 14px;
-  font-size: 13px;
+  padding: var(--sp-2) var(--sp-4);
+  font-size: var(--fs-m);
   font-weight: 500;
   cursor: pointer;
   transition:
@@ -514,9 +553,9 @@ button {
 .approval {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--sp-3);
   align-self: stretch;
-  padding: 12px;
+  padding: var(--sp-3);
   border: 1px solid rgba(255, 139, 122, 0.45);
   border-radius: var(--radius-m);
   background: var(--warm-tint);
@@ -524,7 +563,7 @@ button {
 
 .approval-what {
   margin: 0;
-  font-size: 13.5px;
+  font-size: var(--fs-m);
   line-height: 1.45;
   text-wrap: balance;
 }
@@ -533,11 +572,11 @@ button {
 .approval-head {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--sp-2);
 }
 
 .approval-cls {
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.05em;
@@ -549,7 +588,7 @@ button {
 
 .approval-timer {
   margin-left: auto;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-variant-numeric: tabular-nums;
   color: var(--dim);
 }
@@ -567,13 +606,13 @@ button {
 .app-header {
   display: flex;
   align-items: baseline;
-  gap: 12px;
-  padding: 14px 20px;
+  gap: var(--sp-3);
+  padding: var(--sp-4) var(--sp-5);
   border-bottom: 1px solid var(--line);
 }
 
 .app-title {
-  font-size: 16px;
+  font-size: var(--fs-xl);
   font-weight: 600;
   letter-spacing: -0.01em;
 }
@@ -581,25 +620,25 @@ button {
 .app-sub {
   display: inline-flex;
   align-items: center;
-  gap: 7px;
+  gap: var(--sp-2);
   color: var(--dim);
-  font-size: 13px;
+  font-size: var(--fs-m);
 }
 
 .conversation {
   flex: 1;
   overflow-y: auto;
-  padding: 18px 20px;
+  padding: var(--sp-5);
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: var(--sp-2);
   scrollbar-width: thin;
   scrollbar-color: var(--bg2) transparent;
 }
 
 .conversation .empty {
   color: var(--dim);
-  font-size: 13px;
+  font-size: var(--fs-m);
   line-height: 1.6;
   margin: auto;
   max-width: 36ch;
@@ -608,10 +647,10 @@ button {
 }
 
 .turn {
-  font-size: 14px;
+  font-size: var(--fs-l);
   line-height: 1.5;
   max-width: min(80%, 62ch);
-  padding: 9px 13px;
+  padding: var(--sp-2) var(--sp-3);
   border-radius: var(--radius-m);
   animation: turn-in 0.2s var(--ease-out);
 }
@@ -647,18 +686,23 @@ button {
   align-self: flex-start;
   display: inline-flex;
   align-items: baseline;
-  gap: 6px;
+  gap: var(--sp-2);
   background: var(--bg1);
   border: 1px solid var(--line);
   border-radius: 999px;
   color: var(--dim);
-  font-size: 12px;
+  font-size: var(--fs-s);
   padding: 3px 12px;
 }
 
 .turn.tool .tool-name {
   font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
   color: var(--blue);
+}
+
+/* A tool call with no result yet is running: pulse its name (6.7). */
+.turn.tool.tool-running .tool-name {
+  animation: tool-pulse 1.2s ease-in-out infinite;
 }
 
 .turn.tool.tool-error {
@@ -670,10 +714,10 @@ button {
 }
 
 .app-footer {
-  padding: 10px 20px;
+  padding: var(--sp-2) var(--sp-5);
   border-top: 1px solid var(--line);
   color: var(--dim);
-  font-size: 12px;
+  font-size: var(--fs-s);
 }
 
 /* Text composer (improvement-5 P2 6.1): the keyboard path to the same agent
@@ -681,8 +725,8 @@ button {
 .app-composer {
   display: flex;
   align-items: flex-end;
-  gap: 8px;
-  padding: 12px 20px;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-5);
   border-top: 1px solid var(--line);
 }
 
@@ -691,13 +735,13 @@ button {
   resize: none;
   min-height: 38px;
   max-height: 120px;
-  padding: 9px 12px;
+  padding: var(--sp-2) var(--sp-3);
   border-radius: var(--radius-s);
   border: 1px solid var(--line);
   background: var(--bg2);
   color: var(--ink);
   font: inherit;
-  font-size: 13.5px;
+  font-size: var(--fs-m);
   line-height: 1.45;
   transition: border-color 0.15s ease;
 }
@@ -705,6 +749,7 @@ button {
 .app-composer textarea:focus-visible {
   outline: none;
   border-color: var(--blue);
+  box-shadow: var(--focus-ring);
 }
 
 .app-composer textarea::placeholder {
@@ -713,16 +758,16 @@ button {
 
 /* Transient error line under the app header (failed reset, expired approval). */
 .app-note {
-  margin: 10px 20px 0;
+  margin: var(--sp-2) var(--sp-5) 0;
 }
 
 .app-approval {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
-  margin: 14px 20px 0;
-  padding: 12px 16px;
+  gap: var(--sp-4);
+  margin: var(--sp-4) var(--sp-5) 0;
+  padding: var(--sp-3) var(--sp-4);
   border: 1px solid rgba(255, 139, 122, 0.45);
   border-radius: var(--radius-m);
   background: var(--warm-tint);
@@ -732,11 +777,11 @@ button {
 .app-approval-text {
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: var(--sp-1);
 }
 
 .app-approval-label {
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.06em;
@@ -744,7 +789,7 @@ button {
 }
 
 .app-approval-what {
-  font-size: 14px;
+  font-size: var(--fs-l);
   line-height: 1.45;
 }
 
@@ -757,7 +802,9 @@ button {
 @media (prefers-reduced-motion: reduce) {
   .orb,
   .orb.speaking,
-  .status-dot.busy {
+  .status-dot.busy,
+  .status.tool-line,
+  .turn.tool.tool-running .tool-name {
     animation: none;
   }
 
@@ -786,12 +833,12 @@ button {
 
 .app-nav {
   display: inline-flex;
-  gap: 4px;
+  gap: var(--sp-1);
 }
 
 .app-window .app-nav button {
   padding: 4px 12px;
-  font-size: 12.5px;
+  font-size: var(--fs-s);
   color: var(--dim);
 }
 
@@ -814,10 +861,10 @@ button {
 .settings-view {
   flex: 1;
   overflow-y: auto;
-  padding: 18px 20px;
+  padding: var(--sp-5);
   display: flex;
   flex-direction: column;
-  gap: 22px;
+  gap: var(--sp-5);
   scrollbar-width: thin;
   scrollbar-color: var(--bg2) transparent;
 }
@@ -825,12 +872,12 @@ button {
 .settings-section {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--sp-3);
 }
 
 .settings-section h2 {
   margin: 0;
-  font-size: 13px;
+  font-size: var(--fs-m);
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.06em;
@@ -839,7 +886,7 @@ button {
 
 .settings-hint {
   margin: 0;
-  font-size: 12.5px;
+  font-size: var(--fs-s);
   line-height: 1.5;
   color: var(--dim);
 }
@@ -847,7 +894,7 @@ button {
 /* Sub-heading inside a section (e.g. "Custom MCP servers" under Capabilities). */
 .settings-subhead {
   margin: 4px 0 0;
-  font-size: 12px;
+  font-size: var(--fs-s);
   font-weight: 600;
   color: var(--ink);
 }
@@ -858,26 +905,27 @@ button {
   min-height: 44px;
   font-family:
     ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 12px;
+  font-size: var(--fs-s);
 }
 
 .stage-card {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 12px;
+  gap: var(--sp-2);
+  padding: var(--sp-3);
   border: 1px solid var(--line);
   border-radius: var(--radius-m);
   background: var(--bg1);
 }
 
-/* Weekday picker on a scheduled run (Phase 18): compact toggle chips. */
+/* Weekday picker on a scheduled run (Phase 18): compact toggle chips. Sized up
+   slightly (6.4) so the tap target isn't ~22px tall. */
 .settings-view button.day-on,
 .settings-view button.day-off {
-  min-width: 30px;
-  padding: 3px 6px;
-  margin-right: 3px;
-  font-size: 11px;
+  min-width: 32px;
+  padding: var(--sp-1) var(--sp-2);
+  margin-right: var(--sp-1);
+  font-size: var(--fs-s);
   border-radius: var(--radius-s);
 }
 .settings-view button.day-on {
@@ -890,12 +938,12 @@ button {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  gap: var(--sp-2);
 }
 
 .stage-label {
   min-width: 108px;
-  font-size: 13px;
+  font-size: var(--fs-m);
   font-weight: 500;
 }
 
@@ -906,7 +954,7 @@ button {
   background: var(--bg2);
   color: var(--ink);
   font: inherit;
-  font-size: 13px;
+  font-size: var(--fs-m);
   padding: 6px 9px;
   transition: border-color 0.15s ease;
 }
@@ -929,7 +977,7 @@ button {
   background: var(--bg2);
   color: var(--ink);
   font: inherit;
-  font-size: 13px;
+  font-size: var(--fs-m);
   line-height: 1.5;
   padding: 8px 9px;
   transition: border-color 0.15s ease;
@@ -938,6 +986,7 @@ button {
 .settings-view textarea.memory-text:focus-visible {
   outline: none;
   border-color: var(--blue);
+  box-shadow: var(--focus-ring);
 }
 
 .settings-view textarea.memory-text::placeholder {
@@ -948,6 +997,7 @@ button {
 .settings-view select:focus-visible {
   outline: none;
   border-color: var(--blue);
+  box-shadow: var(--focus-ring);
 }
 
 .settings-view input::placeholder {
@@ -958,13 +1008,44 @@ button {
 .diag-row {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--sp-2);
   flex-wrap: wrap;
 }
 
 .test-result {
-  font-size: 12.5px;
+  font-size: var(--fs-s);
   line-height: 1.4;
+}
+
+/* Live "speak now" meter for the STT test (improvement-5 P2 6.8). */
+.stt-live {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-s);
+  color: var(--dim);
+}
+
+.stt-meter {
+  width: 90px;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--bg2);
+  overflow: hidden;
+}
+
+.stt-meter span {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, var(--blue), var(--violet));
+  transition: width 0.09s linear;
+}
+
+/* The PTT hotkey capture field (improvement-5 P2 6.6): read-only, chord typed in. */
+.settings-view input.hotkey-input {
+  cursor: pointer;
+  caret-color: transparent;
+  font-variant-numeric: tabular-nums;
 }
 
 .test-result.ok {
@@ -978,16 +1059,16 @@ button {
 .key-row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--sp-2);
   flex-wrap: wrap;
 }
 
 .key-label {
   display: inline-flex;
   align-items: center;
-  gap: 7px;
+  gap: var(--sp-2);
   min-width: 160px;
-  font-size: 13px;
+  font-size: var(--fs-m);
 }
 
 .key-row input {
@@ -1009,8 +1090,8 @@ button {
 
 .privacy-mode {
   display: flex;
-  gap: 10px;
-  padding: 10px 12px;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
   border: 1px solid var(--line);
   border-radius: var(--radius-m);
   background: var(--bg1);
@@ -1026,16 +1107,16 @@ button {
 .privacy-mode > span {
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: var(--sp-1);
 }
 
 .privacy-name {
-  font-size: 13px;
+  font-size: var(--fs-m);
   font-weight: 500;
 }
 
 .privacy-desc {
-  font-size: 12.5px;
+  font-size: var(--fs-s);
   line-height: 1.5;
   color: var(--dim);
 }
@@ -1043,12 +1124,12 @@ button {
 .privacy-violations {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--sp-2);
 }
 
 .wake-toggle {
   display: flex;
-  gap: 10px;
+  gap: var(--sp-2);
   align-items: flex-start;
   cursor: pointer;
 }
@@ -1056,7 +1137,7 @@ button {
 .wake-toggle > span {
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: var(--sp-1);
 }
 
 .settings-view input[type="checkbox"] {
@@ -1078,7 +1159,7 @@ button {
 
 kbd {
   font: inherit;
-  font-size: 11.5px;
+  font-size: var(--fs-s);
   padding: 1px 5px;
   border: 1px solid var(--line-strong);
   border-radius: 5px;
@@ -1090,10 +1171,10 @@ kbd {
 .missions {
   flex: 1;
   overflow-y: auto;
-  padding: 18px 20px;
+  padding: var(--sp-5);
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: var(--sp-5);
   scrollbar-width: thin;
   scrollbar-color: var(--bg2) transparent;
 }
@@ -1101,11 +1182,11 @@ kbd {
 .mission-compose {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: var(--sp-2);
 }
 
 .mission-compose label {
-  font-size: 12.5px;
+  font-size: var(--fs-s);
   line-height: 1.5;
   color: var(--dim);
 }
@@ -1114,13 +1195,13 @@ kbd {
 .mission-plan textarea {
   resize: vertical;
   min-height: 64px;
-  padding: 10px 12px;
+  padding: var(--sp-2) var(--sp-3);
   border-radius: var(--radius-s);
   border: 1px solid var(--line);
   background: var(--bg2);
   color: var(--ink);
   font: inherit;
-  font-size: 13px;
+  font-size: var(--fs-m);
   line-height: 1.5;
 }
 
@@ -1128,6 +1209,7 @@ kbd {
 .mission-plan textarea:focus {
   outline: none;
   border-color: var(--blue);
+  box-shadow: var(--focus-ring);
 }
 
 /* The decomposed-but-unconfirmed plan (improvement-5 P2 5.3): an editable task
@@ -1135,8 +1217,8 @@ kbd {
 .mission-plan {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 14px 16px;
+  gap: var(--sp-2);
+  padding: var(--sp-4);
   border: 1px solid var(--line);
   border-radius: var(--radius-m);
   background: var(--bg1);
@@ -1149,8 +1231,8 @@ kbd {
 .mission-board {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 14px 16px;
+  gap: var(--sp-2);
+  padding: var(--sp-4);
   border: 1px solid var(--line);
   border-radius: var(--radius-m);
   background: var(--bg1);
@@ -1159,24 +1241,24 @@ kbd {
 .mission-head {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--sp-2);
 }
 
 .mission-outcome {
   flex: 1;
-  font-size: 13px;
+  font-size: var(--fs-m);
   font-weight: 600;
   letter-spacing: -0.01em;
 }
 
 .mission-count {
   font-variant-numeric: tabular-nums;
-  font-size: 12px;
+  font-size: var(--fs-s);
   color: var(--dim);
 }
 
 .mission-badge {
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.05em;
@@ -1207,14 +1289,14 @@ kbd {
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--sp-2);
 }
 
 .mission-task {
   display: flex;
   align-items: baseline;
-  gap: 9px;
-  font-size: 13px;
+  gap: var(--sp-2);
+  font-size: var(--fs-m);
   line-height: 1.45;
   color: var(--ink);
 }
@@ -1247,19 +1329,19 @@ kbd {
 
 .missions .empty {
   color: var(--dim);
-  font-size: 12.5px;
+  font-size: var(--fs-s);
 }
 
 /* Compact mission chip in the widget card (the second face). */
 .mission-chip {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--sp-2);
   padding: 6px 9px;
   border-radius: var(--radius-s);
   border: 1px solid var(--line);
   background: var(--blue-tint);
-  font-size: 11.5px;
+  font-size: var(--fs-s);
   min-width: 0;
 }
 .mission-chip.failed {
@@ -1303,14 +1385,14 @@ kbd {
 .runs {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--sp-3);
 }
 
 .runs-head {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 12px;
+  gap: var(--sp-3);
 }
 .runs-head .settings-hint {
   flex: 1;
@@ -1318,7 +1400,7 @@ kbd {
 
 .runs .empty {
   color: var(--dim);
-  font-size: 12.5px;
+  font-size: var(--fs-s);
 }
 
 .runs-list {
@@ -1327,17 +1409,17 @@ kbd {
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--sp-2);
 }
 
 .run-item {
-  padding: 10px 12px;
+  padding: var(--sp-2) var(--sp-3);
   border: 1px solid var(--line);
   border-radius: var(--radius-m);
   background: var(--bg1);
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--sp-2);
 }
 .run-item.run-error {
   border-color: rgba(255, 139, 122, 0.4);
@@ -1347,24 +1429,24 @@ kbd {
 .run-item-head {
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: var(--sp-2);
   flex-wrap: wrap;
 }
 
 .run-source {
-  font-size: 12.5px;
+  font-size: var(--fs-s);
   font-weight: 600;
   color: var(--ink);
 }
 
 .run-time {
-  font-size: 11.5px;
+  font-size: var(--fs-s);
   color: var(--dim);
   font-variant-numeric: tabular-nums;
 }
 
 .run-badge {
-  font-size: 10px;
+  font-size: var(--fs-xs);
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -1385,7 +1467,7 @@ kbd {
 
 .run-reply {
   margin: 0;
-  font-size: 12.5px;
+  font-size: var(--fs-s);
   line-height: 1.5;
   color: var(--ink);
 }
@@ -1396,7 +1478,7 @@ kbd {
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 3px;
-  font-size: 11.5px;
+  gap: var(--sp-1);
+  font-size: var(--fs-s);
   color: var(--warm);
 }

@@ -136,6 +136,19 @@ fn focus_widget(app: &tauri::AppHandle) {
     }
 }
 
+/// Logical (CSS px) window size for a widget face. Expanded height is
+/// content-driven (improvement-5 P2 6.11): the shell reports how tall the card
+/// needs to be; clamped so a runaway measure can't blow the window up or shrink
+/// it below a usable card. The collapsed tile hugs the orb (64 + 12px drag
+/// frame each side). Must match the CSS layout.
+fn widget_size(expanded: bool, height: Option<f64>) -> (f64, f64) {
+    if expanded {
+        (340.0, height.unwrap_or(440.0).clamp(172.0, 440.0))
+    } else {
+        (88.0, 88.0)
+    }
+}
+
 /// Resizes the widget window between its collapsed (bare orb) and expanded
 /// (card) faces, keeping the bottom-right corner anchored so a corner-parked
 /// widget grows into the screen. Done in one Rust command instead of a chain of
@@ -143,12 +156,9 @@ fn focus_widget(app: &tauri::AppHandle) {
 /// visibly jump. The result is clamped to the widget's own monitor, which also
 /// keeps multi-monitor (negative-coordinate) setups on-screen.
 #[tauri::command]
-fn set_widget_expanded(window: tauri::WebviewWindow, expanded: bool) -> Result<(), String> {
+fn set_widget_expanded(window: tauri::WebviewWindow, expanded: bool, height: Option<f64>) -> Result<(), String> {
     use tauri::{PhysicalPosition, PhysicalSize};
-    // Logical (CSS px) sizes for the two faces; must match the CSS layout. The
-    // collapsed tile hugs the orb (64 + 12px drag frame each side): the window
-    // is opaque now, so no empty dark slab around the orb.
-    let (w, h) = if expanded { (340.0, 440.0) } else { (88.0, 88.0) };
+    let (w, h) = widget_size(expanded, height);
     let scale = window.scale_factor().map_err(|e| e.to_string())?;
     let pos = window.outer_position().map_err(|e| e.to_string())?;
     let outer = window.outer_size().map_err(|e| e.to_string())?;
@@ -196,10 +206,13 @@ fn open_full_window(app: &tauri::AppHandle) {
     let app = app.clone();
     let _ = app.clone().run_on_main_thread(move || {
         // Same bundle as the widget; the frontend picks its face by window label.
+        // Explicitly dark (improvement-5 P2 6.9): the content is always dark, so
+        // the titlebar must not follow a light OS theme.
         let _ = WebviewWindowBuilder::new(&app, "app", WebviewUrl::default())
             .title("June")
             .inner_size(900.0, 640.0)
             .min_inner_size(560.0, 420.0)
+            .theme(Some(tauri::Theme::Dark))
             .build();
     });
 }
@@ -210,32 +223,97 @@ async fn show_app(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// Registers the Ctrl+Shift+Space push-to-talk hotkey and bridges its
-/// Pressed/Released edges to the webview as `ptt://down` / `ptt://up` events.
-///
-/// ponytail: the chord is fixed for now; a user-configurable hotkey is a Phase 7
-/// settings entry (PLAN.md §4 Activation).
+/// The default push-to-talk chord, in global-shortcut syntax.
+#[cfg(desktop)]
+const DEFAULT_PTT: &str = "ctrl+shift+space";
+
+/// The user's configured push-to-talk chord (settings `pttHotkey`,
+/// improvement-5 P2 6.6), falling back to the default when unset or blank.
+#[cfg(desktop)]
+fn ptt_hotkey(app: &tauri::AppHandle) -> String {
+    settings::read_settings(app)
+        .get("pttHotkey")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(DEFAULT_PTT)
+        .to_string()
+}
+
+/// (Re-)registers `hotkey` as the one global PTT chord. On failure (unparseable,
+/// or taken by another app) the default chord is restored so push-to-talk never
+/// silently dies, and the outcome is broadcast as `ptt://status` for the
+/// Activation settings card.
+#[cfg(desktop)]
+fn apply_ptt_hotkey(app: &tauri::AppHandle, hotkey: &str) {
+    use tauri::Emitter;
+    use tauri_plugin_global_shortcut::GlobalShortcutExt;
+
+    let shortcuts = app.global_shortcut();
+    let _ = shortcuts.unregister_all();
+    let error = match shortcuts.register(hotkey) {
+        Ok(()) => None,
+        Err(e) => {
+            let _ = shortcuts.register(DEFAULT_PTT);
+            Some(format!(
+                "Couldn't register \"{hotkey}\" ({e}) - push to talk stays on the default chord."
+            ))
+        }
+    };
+    let _ = app.emit(
+        "ptt://status",
+        serde_json::json!({ "ok": error.is_none(), "hotkey": hotkey, "error": error }),
+    );
+}
+
+/// Registers the push-to-talk hotkey and bridges its Pressed/Released edges to
+/// the webview as `ptt://down` / `ptt://up` events. The chord comes from
+/// settings (6.6) and re-registers live when a settings write changes it - the
+/// scheduler's out-of-band `settings://changed` broadcasts arrive here too, so a
+/// voice-created settings edit is picked up as well.
 #[cfg(desktop)]
 fn register_push_to_talk(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> {
-    use tauri::Emitter;
-    use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
+    use tauri::{Emitter, Listener};
+    use tauri_plugin_global_shortcut::ShortcutState;
 
-    let ptt = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::Space);
-    let ptt_for_handler = ptt;
-
+    // June registers exactly one global shortcut - the PTT chord - so the
+    // handler needs no per-shortcut dispatch.
     app.plugin(
         tauri_plugin_global_shortcut::Builder::new()
-            .with_handler(move |app, shortcut, event| {
-                if shortcut == &ptt_for_handler {
-                    let name = match event.state() {
-                        ShortcutState::Pressed => "ptt://down",
-                        ShortcutState::Released => "ptt://up",
-                    };
-                    let _ = app.emit(name, ());
-                }
+            .with_handler(move |app, _shortcut, event| {
+                let name = match event.state() {
+                    ShortcutState::Pressed => "ptt://down",
+                    ShortcutState::Released => "ptt://up",
+                };
+                let _ = app.emit(name, ());
             })
             .build(),
     )?;
-    app.global_shortcut().register(ptt)?;
+    apply_ptt_hotkey(app, &ptt_hotkey(app));
+
+    let current = std::sync::Mutex::new(ptt_hotkey(app));
+    let handle = app.clone();
+    app.listen("settings://changed", move |_| {
+        let want = ptt_hotkey(&handle);
+        let mut cur = current.lock().unwrap();
+        if *cur != want {
+            *cur = want.clone();
+            apply_ptt_hotkey(&handle, &want);
+        }
+    });
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::widget_size;
+
+    #[test]
+    fn widget_size_clamps_expanded_height_and_defaults() {
+        assert_eq!(widget_size(false, Some(400.0)), (88.0, 88.0));
+        assert_eq!(widget_size(true, None), (340.0, 440.0));
+        assert_eq!(widget_size(true, Some(300.0)), (340.0, 300.0));
+        assert_eq!(widget_size(true, Some(20.0)), (340.0, 172.0));
+        assert_eq!(widget_size(true, Some(9000.0)), (340.0, 440.0));
+    }
 }

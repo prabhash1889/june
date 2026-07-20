@@ -26,6 +26,15 @@ export interface SpeechAudio {
   mime: string;
 }
 
+// Output volume (improvement-5 P2 6.5): one per-webview knob applied to every
+// sentence the SpeechQueue plays. Set from settings by the voice surface.
+let outputVolume = 1;
+
+/** Set the playback volume (0..1) for all subsequent speech. */
+export function setOutputVolume(v: number): void {
+  outputVolume = Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : 1;
+}
+
 /** Synthesize one chunk of text. A local `choice.provider` runs on-device
  *  (local-tts.ts); everything else calls cloud OpenAI in Rust, which validates
  *  voice/model and falls back if unset. Empty text yields no audio. Rejects with a
@@ -178,6 +187,7 @@ export class SpeechQueue {
     return new Promise((resolve) => {
       const url = URL.createObjectURL(new Blob([bytes], { type: mime }));
       const el = new Audio(url);
+      el.volume = outputVolume;
       this.#audio = el;
       const done = () => {
         URL.revokeObjectURL(url);

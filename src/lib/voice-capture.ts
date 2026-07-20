@@ -55,6 +55,19 @@ export function rms(frame: Float32Array): number {
   return Math.sqrt(sum / frame.length);
 }
 
+/** One display gain for every raw-RMS level meter (improvement-5 P2 6.10): the
+ *  orb's glow ring, the waveform bars, and the STT test meter all map quiet
+ *  speech (~0.05-0.12 RMS) onto a 0..1 range with this. */
+export const LEVEL_GAIN = 8;
+
+/** getUserMedia audio constraints honouring the user's chosen mic
+ *  (improvement-5 P2 6.5). `ideal`, not `exact`: an unplugged device falls back
+ *  to the system default instead of erroring. */
+function audioConstraints(deviceId?: string, extra: MediaTrackConstraints = {}): MediaTrackConstraints | true {
+  const merged = deviceId ? { ...extra, deviceId: { ideal: deviceId } } : extra;
+  return Object.keys(merged).length > 0 ? merged : true;
+}
+
 /** A distinct failure the UI must handle (PLAN.md Phase 4: permission denial,
  *  missing device, timeout, cancellation, empty transcript). */
 export type CaptureError =
@@ -102,6 +115,8 @@ export interface CaptureOptions {
   onEndpoint?: () => void;
   /** Hard cap on capture length; fires onEndpoint if speech never ends. */
   maxMs?: number;
+  /** Preferred input device (settings.micDeviceId); omitted = system default. */
+  deviceId?: string;
 }
 
 /** Listen for the user starting to speak while June is talking, so speech can
@@ -123,11 +138,12 @@ export async function startBargeMonitor(opts: {
   onSpeech: () => void;
   threshold?: number;
   sustainMs?: number;
+  deviceId?: string;
 }): Promise<() => void> {
   let stream: MediaStream;
   try {
     stream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      audio: audioConstraints(opts.deviceId, { echoCancellation: true, noiseSuppression: true, autoGainControl: true }),
     });
   } catch (err) {
     // A missing/denied mic just means no voice barge-in; the caller can still
@@ -193,7 +209,7 @@ export async function startBargeMonitor(opts: {
 export async function startCapture(opts: CaptureOptions = {}): Promise<CaptureHandle> {
   let stream: MediaStream;
   try {
-    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints(opts.deviceId) });
   } catch (err) {
     throw classifyGetUserMediaError(err);
   }

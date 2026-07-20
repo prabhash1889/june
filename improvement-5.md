@@ -227,13 +227,56 @@ tests, clippy -D warnings, production build all pass). Notes:
 
 ## 6. P2 - product parity and voice UX
 
-**Status: item 1 implemented on 2026-07-20; the round was stopped here by
-request.** The Conversation view now has a textarea + Send footer wired to
-`run_agent` (Enter sends, Shift+Enter for a newline); it shares the widget's
-session via the existing agent://* events, and sending mid-turn preempts like a
-voice barge-in. Turn numbers come from one per-webview allocator (session.ts
-allocTurn) shared with mission planning so they can't collide. Items 2-12 remain
-open for a later round.
+**Status: item 1 implemented on 2026-07-20; items 3-12 implemented on
+2026-07-21** (typecheck, lint, 213 TS + 31 Rust tests, clippy -D warnings,
+production vite build all pass). Item 2 (live interim transcript) stays
+deferred - it is the one L-sized item and needs a streaming STT path. Notes:
+
+- **6.3**: ReviewCard autofocuses its textarea (only when auto-accept is off,
+  since focus pauses the 14.1 countdown) and takes window-level Ctrl+Enter /
+  Esc; KeyGate and KeyRow save on Enter. aria-current on tabs was already done
+  in 6.1's round.
+- **6.4**: statuses are role="status" and errors role="alert" across the
+  widget; the approval summary is role="alert" so a gate is announced; the
+  title-only selects and span-labeled inputs in Settings carry aria-labels;
+  weekday chips got aria-pressed + day-name labels and a larger hit target; a
+  `--focus-ring` box-shadow restores focus-visibility parity on every field
+  that replaced the global outline with a border tint.
+- **6.5**: `micDeviceId` setting + picker (enumerateDevices, refreshed on
+  devicechange) threaded as an `ideal` constraint into all four getUserMedia
+  paths (capture, barge monitor, follow-up, wake); `outputVolume` setting +
+  slider applied per-webview via tts.ts setOutputVolume; a "Stop speaking"
+  button silences June (cancels the turn, keeps the text). A separate mic-mute
+  was skipped: capture is already strictly PTT/wake-gated.
+- **6.6**: `pttHotkey` setting; the Activation card captures a chord from a
+  keydown (letters/digits/F-keys/space + at least one modifier,
+  src/lib/hotkey.ts) and Rust re-registers live on settings://changed, falling
+  back to the default chord and broadcasting `ptt://status` on failure;
+  "press it anywhere to verify" flips on a real ptt://down. All four hardcoded
+  chord strings now render from settings (hotkeyLabel/usePttLabel).
+- **6.7**: humanized tool names (src/lib/actions.ts, mirrors policy's
+  parse-from-front) in the app window's chips + a pulse while a call has no
+  result; the widget shows a compact pulsing tool line while thinking.
+- **6.8**: the STT test shows "Speak now…" + a live level meter (LEVEL_GAIN
+  shared with the orb/waveform) while the 2.5s clip records.
+- **6.9**: both windows are explicitly dark (tauri.conf.json theme + the app
+  window builder), so the titlebar no longer follows a light OS theme.
+- **6.10**: five-size type scale (--fs-xs/s/m/l/xl) replaces the nine ad-hoc
+  sizes; a 4px spacing scale (--sp-1..5) replaces the layout gaps/paddings
+  (control-internal metrics like the 6x9 input padding stay deliberate); the
+  orb and waveform gains folded into one LEVEL_GAIN (voice-capture.ts).
+- **6.11**: the expanded widget window is sized to the card's content -
+  VoicePanel reports the card scrollHeight every render, the shell quantizes
+  to 24px steps (clamped 172-440) and grows from the minimum on each
+  expansion, and set_widget_expanded takes the height (clamped in Rust,
+  unit-tested).
+- **6.12**: Memory and Lessons collapsed into one NotesSection that renders
+  its full chrome (disabled textarea, "Loading…") while the file read is in
+  flight, so the settings page no longer pops in.
+
+Still pending from this phase: the manual in-app pass of the Rust mission
+runner (resume-on-startup, Stop, mid-mission preemption) and a manual pass of
+the new hotkey/mic/volume/widget-sizing surfaces.
 
 1. (M) Text composer in the app Conversation view - input + send wired to existing
    `run_agent`. The only way to command June today is voice through the widget; Claude

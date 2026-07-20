@@ -2,6 +2,14 @@ import { describe, expect, it } from "vitest";
 
 import { DEFAULT_SETTINGS, privacyViolations, voiceAllowed } from "./settings.ts";
 
+describe("defaults", () => {
+  it("ships the default PTT chord, system-default mic, and full volume", () => {
+    expect(DEFAULT_SETTINGS.pttHotkey).toBe("ctrl+shift+space");
+    expect(DEFAULT_SETTINGS.micDeviceId).toBe("");
+    expect(DEFAULT_SETTINGS.outputVolume).toBe(1);
+  });
+});
+
 // privacyViolations is the pure check the settings UI warns from AND the run
 // path enforces, so it is worth pinning against each mode (PLAN.md §5).
 describe("privacy violations", () => {

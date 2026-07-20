@@ -74,6 +74,14 @@ export interface JuneSettings {
   tts: StageChoice & { voice: string };
   /** Base URL for the brain when its provider allows a custom endpoint. */
   brainBaseUrl: string;
+  /** Global push-to-talk chord (improvement-5 P2 6.6) in global-shortcut syntax
+   *  ("ctrl+shift+space"). Rust re-registers it live on settings change. */
+  pttHotkey: string;
+  /** Preferred microphone deviceId (improvement-5 P2 6.5); "" = system default.
+   *  Passed as an `ideal` constraint, so an unplugged device falls back. */
+  micDeviceId: string;
+  /** Speech output volume, 0..1 (improvement-5 P2 6.5). */
+  outputVolume: number;
   /** Start a fresh conversation after this many idle minutes (Phase 11.2).
    *  0 = never auto-reset; the conversation persists until "new conversation". */
   conversationIdleMinutes: number;
@@ -98,6 +106,9 @@ export const DEFAULT_SETTINGS: JuneSettings = {
   brain: { provider: "claude", model: "claude-opus-4-8", effort: "high" },
   tts: { provider: "openai", model: "tts-1", voice: "alloy" },
   brainBaseUrl: "",
+  pttHotkey: "ctrl+shift+space",
+  micDeviceId: "",
+  outputVolume: 1,
   conversationIdleMinutes: 10,
   privacyMode: "standard",
   wake: { enabled: false, phrase: "hey june", sensitivity: 0.5 },
@@ -172,6 +183,9 @@ function coerce(raw: RawSettings): JuneSettings {
     },
     tts: { ...stage("tts", d.tts), voice: str(obj("tts").voice, d.tts.voice) },
     brainBaseUrl: str(raw.brainBaseUrl, d.brainBaseUrl),
+    pttHotkey: str(raw.pttHotkey, d.pttHotkey),
+    micDeviceId: typeof raw.micDeviceId === "string" ? raw.micDeviceId : d.micDeviceId,
+    outputVolume: unit(raw.outputVolume, d.outputVolume),
     conversationIdleMinutes: nonNegInt(raw.conversationIdleMinutes, d.conversationIdleMinutes),
     privacyMode: modes.includes(mode as PrivacyMode) ? (mode as PrivacyMode) : d.privacyMode,
     wake: {

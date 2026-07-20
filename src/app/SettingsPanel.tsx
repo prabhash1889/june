@@ -9,6 +9,7 @@ import {
   type ProbeResult,
   testBrain,
 } from "../lib/diagnostics.ts";
+import { chordFromKeyEvent, hotkeyLabel } from "../lib/hotkey.ts";
 import { type LatencySample, latencySamples, percentile } from "../lib/latency.ts";
 import {
   MCP_CATALOG,
@@ -46,7 +47,7 @@ import {
 } from "../lib/settings.ts";
 import { transcribe } from "../lib/stt.ts";
 import { synthesize } from "../lib/tts.ts";
-import { startCapture } from "../lib/voice-capture.ts";
+import { LEVEL_GAIN, startCapture } from "../lib/voice-capture.ts";
 
 // The full settings surface (PLAN.md §3-§4, Phase 7). This is the window's
 // second face: choose the STT / brain / TTS stack, verify each stage, manage
@@ -71,9 +72,10 @@ function brainBaseUrl(s: JuneSettings): string {
   return p?.baseUrl ?? "";
 }
 
-async function playBytes(bytes: Uint8Array, mime: string): Promise<void> {
+async function playBytes(bytes: Uint8Array, mime: string, volume = 1): Promise<void> {
   const url = URL.createObjectURL(new Blob([bytes], { type: mime }));
   const el = new Audio(url);
+  el.volume = Math.min(1, Math.max(0, volume));
   await new Promise<void>((resolve) => {
     el.onended = () => resolve();
     el.onerror = () => resolve();
@@ -178,18 +180,22 @@ function ModelsSection({ settings, update }: { settings: JuneSettings; update: (
 }
 
 /** Provider dropdown for a stage. Unavailable providers (local voice, not yet
- *  wired) are shown so the intended stack is visible but cannot be selected. */
+ *  wired) are shown so the intended stack is visible but cannot be selected.
+ *  `label` names the control for assistive tech (6.4) - the visual row label is
+ *  a plain span, so the select must carry its own name. */
 function ProviderSelect({
   stage,
+  label,
   value,
   onChange,
 }: {
   stage: Stage;
+  label: string;
   value: string;
   onChange: (id: string) => void;
 }) {
   return (
-    <select value={value} onChange={(e) => onChange(e.target.value)}>
+    <select value={value} aria-label={`${label} provider`} onChange={(e) => onChange(e.target.value)}>
       {providersFor(stage).map((p) => (
         <option key={p.id} value={p.id} disabled={!p.available}>
           {p.label}
@@ -200,11 +206,27 @@ function ProviderSelect({
   );
 }
 
-function ModelInput({ provider, value, onChange }: { provider: Provider; value: string; onChange: (v: string) => void }) {
+function ModelInput({
+  provider,
+  label,
+  value,
+  onChange,
+}: {
+  provider: Provider;
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+}) {
   const listId = `models-${provider.id}`;
   return (
     <>
-      <input list={listId} value={value} onChange={(e) => onChange(e.target.value)} placeholder="model id" />
+      <input
+        list={listId}
+        value={value}
+        aria-label={`${label} model`}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder="model id"
+      />
       <datalist id={listId}>
         {provider.models.map((m) => (
           <option key={m.id} value={m.id}>
@@ -249,30 +271,120 @@ function TestControl({ run }: { run: () => Promise<ProbeResult> }) {
   );
 }
 
+/** The audio input devices, refreshed on plug/unplug. Labels are empty until the
+ *  mic permission has been granted once - fall back to a numbered name. */
+function MicPicker({ value, onChange }: { value: string; onChange: (id: string) => void }) {
+  const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
+  useEffect(() => {
+    const refresh = () =>
+      void navigator.mediaDevices
+        ?.enumerateDevices()
+        .then((ds) => setDevices(ds.filter((d) => d.kind === "audioinput" && d.deviceId)))
+        .catch(() => {});
+    refresh();
+    navigator.mediaDevices?.addEventListener?.("devicechange", refresh);
+    return () => navigator.mediaDevices?.removeEventListener?.("devicechange", refresh);
+  }, []);
+  return (
+    <select value={value} aria-label="Microphone" onChange={(e) => onChange(e.target.value)}>
+      <option value="">System default</option>
+      {devices.map((d, i) => (
+        <option key={d.deviceId} value={d.deviceId}>
+          {d.label || `Microphone ${i + 1}`}
+        </option>
+      ))}
+    </select>
+  );
+}
+
 function SttCard({ settings, update }: { settings: JuneSettings; update: (s: JuneSettings) => void }) {
   const provider = resolveProvider("stt", settings.stt.provider);
+  const [busy, setBusy] = useState(false);
+  // Live input level while the test records (improvement-5 P2 6.8): null when not
+  // recording. Without it the 2.5s capture had no "speak now" indication at all.
+  const [level, setLevel] = useState<number | null>(null);
+  const [result, setResult] = useState<ProbeResult | null>(null);
 
-  const runTest = async (): Promise<ProbeResult> => {
-    const t0 = performance.now();
-    const handle = await startCapture({ onEndpoint: () => {}, maxMs: 3000 });
-    await new Promise((r) => setTimeout(r, 2500));
-    const { audio, mime } = await handle.stop();
-    if (audio.length === 0) return { ok: false, detail: "No audio captured - is the microphone allowed?", ms: 0 };
-    const text = (await transcribe(audio, mime, settings.stt)).trim();
-    const ms = Math.round(performance.now() - t0);
-    return text
-      ? { ok: true, detail: `Heard: "${text}"`, ms }
-      : { ok: false, detail: "Transcription came back empty - try speaking during the test.", ms };
+  const runTest = async () => {
+    setBusy(true);
+    setResult(null);
+    let meter: number | null = null;
+    try {
+      const t0 = performance.now();
+      const handle = await startCapture({
+        onEndpoint: () => {},
+        maxMs: 3000,
+        deviceId: settings.micDeviceId || undefined,
+      });
+      setLevel(0);
+      meter = window.setInterval(() => setLevel(handle.level()), 90);
+      await new Promise((r) => setTimeout(r, 2500));
+      window.clearInterval(meter);
+      meter = null;
+      setLevel(null);
+      const { audio, mime } = await handle.stop();
+      if (audio.length === 0) {
+        setResult({ ok: false, detail: "No audio captured - is the microphone allowed?", ms: 0 });
+        return;
+      }
+      const text = (await transcribe(audio, mime, settings.stt)).trim();
+      const ms = Math.round(performance.now() - t0);
+      setResult(
+        text
+          ? { ok: true, detail: `Heard: "${text}"`, ms }
+          : { ok: false, detail: "Transcription came back empty - try speaking during the test.", ms },
+      );
+    } catch (e) {
+      setResult({ ok: false, detail: msg(e), ms: 0 });
+    } finally {
+      if (meter != null) window.clearInterval(meter);
+      setLevel(null);
+      setBusy(false);
+    }
   };
 
   return (
     <div className="stage-card">
       <div className="stage-row">
         <span className="stage-label">Speech to text</span>
-        <ProviderSelect stage="stt" value={settings.stt.provider} onChange={(id) => update(withProvider(settings, "stt", id))} />
-        {provider && <ModelInput provider={provider} value={settings.stt.model} onChange={(v) => update({ ...settings, stt: { ...settings.stt, model: v } })} />}
+        <ProviderSelect
+          stage="stt"
+          label="Speech to text"
+          value={settings.stt.provider}
+          onChange={(id) => update(withProvider(settings, "stt", id))}
+        />
+        {provider && (
+          <ModelInput
+            provider={provider}
+            label="Speech to text"
+            value={settings.stt.model}
+            onChange={(v) => update({ ...settings, stt: { ...settings.stt, model: v } })}
+          />
+        )}
       </div>
-      <TestControl run={runTest} />
+      <div className="stage-row">
+        <span className="stage-label">Microphone</span>
+        <MicPicker value={settings.micDeviceId} onChange={(id) => update({ ...settings, micDeviceId: id })} />
+      </div>
+      <div className="settings-test">
+        <button onClick={runTest} disabled={busy}>
+          {busy ? "Testing…" : "Test"}
+        </button>
+        {level !== null && (
+          <span className="stt-live" role="status">
+            Speak now…
+            <span className="stt-meter" aria-hidden="true">
+              <span style={{ width: `${Math.min(level * LEVEL_GAIN, 1) * 100}%` }} />
+            </span>
+          </span>
+        )}
+        {result && (
+          <span className={`test-result ${result.ok ? "ok" : "bad"}`}>
+            {result.ok ? "✓" : "✗"} {result.detail}
+            {result.ms ? ` (${result.ms} ms)` : ""}
+          </span>
+        )}
+      </div>
     </div>
   );
 }
@@ -286,14 +398,15 @@ function BrainCard({ settings, update }: { settings: JuneSettings; update: (s: J
     <div className="stage-card">
       <div className="stage-row">
         <span className="stage-label">Brain</span>
-        <ProviderSelect stage="brain" value={settings.brain.provider} onChange={(id) => update(withProvider(settings, "brain", id))} />
+        <ProviderSelect stage="brain" label="Brain" value={settings.brain.provider} onChange={(id) => update(withProvider(settings, "brain", id))} />
         {provider && (
-          <ModelInput provider={provider} value={settings.brain.model} onChange={(v) => update({ ...settings, brain: { ...settings.brain, model: v } })} />
+          <ModelInput provider={provider} label="Brain" value={settings.brain.model} onChange={(v) => update({ ...settings, brain: { ...settings.brain, model: v } })} />
         )}
         <select
           value={settings.brain.effort}
           onChange={(e) => update({ ...settings, brain: { ...settings.brain, effort: e.target.value as Effort } })}
           title="Reasoning effort"
+          aria-label="Reasoning effort"
         >
           {EFFORTS.map((eff) => (
             <option key={eff} value={eff}>
@@ -308,6 +421,7 @@ function BrainCard({ settings, update }: { settings: JuneSettings; update: (s: J
           <input
             className="wide"
             value={settings.brainBaseUrl}
+            aria-label="Brain endpoint URL"
             onChange={(e) => update({ ...settings, brainBaseUrl: e.target.value })}
             placeholder="https://your-endpoint/v1"
           />
@@ -326,7 +440,7 @@ function TtsCard({ settings, update }: { settings: JuneSettings; update: (s: Jun
     const { bytes, mime } = await synthesize(TEST_SAMPLE, settings.tts);
     const ms = Math.round(performance.now() - t0);
     if (bytes.length === 0) return { ok: false, detail: "No audio returned.", ms };
-    await playBytes(bytes, mime);
+    await playBytes(bytes, mime, settings.outputVolume);
     return { ok: true, detail: `Spoke a sample in the ${settings.tts.voice} voice.`, ms };
   };
 
@@ -334,15 +448,33 @@ function TtsCard({ settings, update }: { settings: JuneSettings; update: (s: Jun
     <div className="stage-card">
       <div className="stage-row">
         <span className="stage-label">Text to speech</span>
-        <ProviderSelect stage="tts" value={settings.tts.provider} onChange={(id) => update(withProvider(settings, "tts", id))} />
-        {provider && <ModelInput provider={provider} value={settings.tts.model} onChange={(v) => update({ ...settings, tts: { ...settings.tts, model: v } })} />}
-        <select value={settings.tts.voice} onChange={(e) => update({ ...settings, tts: { ...settings.tts, voice: e.target.value } })} title="Voice">
+        <ProviderSelect stage="tts" label="Text to speech" value={settings.tts.provider} onChange={(id) => update(withProvider(settings, "tts", id))} />
+        {provider && <ModelInput provider={provider} label="Text to speech" value={settings.tts.model} onChange={(v) => update({ ...settings, tts: { ...settings.tts, model: v } })} />}
+        <select
+          value={settings.tts.voice}
+          onChange={(e) => update({ ...settings, tts: { ...settings.tts, voice: e.target.value } })}
+          title="Voice"
+          aria-label="Voice"
+        >
           {voicesFor(settings.tts.provider).map((v) => (
             <option key={v.id} value={v.id}>
               {v.label}
             </option>
           ))}
         </select>
+      </div>
+      <div className="stage-row">
+        <span className="stage-label">Volume</span>
+        <input
+          type="range"
+          min={0}
+          max={1}
+          step={0.05}
+          value={settings.outputVolume}
+          aria-label="Speech output volume"
+          onChange={(e) => update({ ...settings, outputVolume: Number(e.target.value) })}
+        />
+        <span className="settings-hint">{Math.round(settings.outputVolume * 100)}%</span>
       </div>
       <TestControl run={runTest} />
     </div>
@@ -420,7 +552,16 @@ function KeyRow({ label, keyService }: { label: string; keyService: string }) {
         {label}
         <span className={`key-dot ${present ? "on" : ""}`} title={present ? "Key set" : "No key"} />
       </span>
-      <input type="password" placeholder={present ? "Replace key…" : "sk-…"} value={value} onChange={(e) => setValue(e.target.value)} />
+      <input
+        type="password"
+        placeholder={present ? "Replace key…" : "sk-…"}
+        aria-label={`${label} API key`}
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") void save(); // 6.3: Enter saves, same as the button
+        }}
+      />
       <button className="primary" onClick={save} disabled={busy || !value.trim()}>
         Save
       </button>
@@ -474,13 +615,57 @@ function ActivationSection({ settings, update }: { settings: JuneSettings; updat
   // on-device (there is no local voice provider yet) - say so instead of failing.
   const voiceOff = !voiceAllowed(settings);
 
+  // Configurable PTT hotkey (improvement-5 P2 6.6). `verified` flips when the
+  // chord actually arrives as a global ptt://down - the first-run verification -
+  // and Rust reports registration failures (chord taken, unparseable) as
+  // ptt://status, falling back to the default chord so PTT never dies.
+  const [verified, setVerified] = useState(false);
+  const [hotkeyError, setHotkeyError] = useState<string | null>(null);
+  useEffect(() => {
+    const unlisten = [
+      listen("ptt://down", () => setVerified(true)),
+      listen<{ ok: boolean; error?: string | null }>("ptt://status", (e) =>
+        setHotkeyError(e.payload.ok ? null : (e.payload.error ?? "Couldn't register that hotkey.")),
+      ),
+    ];
+    return () => unlisten.forEach((p) => void p.then((f) => f()));
+  }, []);
+
   return (
     <section className="settings-section">
       <h2>Activation</h2>
-      <p className="settings-hint">
-        Push to talk: <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>Space</kbd>. A configurable hotkey arrives in a later
-        phase.
-      </p>
+
+      <div className="stage-card">
+        <div className="stage-row">
+          <span className="stage-label">Push to talk</span>
+          <input
+            className="hotkey-input"
+            value={hotkeyLabel(settings.pttHotkey)}
+            readOnly
+            aria-label="Push-to-talk hotkey. Focus this field and press a new key combination to change it."
+            title="Click, then press the new key combination"
+            onKeyDown={(e) => {
+              if (e.key === "Tab") return; // keep keyboard navigation working
+              e.preventDefault();
+              const chord = chordFromKeyEvent(e);
+              if (chord && chord !== settings.pttHotkey) {
+                setVerified(false);
+                update({ ...settings, pttHotkey: chord });
+              }
+            }}
+          />
+          <span className="settings-hint">
+            {verified
+              ? "✓ Verified - June heard the hotkey."
+              : "Click the field and press the keys you want (a modifier plus a key), then press the hotkey anywhere to verify."}
+          </span>
+        </div>
+        {hotkeyError && (
+          <p className="err" role="alert">
+            {hotkeyError}
+          </p>
+        )}
+      </div>
 
       <div className="stage-card">
         <label className="wake-toggle">
@@ -506,6 +691,7 @@ function ActivationSection({ settings, update }: { settings: JuneSettings; updat
               <span className="stage-label">Phrase</span>
               <input
                 value={wake.phrase}
+                aria-label="Wake phrase"
                 onChange={(e) => setWake({ phrase: e.target.value })}
                 placeholder="hey june"
               />
@@ -522,6 +708,7 @@ function ActivationSection({ settings, update }: { settings: JuneSettings; updat
                 max={1}
                 step={0.05}
                 value={wake.sensitivity}
+                aria-label="Wake sensitivity"
                 onChange={(e) => setWake({ sensitivity: Number(e.target.value) })}
               />
               <span className="settings-hint">
@@ -620,9 +807,9 @@ function TranscriptSection({ settings, update }: { settings: JuneSettings; updat
     <section className="settings-section">
       <h2>Dictation &amp; transcript</h2>
       <p className="settings-hint">
-        Turn on <strong>dictation</strong> from the widget (the keyboard icon), then hold <kbd>Ctrl</kbd> + <kbd>Shift</kbd>{" "}
-        + <kbd>Space</kbd> to type your speech into whatever app is focused. Cleaning below applies to both dictation and
-        spoken commands, and runs entirely on-device.
+        Turn on <strong>dictation</strong> from the widget (the keyboard icon), then hold{" "}
+        <kbd>{hotkeyLabel(settings.pttHotkey)}</kbd> to type your speech into whatever app is focused. Cleaning below
+        applies to both dictation and spoken commands, and runs entirely on-device.
       </p>
 
       <div className="stage-card">
@@ -693,6 +880,7 @@ function ConversationSection({ settings, update }: { settings: JuneSettings; upd
             min={0}
             step={1}
             value={settings.conversationIdleMinutes}
+            aria-label="Minutes idle before a new conversation starts"
             onChange={(e) =>
               update({ ...settings, conversationIdleMinutes: Math.max(0, Math.floor(Number(e.target.value) || 0)) })
             }
@@ -708,33 +896,47 @@ function ConversationSection({ settings, update }: { settings: JuneSettings; upd
   );
 }
 
-// --- Memory ---------------------------------------------------------------
+// --- Memory & Lessons -----------------------------------------------------
 
-// Long-term memory (PLAN.md Phase 11.4): one user-editable june-memory.md, shown
-// to June at the start of every conversation. June writes durable facts here on
-// its own (the remember tool); this surface lets the user see, edit, or clear
-// them. Kept in its own file, not settings.json, and local-only (no network).
-function MemorySection() {
-  const [text, setText] = useState<string | null>(null);
+// One shared surface for June's two user-editable notes files: long-term memory
+// (PLAN.md Phase 11.4, june-memory.md) and post-run task lessons (improvement-4
+// Phase 17.1, june-lessons.md). Both are kept out of settings.json and are
+// local-only (no network). The section renders its full chrome while the file
+// read is in flight (improvement-5 P2 6.12) so the settings page doesn't pop and
+// reflow when the reads resolve.
+function NotesSection({
+  title,
+  hint,
+  read,
+  write,
+  placeholder,
+}: {
+  title: string;
+  hint: string;
+  read: () => Promise<string>;
+  write: (content: string) => Promise<void>;
+  placeholder: string;
+}) {
+  const [text, setText] = useState<string | null>(null); // null = still loading
   const [saved, setSaved] = useState("");
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    readMemory()
+    read()
       .then((m) => {
         setText(m);
         setSaved(m);
       })
       .catch(() => setText(""));
-  }, []);
+  }, [read]);
 
-  if (text === null) return null;
-  const dirty = text !== saved;
+  const loading = text === null;
+  const dirty = !loading && text !== saved;
 
   const save = async (value: string) => {
     setBusy(true);
     try {
-      await writeMemory(value);
+      await write(value);
       setText(value);
       setSaved(value);
     } finally {
@@ -744,24 +946,26 @@ function MemorySection() {
 
   return (
     <section className="settings-section">
-      <h2>Memory</h2>
-      <p className="settings-hint">
-        What June remembers about you across conversations. June saves durable facts here on its own; you can edit or
-        clear them. Stored on-device only.
-      </p>
+      <h2>{title}</h2>
+      <p className="settings-hint">{hint}</p>
       <div className="stage-card">
         <textarea
           className="memory-text"
-          value={text}
+          value={text ?? ""}
+          disabled={loading}
+          aria-label={title}
           onChange={(e) => setText(e.target.value)}
-          placeholder="June hasn't remembered anything yet."
+          placeholder={loading ? "Loading…" : placeholder}
           rows={6}
         />
         <div className="settings-test">
-          <button className="primary" onClick={() => save(text)} disabled={busy || !dirty}>
+          <button className="primary" onClick={() => text !== null && save(text)} disabled={loading || busy || !dirty}>
             {busy ? "Saving…" : "Save"}
           </button>
-          <button onClick={() => save("")} disabled={busy || (text.length === 0 && saved.length === 0)}>
+          <button
+            onClick={() => save("")}
+            disabled={loading || busy || ((text?.length ?? 0) === 0 && saved.length === 0)}
+          >
             Clear
           </button>
         </div>
@@ -770,66 +974,27 @@ function MemorySection() {
   );
 }
 
-// --- Lessons --------------------------------------------------------------
-
-// Post-run task lessons (improvement-4 Phase 17.1): one user-editable
-// june-lessons.md next to june-memory.md. June writes a short lesson after a task
-// (the record_lesson tool) and recalls the relevant ones before a similar task
-// (17.2), so it gets better at repeated work. This surface lets the user see,
-// edit, or clear them. Local-only (no network), so it works in every privacy mode.
-function LessonsSection() {
-  const [text, setText] = useState<string | null>(null);
-  const [saved, setSaved] = useState("");
-  const [busy, setBusy] = useState(false);
-
-  useEffect(() => {
-    readLessons()
-      .then((l) => {
-        setText(l);
-        setSaved(l);
-      })
-      .catch(() => setText(""));
-  }, []);
-
-  if (text === null) return null;
-  const dirty = text !== saved;
-
-  const save = async (value: string) => {
-    setBusy(true);
-    try {
-      await writeLessons(value);
-      setText(value);
-      setSaved(value);
-    } finally {
-      setBusy(false);
-    }
-  };
-
+function MemorySection() {
   return (
-    <section className="settings-section">
-      <h2>Lessons</h2>
-      <p className="settings-hint">
-        What June has learned from past tasks. June saves a short lesson after a task on its own and recalls the relevant
-        ones next time; you can edit or clear them. Stored on-device only.
-      </p>
-      <div className="stage-card">
-        <textarea
-          className="memory-text"
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          placeholder="June hasn't learned any task lessons yet."
-          rows={6}
-        />
-        <div className="settings-test">
-          <button className="primary" onClick={() => save(text)} disabled={busy || !dirty}>
-            {busy ? "Saving…" : "Save"}
-          </button>
-          <button onClick={() => save("")} disabled={busy || (text.length === 0 && saved.length === 0)}>
-            Clear
-          </button>
-        </div>
-      </div>
-    </section>
+    <NotesSection
+      title="Memory"
+      hint="What June remembers about you across conversations. June saves durable facts here on its own; you can edit or clear them. Stored on-device only."
+      read={readMemory}
+      write={writeMemory}
+      placeholder="June hasn't remembered anything yet."
+    />
+  );
+}
+
+function LessonsSection() {
+  return (
+    <NotesSection
+      title="Lessons"
+      hint="What June has learned from past tasks. June saves a short lesson after a task on its own and recalls the relevant ones next time; you can edit or clear them. Stored on-device only."
+      read={readLessons}
+      write={writeLessons}
+      placeholder="June hasn't learned any task lessons yet."
+    />
   );
 }
 
@@ -1090,6 +1255,7 @@ function McpServerCard({
 // audit log records everything the run did. All opt-in, off by default.
 
 const DAY_LABELS = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
+const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 
 function AutomationSection({ settings, update }: { settings: JuneSettings; update: (s: JuneSettings) => void }) {
   const { schedules, triggers, watches } = settings;
@@ -1156,6 +1322,7 @@ function AutomationSection({ settings, update }: { settings: JuneSettings; updat
               value={s.kind}
               onChange={(e) => patchSchedule(s.id, { kind: e.target.value === "every" ? "every" : "daily" })}
               title="How this schedule recurs"
+              aria-label="How this schedule recurs"
             >
               <option value="daily">Daily at a time</option>
               <option value="every">Every N minutes</option>
@@ -1176,7 +1343,12 @@ function AutomationSection({ settings, update }: { settings: JuneSettings; updat
           ) : (
             <div className="stage-row">
               <span className="stage-label">At</span>
-              <input type="time" value={s.time} onChange={(e) => patchSchedule(s.id, { time: e.target.value || "09:00" })} />
+              <input
+                type="time"
+                value={s.time}
+                aria-label="Time of day"
+                onChange={(e) => patchSchedule(s.id, { time: e.target.value || "09:00" })}
+              />
               <span className="settings-hint">
                 {DAY_LABELS.map((lbl, d) => {
                   const on = s.days.includes(d);
@@ -1184,6 +1356,8 @@ function AutomationSection({ settings, update }: { settings: JuneSettings; updat
                     <button
                       key={d}
                       className={on ? "day-on" : "day-off"}
+                      aria-pressed={on}
+                      aria-label={DAY_NAMES[d]}
                       onClick={() =>
                         patchSchedule(s.id, {
                           days: on ? s.days.filter((x) => x !== d) : [...s.days, d].sort((a, b) => a - b),

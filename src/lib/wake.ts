@@ -119,13 +119,21 @@ export async function startWakeListener(opts: {
    *  a user on a local STT provider never has the wake fallback silently hit cloud
    *  Whisper. Omitted defaults to cloud Whisper (unchanged prior behaviour). */
   stt?: StageChoice;
+  /** Preferred input device (settings.micDeviceId); omitted = system default. */
+  deviceId?: string;
 }): Promise<WakeHandle> {
   let stream: MediaStream;
   try {
     // Echo-cancelled + noise-suppressed so June's own speech and steady room
-    // noise don't trip the onset gate (mirrors the barge-in monitor).
+    // noise don't trip the onset gate (mirrors the barge-in monitor). `ideal`
+    // device constraint so an unplugged chosen mic falls back to the default.
     stream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+        ...(opts.deviceId ? { deviceId: { ideal: opts.deviceId } } : {}),
+      },
     });
   } catch (err) {
     throw classifyGetUserMediaError(err);

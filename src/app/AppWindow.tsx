@@ -2,8 +2,10 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
+import { humanizeAction } from "../lib/actions.ts";
 import { useApprovalKeys } from "../lib/approval-hooks.ts";
 import { ApprovalMeta } from "../lib/approval-ui.tsx";
+import { usePttLabel } from "../lib/hotkey.ts";
 import { followBottom } from "../lib/scroll.ts";
 import { allocTurn, type Approval, newConversation, usePendingApproval } from "../lib/session.ts";
 import { runAgent } from "../lib/stt.ts";
@@ -184,6 +186,7 @@ type View = "chat" | "missions" | "runs" | "settings";
 export function AppWindow() {
   const { entries, working } = useConversation();
   const { approval, decide, expired } = usePendingApproval();
+  const pttLabel = usePttLabel(); // 6.6: the chord is configurable now
   const scroller = useRef<HTMLDivElement>(null);
   const [view, setView] = useState<View>("chat");
   // Transient failure note (improvement-5 P0.7): a failed invoke must not look
@@ -230,7 +233,7 @@ export function AppWindow() {
         </nav>
         <div className="app-sub" role="status">
           <span className={`status-dot ${working ? "busy" : ""}`} aria-hidden="true" />
-          {working ? "Working…" : "Ready. Type below, speak to the widget, or hold Ctrl + Shift + Space."}
+          {working ? "Working…" : `Ready. Type below, speak to the widget, or hold ${pttLabel}.`}
         </div>
       </header>
 
@@ -259,8 +262,8 @@ export function AppWindow() {
           <div className="conversation" ref={scroller}>
             {entries.length === 0 && (
               <p className="empty">
-                Nothing yet. Type a command below or hold Ctrl + Shift + Space and speak - your commands, June's
-                replies, and every action it takes appear here live.
+                Nothing yet. Type a command below or hold {pttLabel} and speak - your commands, June's replies, and
+                every action it takes appear here live.
               </p>
             )}
             {entries.map((e) => (
@@ -311,9 +314,12 @@ function Composer({ onError }: { onError: (m: string) => void }) {
 function ConversationEntry({ entry }: { entry: Entry }) {
   if (entry.kind === "you") return <div className="turn you">{entry.text}</div>;
   if (entry.kind === "june") return <div className="turn june">{entry.text}</div>;
+  // Humanized name + a pulse while the call has no result yet (6.7): the chip
+  // reads "read file", not raw snake_case, and running state is visible.
+  const running = entry.result === undefined;
   return (
-    <div className={`turn tool ${entry.error ? "tool-error" : ""}`}>
-      <span className="tool-name">{entry.action}</span>
+    <div className={`turn tool ${entry.error ? "tool-error" : ""} ${running ? "tool-running" : ""}`}>
+      <span className="tool-name">{humanizeAction(entry.action)}</span>
       {entry.result && <span className="tool-result"> - {entry.result}</span>}
     </div>
   );
