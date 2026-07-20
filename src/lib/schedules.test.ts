@@ -1,14 +1,40 @@
 import { describe, expect, it } from "vitest";
 
-import { coerceSchedules, coerceTriggers, fenceUntrusted, frameUnattended } from "./schedules.ts";
+import { coerceSchedules, coerceTriggers, coerceWatches, fenceUntrusted, frameUnattended } from "./schedules.ts";
 
 describe("coerceSchedules", () => {
-  it("keeps a valid schedule and defaults missing fields", () => {
+  it("keeps a valid daily schedule and defaults missing fields", () => {
     const [s] = coerceSchedules([{ label: "Briefing", prompt: "brief me", time: "09:00", days: [1, 2], enabled: true }]);
-    expect(s).toEqual({ id: "briefing", label: "Briefing", prompt: "brief me", time: "09:00", days: [1, 2], enabled: true });
+    expect(s).toEqual({
+      id: "briefing",
+      label: "Briefing",
+      prompt: "brief me",
+      kind: "daily",
+      time: "09:00",
+      days: [1, 2],
+      everyMinutes: 60,
+      enabled: true,
+    });
   });
 
-  it("drops an entry with no valid HH:MM time", () => {
+  it("keeps an interval schedule and drops one with no valid interval (P1.1)", () => {
+    const out = coerceSchedules([
+      { label: "Poll", kind: "every", everyMinutes: 15, enabled: true },
+      { label: "Bad", kind: "every", everyMinutes: 0 },
+      { label: "Bad2", kind: "every" },
+    ]);
+    expect(out).toHaveLength(1);
+    expect(out[0]).toMatchObject({ kind: "every", everyMinutes: 15, time: "09:00" });
+  });
+
+  it("caps a runaway interval and floors a fractional one", () => {
+    const [big] = coerceSchedules([{ label: "x", kind: "every", everyMinutes: 999999 }]);
+    expect(big.everyMinutes).toBe(7 * 24 * 60);
+    const [frac] = coerceSchedules([{ label: "y", kind: "every", everyMinutes: 15.9 }]);
+    expect(frac.everyMinutes).toBe(15);
+  });
+
+  it("drops a daily entry with no valid HH:MM time", () => {
     expect(coerceSchedules([{ label: "x", time: "9am" }, { label: "y", time: "25:00" }])).toEqual([]);
   });
 
@@ -35,6 +61,22 @@ describe("coerceTriggers", () => {
       { label: "no path", prompt: "x" },
     ]);
     expect(out).toEqual([{ id: "errors", label: "Errors", path: "C:\\logs\\err.log", prompt: "look", enabled: true }]);
+  });
+});
+
+describe("coerceWatches (P1.2)", () => {
+  it("keeps a valid watch, drops one with no usable interval", () => {
+    const out = coerceWatches([
+      { label: "Build", prompt: "check ci", everyMinutes: 10, untilCondition: "green", enabled: true },
+      { label: "no interval", prompt: "x" },
+    ]);
+    expect(out).toEqual([
+      { id: "build", label: "Build", prompt: "check ci", everyMinutes: 10, untilCondition: "green", enabled: true },
+    ]);
+  });
+
+  it("returns [] for a non-array", () => {
+    expect(coerceWatches("nope")).toEqual([]);
   });
 });
 

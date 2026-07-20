@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { coerceMission, type Mission } from "./missions.ts";
+import { coerceRuns, type RunRecord } from "./runs.ts";
 
 // Cross-window session glue (PLAN.md Phase 6). The Rust backend broadcasts every
 // step of an agent turn as an `agent://*` event to ALL windows, so the always-on
@@ -169,6 +170,17 @@ export async function readMission(): Promise<Mission | null> {
 /** Persist the mission board and broadcast it to both faces. Pass null to clear. */
 export function writeMission(mission: Mission | null): Promise<void> {
   return invoke("write_mission", { content: mission ? JSON.stringify(mission) : "" });
+}
+
+/** The run-history ledger (improvement-5 P1.3), newest first. Guarded so a missing
+ *  backend / rejected invoke / corrupt line all read as "no runs" rather than
+ *  throwing into the Runs panel. */
+export async function readRuns(): Promise<RunRecord[]> {
+  try {
+    return coerceRuns(await invoke<unknown>("read_runs"));
+  } catch {
+    return [];
+  }
 }
 
 /** The current mission, shared across windows. Seeds from the backend on mount,

@@ -265,6 +265,12 @@ async function main(): Promise<void> {
   const lessonsFile = process.env.JUNE_LESSONS_FILE?.trim() || undefined;
   const hasLessons = lessonsFile ? Boolean((await readLessons(lessonsFile)).trim()) : false;
 
+  // Voice-created automations (improvement-5 P1.5): the host points us at
+  // settings.json so the automation MCP server can add schedules/watch loops the
+  // Rust scheduler reads each tick. Local + user-visible, so it stays on in every
+  // privacy mode; the add_* tools are gated in policy.ts.
+  const settingsFile = process.env.JUNE_SETTINGS_FILE?.trim() || undefined;
+
   // Generic MCP capabilities (Phase 13). The host serializes the user's server
   // list into JUNE_MCP_SERVERS; we coerce it (defensively), then keep only the
   // enabled servers the privacy mode allows (a networked capability is dropped
@@ -284,6 +290,7 @@ async function main(): Promise<void> {
     memory,
     lessonsFile,
     hasLessons,
+    settingsFile,
     mcpEntries,
     persistSession,
   });

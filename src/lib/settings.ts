@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 
 import { coerceMcpServers, type McpServerEntry } from "./mcp-servers.ts";
 import { type PrivacyMode, providerAllowed } from "./privacy.ts";
-import { coerceSchedules, coerceTriggers, type FileTrigger, type Schedule } from "./schedules.ts";
+import { coerceSchedules, coerceTriggers, coerceWatches, type FileTrigger, type Schedule, type WatchLoop } from "./schedules.ts";
 import { PROVIDERS, resolveProvider, type Stage } from "./providers.ts";
 import type { TermMap } from "./transcript.ts";
 
@@ -89,6 +89,8 @@ export interface JuneSettings {
   schedules: Schedule[];
   /** File-watch triggers (Phase 18.3). Empty by default; each is opt-in. */
   triggers: FileTrigger[];
+  /** Repeat-until watch loops (improvement-5 P1.2). Empty by default; each is opt-in. */
+  watches: WatchLoop[];
 }
 
 export const DEFAULT_SETTINGS: JuneSettings = {
@@ -105,6 +107,7 @@ export const DEFAULT_SETTINGS: JuneSettings = {
   mcpServers: [],
   schedules: [],
   triggers: [],
+  watches: [],
 };
 
 /** Raw bag persisted by Rust. Kept alongside the typed view so a save can merge
@@ -194,6 +197,7 @@ function coerce(raw: RawSettings): JuneSettings {
     mcpServers: coerceMcpServers(raw.mcpServers),
     schedules: coerceSchedules(raw.schedules),
     triggers: coerceTriggers(raw.triggers),
+    watches: coerceWatches(raw.watches),
   };
 }
 

@@ -106,6 +106,49 @@ scheduler persists fired-today state to `<app_data_dir>/june-scheduler.json`.
 
 ## 4. P1 - the loops pack (the headline ask)
 
+**Status: all 5 items implemented on 2026-07-20** (typecheck, lint, 212 TS + 22 Rust
+tests, clippy -D warnings, production build all pass; the automation MCP server was
+smoke-tested end-to-end - boots, tools/list, add_schedule + add_watch persist to
+settings.json with other keys preserved). Notes and deliberate deferrals:
+
+- **P1.1 (intervals)**: `Schedule` gained `kind: "daily"|"every"` + `everyMinutes`
+  (schedules.ts/settings.ts, mirrored in scheduler.rs); `is_due` splits into
+  `daily_due` + `interval_due`, and the persisted fired-state is now a full
+  `NaiveDateTime` (tolerant of the legacy date-only value) so an `every` schedule
+  survives a restart within its interval. One interval control added to the
+  Automation UI.
+- **P1.2 (watch loops)**: `WatchLoop` type + `coerceWatches`; the scheduler fires
+  through `run_unattended`, frames the prompt (`frame_watch`, Rust) to end
+  DONE/CONTINUE, parses the verdict (`parse_verdict`, defaults to CONTINUE), and
+  caps at 30 iterations. Watch iteration/done state is in-memory: a restart re-arms
+  an unfinished watch, which is safe (it re-checks and stops on DONE - observe-only
+  leash). Watches UI added.
+- **P1.3 (run ledger + Runs tab)**: every unattended run is appended to
+  `june-runs.jsonl` in `run_unattended` (rotated like audit); prompt/reply are
+  redacted to length markers under on-device privacy modes (mirrors the audit
+  redaction), and blocked gated actions are collected per turn and recorded. New
+  Runs tab (RunsPanel.tsx) reads it via `read_runs`. Deferred: per-schedule "Run
+  now" and a separate audit.jsonl tail view - the run ledger (with blocked-action
+  badges) is the trust surface both dives asked for.
+- **P1.4 (mission verify → retry)**: per-task verification turn (`verifyPrompt`) +
+  `parseVerdict` (conservative: PASS only on an explicit PASS) + one retry with the
+  failure reason (`retryPrompt`); the failed task carries a `note` shown on the
+  board. A "Verify each task" toggle (default on) drives it. Deferred: the
+  mission-end "re-plan / single fix pass over failures" leg - per-task verify+retry
+  delivers the self-checking core.
+- **P1.5 (voice automations)**: new built-in `mcp/automation` server exposing
+  add_schedule / add_watch / list_automations, writing settings.json atomically
+  (serialized read-modify-write so two calls can't clobber each other); the add_*
+  tools are classed `expensive` (gated, spoken-approvable, and blocked on unattended
+  runs so a schedule can't spawn more of itself). The scheduler now emits
+  `settings://changed` when it sees an out-of-band settings write, so the Settings
+  panel refreshes instead of later saving a stale copy over a voice-created
+  automation. Prompt section added (`withAutomations`). Deferred: **start_mission**
+  by voice - a headless MCP tool can't drive the webview-side mission runner; it
+  needs the Rust-side runner (P2.2 5.2). The other four autonomy verbs (schedules +
+  watches) are the "create automations by voice" unlock.
+
+
 1. (S/M) Interval schedules ("every N minutes"). Extend `Schedule` with `kind: "daily"|"every"`
    + `everyMinutes` (src/lib/schedules.ts:18-28); generalize pure `is_due`
    (scheduler.rs:46-61) to track `last_fired: Option<NaiveDateTime>`; one extra Automation

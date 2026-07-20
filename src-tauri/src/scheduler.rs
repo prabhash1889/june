@@ -20,7 +20,7 @@
 use std::collections::HashMap;
 
 use chrono::{Datelike, Local, NaiveDate, NaiveDateTime, NaiveTime};
-use tauri::AppHandle;
+use tauri::{AppHandle, Emitter};
 
 use crate::agent_runner::{run_unattended, AgentSession};
 
@@ -33,17 +33,38 @@ const TICK: std::time::Duration = std::time::Duration::from_secs(30);
 /// launching in the evening won't replay the morning's 9am run.
 const CATCHUP_MINUTES: i64 = 30;
 
+/// How many iterations a watch loop (P1.2) may run before giving up, so a stop
+/// condition that never comes true still stops rather than looping forever.
+const MAX_WATCH_ITERS: u32 = 30;
+
 /// Parse "HH:MM" (24h) into a NaiveTime, or None if malformed.
 fn parse_hhmm(s: &str) -> Option<NaiveTime> {
     let (h, m) = s.split_once(':')?;
     NaiveTime::from_hms_opt(h.parse().ok()?, m.parse().ok()?, 0)
 }
 
-/// Whether a schedule should fire at `now`, given the day it last fired. Pure so the
-/// due rule is unit-tested without a live clock. Fires at most once per calendar day,
-/// only on a matching weekday (empty `days` = every day), within the catch-up window
-/// after the scheduled time. `days` are 0=Sun..6=Sat, matching src/lib/schedules.ts.
-fn is_due(now: NaiveDateTime, time: &str, days: &[u32], last_fired: Option<NaiveDate>) -> bool {
+/// How a schedule recurs (improvement-5 P1.1). Mirrors src/lib/schedules.ts.
+#[derive(Debug, PartialEq, Clone, Copy)]
+enum Kind {
+    Daily,
+    Every,
+}
+
+/// Whether a schedule should fire at `now`, given when it last fired. Pure so the
+/// due rule is unit-tested without a live clock. Dispatches on kind: a `daily`
+/// schedule fires at most once per calendar day within the catch-up window; an
+/// `every` schedule fires once its interval has elapsed since the last fire.
+fn is_due(now: NaiveDateTime, sc: &Schedule, last_fired: Option<NaiveDateTime>) -> bool {
+    match sc.kind {
+        Kind::Daily => daily_due(now, &sc.time, &sc.days, last_fired.map(|d| d.date())),
+        Kind::Every => interval_due(now, sc.every_minutes, last_fired),
+    }
+}
+
+/// The daily rule (Phase 18.1): fires at most once per calendar day, only on a
+/// matching weekday (empty `days` = every day), within the catch-up window after
+/// the scheduled time. `days` are 0=Sun..6=Sat, matching src/lib/schedules.ts.
+fn daily_due(now: NaiveDateTime, time: &str, days: &[u32], last_fired: Option<NaiveDate>) -> bool {
     let today = now.date();
     let weekday = today.weekday().num_days_from_sunday();
     if !days.is_empty() && !days.contains(&weekday) {
@@ -60,6 +81,16 @@ fn is_due(now: NaiveDateTime, time: &str, days: &[u32], last_fired: Option<Naive
     elapsed >= chrono::Duration::zero() && elapsed < chrono::Duration::minutes(CATCHUP_MINUTES)
 }
 
+/// The interval rule (improvement-5 P1.1/P1.2): fires when it has never fired, or
+/// once `every_minutes` have elapsed since the last fire. Shared by `every`
+/// schedules and watch loops. Pure so the interval rule is unit-tested.
+fn interval_due(now: NaiveDateTime, every_minutes: u32, last_fired: Option<NaiveDateTime>) -> bool {
+    match last_fired {
+        None => true,
+        Some(prev) => now - prev >= chrono::Duration::minutes(every_minutes.max(1) as i64),
+    }
+}
+
 /// Show an OS notification (Phase 18.1 "OS notification on completion"). Best-effort:
 /// a missing notification permission or headless environment must never break a run.
 pub(crate) fn notify(app: &AppHandle, title: &str, body: &str) {
@@ -73,8 +104,10 @@ struct Schedule {
     id: String,
     label: String,
     prompt: String,
+    kind: Kind,
     time: String,
     days: Vec<u32>,
+    every_minutes: u32,
     enabled: bool,
 }
 
@@ -87,8 +120,84 @@ struct Trigger {
     enabled: bool,
 }
 
+/// A parsed watch loop from settings.json (improvement-5 P1.2). Mirrors
+/// src/lib/schedules.ts::WatchLoop.
+struct Watch {
+    id: String,
+    label: String,
+    prompt: String,
+    every_minutes: u32,
+    until_condition: String,
+    enabled: bool,
+}
+
 fn s(v: &serde_json::Value, k: &str) -> String {
     v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string()
+}
+
+/// Read an interval-minutes field defensively, clamped to at least one minute so a
+/// garbled 0/negative value can't busy-fire every tick.
+fn every_minutes(v: &serde_json::Value) -> u32 {
+    v.get("everyMinutes")
+        .and_then(|x| x.as_u64())
+        .map(|n| n.clamp(1, u32::MAX as u64) as u32)
+        .unwrap_or(60)
+}
+
+/// A watch loop's stop verdict, parsed from June's reply (P1.2). Defaults to
+/// `Continue` when ambiguous - the safer choice, since the iteration cap still
+/// stops a loop whose condition never resolves.
+#[derive(Debug, PartialEq)]
+enum Verdict {
+    Done,
+    Continue,
+}
+
+/// Parse June's watch reply into a stop verdict. Pure so the rule is unit-tested.
+/// Prefers a line that is exactly DONE/CONTINUE (ignoring surrounding punctuation);
+/// falls back to a whole-reply scan, treating an unqualified DONE as done.
+fn parse_verdict(reply: &str) -> Verdict {
+    for line in reply.lines() {
+        let t = line
+            .trim()
+            .trim_matches(|c: char| !c.is_alphanumeric())
+            .to_ascii_uppercase();
+        if t == "DONE" {
+            return Verdict::Done;
+        }
+        if t == "CONTINUE" {
+            return Verdict::Continue;
+        }
+    }
+    let up = reply.to_ascii_uppercase();
+    if up.contains("DONE") && !up.contains("CONTINUE") {
+        Verdict::Done
+    } else {
+        Verdict::Continue
+    }
+}
+
+/// Compose a watch loop's task prompt (P1.2): the user's check, plus the stop
+/// instruction that makes June end DONE or CONTINUE. `run_unattended` wraps this
+/// again in the unattended frame (18.2), which is the actual leash. Pure.
+fn frame_watch(prompt: &str, until: &str) -> String {
+    let task = if prompt.trim().is_empty() {
+        "Check the current status."
+    } else {
+        prompt.trim()
+    };
+    let cond = until.trim();
+    if cond.is_empty() {
+        format!(
+            "{task}\n\nWhen this is finished and there is nothing left to check, reply with exactly \
+             the word DONE on its own line. Otherwise reply CONTINUE. Then add one short sentence of status."
+        )
+    } else {
+        format!(
+            "{task}\n\nRe-check this each time. If this condition is now true - {cond} - reply with \
+             exactly the word DONE on its own line. Otherwise reply CONTINUE. Then add one short sentence of status."
+        )
+    }
 }
 
 fn read_schedules(settings: &serde_json::Value) -> Vec<Schedule> {
@@ -101,12 +210,33 @@ fn read_schedules(settings: &serde_json::Value) -> Vec<Schedule> {
                     id: s(v, "id"),
                     label: s(v, "label"),
                     prompt: s(v, "prompt"),
+                    kind: if s(v, "kind") == "every" { Kind::Every } else { Kind::Daily },
                     time: s(v, "time"),
                     days: v
                         .get("days")
                         .and_then(|d| d.as_array())
                         .map(|a| a.iter().filter_map(|x| x.as_u64().map(|n| n as u32)).collect())
                         .unwrap_or_default(),
+                    every_minutes: every_minutes(v),
+                    enabled: v.get("enabled").and_then(|x| x.as_bool()).unwrap_or(false),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn read_watches(settings: &serde_json::Value) -> Vec<Watch> {
+    settings
+        .get("watches")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .map(|v| Watch {
+                    id: s(v, "id"),
+                    label: s(v, "label"),
+                    prompt: s(v, "prompt"),
+                    every_minutes: every_minutes(v),
+                    until_condition: s(v, "untilCondition"),
                     enabled: v.get("enabled").and_then(|x| x.as_bool()).unwrap_or(false),
                 })
                 .collect()
@@ -245,20 +375,36 @@ fn truncate(s: &str, max: usize) -> String {
     out
 }
 
-/// Render the fired-today map for `june-scheduler.json` (sorted for determinism).
+/// Timestamp format persisted in `june-scheduler.json`. Explicit (not `Display`,
+/// whose space separator `NaiveDateTime`'s parser rejects) so it round-trips.
+const FIRED_FMT: &str = "%Y-%m-%dT%H:%M:%S";
+
+/// Render the last-fired map for `june-scheduler.json` (sorted for determinism).
 /// Pure, so the roundtrip is unit-tested. Persisting this map (improvement-5 P0.4)
-/// stops a restart inside the 30-minute catch-up window from re-firing a schedule
-/// that already ran today.
-fn render_fired(fired: &HashMap<String, NaiveDate>) -> String {
-    let map: std::collections::BTreeMap<&String, String> = fired.iter().map(|(k, v)| (k, v.to_string())).collect();
+/// stops a restart inside the catch-up window from re-firing a daily schedule that
+/// already ran today, and stops an `every` schedule (P1.1) from re-firing before
+/// its interval has elapsed. Stored as a full timestamp so both rules survive.
+fn render_fired(fired: &HashMap<String, NaiveDateTime>) -> String {
+    let map: std::collections::BTreeMap<&String, String> =
+        fired.iter().map(|(k, v)| (k, v.format(FIRED_FMT).to_string())).collect();
     serde_json::to_string(&map).unwrap_or_else(|_| "{}".to_string())
 }
 
-/// Parse a persisted fired-today map; garbage (missing file contents, bad JSON,
-/// malformed dates) reads as empty, which only risks the pre-persistence behaviour.
-fn parse_fired(s: &str) -> HashMap<String, NaiveDate> {
+/// Parse a persisted last-fired map; garbage (missing file contents, bad JSON,
+/// malformed timestamps) reads as empty, which only risks the pre-persistence
+/// behaviour. Tolerates a legacy date-only value (pre-P1.1) as that day's midnight.
+fn parse_fired(s: &str) -> HashMap<String, NaiveDateTime> {
     serde_json::from_str::<HashMap<String, String>>(s)
-        .map(|m| m.into_iter().filter_map(|(k, v)| v.parse().ok().map(|d| (k, d))).collect())
+        .map(|m| {
+            m.into_iter()
+                .filter_map(|(k, v)| {
+                    NaiveDateTime::parse_from_str(&v, FIRED_FMT)
+                        .ok()
+                        .or_else(|| v.parse::<NaiveDate>().ok().map(|d| d.and_hms_opt(0, 0, 0).unwrap()))
+                        .map(|dt| (k, dt))
+                })
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -271,7 +417,7 @@ fn state_file(app: &AppHandle) -> Option<std::path::PathBuf> {
     Some(dir.join("june-scheduler.json"))
 }
 
-fn load_fired(app: &AppHandle) -> HashMap<String, NaiveDate> {
+fn load_fired(app: &AppHandle) -> HashMap<String, NaiveDateTime> {
     state_file(app)
         .and_then(|p| std::fs::read_to_string(p).ok())
         .map(|s| parse_fired(&s))
@@ -280,7 +426,7 @@ fn load_fired(app: &AppHandle) -> HashMap<String, NaiveDate> {
 
 /// Best-effort atomic write (temp + rename, the same pattern as memory/lessons).
 /// A failed write only means restart-double-fire protection lapses until the next.
-fn save_fired(app: &AppHandle, fired: &HashMap<String, NaiveDate>) {
+fn save_fired(app: &AppHandle, fired: &HashMap<String, NaiveDateTime>) {
     let Some(path) = state_file(app) else { return };
     let tmp = path.with_extension("json.tmp");
     let write = std::fs::write(&tmp, render_fired(fired).as_bytes()).and_then(|()| std::fs::rename(&tmp, &path));
@@ -299,37 +445,64 @@ pub fn start(app: AppHandle, session: AgentSession) {
         // restart inside the catch-up window can't re-fire a schedule that already
         // ran. Trigger mtimes stay in-memory: a restart re-baselines them without
         // firing, so enabling/relaunching never acts on an already-old file.
-        let mut fired: HashMap<String, NaiveDate> = load_fired(&app);
+        let mut fired: HashMap<String, NaiveDateTime> = load_fired(&app);
         let mut attempts: HashMap<String, u32> = HashMap::new();
         let mut mtimes: HashMap<String, std::time::SystemTime> = HashMap::new();
+        // Watch-loop state (P1.2) is in-memory: last-fired, iteration count, and the
+        // set that have hit their stop condition (or the iteration cap). ponytail: a
+        // restart re-arms an unfinished watch, which is safe - it re-checks the
+        // condition and stops on DONE; persist alongside `fired` only if that bites.
+        let mut watch_fired: HashMap<String, NaiveDateTime> = HashMap::new();
+        let mut watch_iters: HashMap<String, u32> = HashMap::new();
+        let mut watch_done: std::collections::HashSet<String> = std::collections::HashSet::new();
+        // Last-seen settings.json mtime, to notice an out-of-band write (P1.5: the
+        // automation MCP server writes schedules/watches straight to settings.json,
+        // which can't emit a Tauri event itself).
+        let mut settings_mtime: Option<std::time::SystemTime> = None;
 
         loop {
             std::thread::sleep(TICK);
             let settings = crate::settings::read_settings(&app);
             let now = Local::now().naive_local();
 
+            // An out-of-band settings write (e.g. a voice-created automation, P1.5)
+            // should reach open windows, so the settings panel reloads instead of
+            // later saving a stale copy over the new automation. Emit the same
+            // `settings://changed` the save command emits; the panel ignores it
+            // while mid-edit, so this never clobbers what the user is typing.
+            if let Some(p) = crate::settings::settings_file(&app) {
+                if let Ok(m) = std::fs::metadata(&p).and_then(|md| md.modified()) {
+                    if settings_mtime.is_some() && settings_mtime != Some(m) {
+                        let _ = app.emit("settings://changed", ());
+                    }
+                    settings_mtime = Some(m);
+                }
+            }
+
             for sc in read_schedules(&settings) {
                 if !sc.enabled {
                     continue;
                 }
-                if !is_due(now, &sc.time, &sc.days, fired.get(&sc.id).copied()) {
+                if !is_due(now, &sc, fired.get(&sc.id).copied()) {
                     // Any half-spent retry budget is void once the window closes
-                    // (or the day turns), so it can't bleed into the next fire.
+                    // (or the interval passes), so it can't bleed into the next fire.
                     attempts.remove(&sc.id);
                     continue;
                 }
                 if session.is_busy() {
                     continue; // don't preempt an interactive turn; retry next tick
                 }
-                // Mark fired only once the schedule is DONE for today (B3.3 +
+                // Mark fired only once the schedule is DONE for this cycle (B3.3 +
                 // improvement-5 P0.4): a spawn-race deferral retries next tick, and
-                // an error retries up to MAX_ATTEMPTS before the day is given up.
+                // an error retries up to MAX_ATTEMPTS before the cycle is given up.
                 let outcome = fire(&app, &session, format!("schedule: {}", sc.label), sc.prompt.clone(), None);
                 if settle_attempt(&mut attempts, &sc.id, &outcome) {
                     if let FireOutcome::Errored(e) = &outcome {
                         notify(&app, &format!("June couldn't finish: schedule: {}", sc.label), e);
                     }
-                    fired.insert(sc.id.clone(), now.date());
+                    // Full timestamp (P1.1): a daily schedule compares the date, an
+                    // `every` schedule measures the elapsed interval from here.
+                    fired.insert(sc.id.clone(), now);
                     save_fired(&app, &fired);
                 }
             }
@@ -365,6 +538,59 @@ pub fn start(app: AppHandle, session: AgentSession) {
                     }
                 }
             }
+
+            // Watch loops (improvement-5 P1.2): re-run an observe-only unattended turn
+            // on an interval, stopping when June replies DONE (the condition holds) or
+            // the iteration cap is hit. The unattended leash (18.2) makes this safe by
+            // construction - a watch can read and report, never act.
+            for w in read_watches(&settings) {
+                if !w.enabled || watch_done.contains(&w.id) {
+                    continue;
+                }
+                if !interval_due(now, w.every_minutes, watch_fired.get(&w.id).copied()) {
+                    continue;
+                }
+                if session.is_busy() {
+                    continue; // don't preempt an interactive turn; retry next tick
+                }
+                let framed = frame_watch(&w.prompt, &w.until_condition);
+                match run_unattended(&app, &session, framed, format!("watch: {}", w.label), None) {
+                    // Spawn-race deferral (B3.3): retry next tick without advancing the
+                    // baseline, so the interval isn't reset by a run that never fired.
+                    Ok(None) => {}
+                    outcome => {
+                        watch_fired.insert(w.id.clone(), now);
+                        let iters = {
+                            let n = watch_iters.entry(w.id.clone()).or_insert(0);
+                            *n += 1;
+                            *n
+                        };
+                        match outcome {
+                            Ok(Some(reply)) => {
+                                if parse_verdict(&reply) == Verdict::Done {
+                                    watch_done.insert(w.id.clone());
+                                    notify(&app, &format!("Watch complete: {}", w.label), &truncate(&reply, 240));
+                                } else if iters >= MAX_WATCH_ITERS {
+                                    watch_done.insert(w.id.clone());
+                                    notify(
+                                        &app,
+                                        &format!("Watch stopped (max checks): {}", w.label),
+                                        &truncate(&reply, 240),
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                // A transient error counts as an iteration; give up at the cap.
+                                if iters >= MAX_WATCH_ITERS {
+                                    watch_done.insert(w.id.clone());
+                                    notify(&app, &format!("Watch stopped: {}", w.label), &e);
+                                }
+                            }
+                            Ok(None) => unreachable!("Ok(None) handled above"),
+                        }
+                    }
+                }
+            }
         }
     });
 }
@@ -375,6 +601,34 @@ mod tests {
 
     fn dt(s: &str) -> NaiveDateTime {
         NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M").unwrap()
+    }
+
+    /// A `daily` schedule for the due-rule tests.
+    fn daily(time: &str, days: &[u32]) -> Schedule {
+        Schedule {
+            id: "s".into(),
+            label: "S".into(),
+            prompt: String::new(),
+            kind: Kind::Daily,
+            time: time.into(),
+            days: days.to_vec(),
+            every_minutes: 60,
+            enabled: true,
+        }
+    }
+
+    /// An `every` schedule for the interval tests.
+    fn every(minutes: u32) -> Schedule {
+        Schedule {
+            id: "s".into(),
+            label: "S".into(),
+            prompt: String::new(),
+            kind: Kind::Every,
+            time: "09:00".into(),
+            days: vec![],
+            every_minutes: minutes,
+            enabled: true,
+        }
     }
 
     #[test]
@@ -390,19 +644,56 @@ mod tests {
     fn fires_once_in_window_then_not_again_today() {
         // 2026-07-20 is a Monday.
         let at_time = dt("2026-07-20 09:00");
-        assert!(is_due(at_time, "09:00", &[], None));
-        // Already fired today -> no re-fire.
-        assert!(!is_due(at_time, "09:00", &[], Some(at_time.date())));
+        assert!(is_due(at_time, &daily("09:00", &[]), None));
+        // Already fired today -> no re-fire (even at a different time that day).
+        assert!(!is_due(at_time, &daily("09:00", &[]), Some(dt("2026-07-20 09:00"))));
     }
 
     #[test]
     fn respects_the_catch_up_window() {
         // 20 min late still fires (within the 30-min catch-up)...
-        assert!(is_due(dt("2026-07-20 09:20"), "09:00", &[], None));
+        assert!(is_due(dt("2026-07-20 09:20"), &daily("09:00", &[]), None));
         // ...an hour late does not (missed for today).
-        assert!(!is_due(dt("2026-07-20 10:00"), "09:00", &[], None));
+        assert!(!is_due(dt("2026-07-20 10:00"), &daily("09:00", &[]), None));
         // Before the scheduled time never fires.
-        assert!(!is_due(dt("2026-07-20 08:59"), "09:00", &[], None));
+        assert!(!is_due(dt("2026-07-20 08:59"), &daily("09:00", &[]), None));
+    }
+
+    #[test]
+    fn interval_schedules_fire_once_per_interval() {
+        // Never fired -> due now.
+        assert!(is_due(dt("2026-07-20 09:00"), &every(30), None));
+        // 29 min after the last fire -> not yet.
+        assert!(!is_due(dt("2026-07-20 09:29"), &every(30), Some(dt("2026-07-20 09:00"))));
+        // Exactly 30 min later -> due again.
+        assert!(is_due(dt("2026-07-20 09:30"), &every(30), Some(dt("2026-07-20 09:00"))));
+        // A garbled 0-minute interval is clamped to at least 1, so the same minute
+        // doesn't busy-fire, but a minute later does.
+        assert!(!is_due(dt("2026-07-20 09:00"), &every(0), Some(dt("2026-07-20 09:00"))));
+        assert!(is_due(dt("2026-07-20 09:01"), &every(0), Some(dt("2026-07-20 09:00"))));
+    }
+
+    #[test]
+    fn parse_verdict_reads_done_and_defaults_to_continue() {
+        assert_eq!(parse_verdict("DONE\nThe build is green."), Verdict::Done);
+        assert_eq!(parse_verdict("continue.\nStill building."), Verdict::Continue);
+        assert_eq!(parse_verdict("The build is done now, so: DONE"), Verdict::Done);
+        // Ambiguous / no verdict -> keep going (the cap still stops it).
+        assert_eq!(parse_verdict("I checked the logs."), Verdict::Continue);
+        // Mentions both words -> the safe default, not a premature stop.
+        assert_eq!(parse_verdict("Not done yet, CONTINUE watching."), Verdict::Continue);
+    }
+
+    #[test]
+    fn frame_watch_carries_the_condition_and_stop_instruction() {
+        let f = frame_watch("check the CI build", "the build is green");
+        assert!(f.contains("check the CI build"));
+        assert!(f.contains("the build is green"));
+        assert!(f.contains("DONE"));
+        assert!(f.contains("CONTINUE"));
+        // No condition still asks for a DONE/CONTINUE verdict.
+        let g = frame_watch("", "");
+        assert!(g.contains("DONE"));
     }
 
     #[test]
@@ -442,24 +733,26 @@ mod tests {
     #[test]
     fn fired_state_roundtrips_and_tolerates_garbage() {
         let mut fired = HashMap::new();
-        fired.insert("morning".to_string(), dt("2026-07-20 09:00").date());
-        fired.insert("evening".to_string(), dt("2026-07-20 21:00").date());
+        fired.insert("morning".to_string(), dt("2026-07-20 09:00"));
+        fired.insert("interval".to_string(), dt("2026-07-20 21:34"));
         assert_eq!(parse_fired(&render_fired(&fired)), fired);
         assert!(parse_fired("").is_empty());
         assert!(parse_fired("not json").is_empty());
-        // A malformed date drops that entry, not the whole map.
-        let partial = parse_fired(r#"{"ok":"2026-07-20","bad":"yesterday"}"#);
-        assert_eq!(partial.len(), 1);
-        assert!(partial.contains_key("ok"));
+        // A malformed timestamp drops that entry, not the whole map; a legacy
+        // date-only value (pre-P1.1) is read as that day's midnight.
+        let partial = parse_fired(r#"{"ts":"2026-07-20T09:00:00","legacy":"2026-07-19","bad":"yesterday"}"#);
+        assert_eq!(partial.len(), 2);
+        assert_eq!(partial.get("legacy"), Some(&dt("2026-07-19 00:00")));
+        assert!(!partial.contains_key("bad"));
     }
 
     #[test]
     fn honours_weekday_filter() {
         // 2026-07-20 is Monday (weekday 1). Restrict to Sundays (0) -> no fire.
-        assert!(!is_due(dt("2026-07-20 09:00"), "09:00", &[0], None));
+        assert!(!is_due(dt("2026-07-20 09:00"), &daily("09:00", &[0]), None));
         // Restrict to Mondays (1) -> fires.
-        assert!(is_due(dt("2026-07-20 09:00"), "09:00", &[1], None));
+        assert!(is_due(dt("2026-07-20 09:00"), &daily("09:00", &[1]), None));
         // Empty day list = every day.
-        assert!(is_due(dt("2026-07-20 09:00"), "09:00", &[], None));
+        assert!(is_due(dt("2026-07-20 09:00"), &daily("09:00", &[]), None));
     }
 }

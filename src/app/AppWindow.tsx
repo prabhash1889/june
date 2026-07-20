@@ -8,6 +8,7 @@ import { recoverInterruptedMission } from "../lib/mission-runner.ts";
 import { followBottom } from "../lib/scroll.ts";
 import { type Approval, newConversation, usePendingApproval } from "../lib/session.ts";
 import { MissionBoard } from "./MissionBoard.tsx";
+import { RunsPanel } from "./RunsPanel.tsx";
 import { SettingsPanel } from "./SettingsPanel.tsx";
 
 // The full application window (PLAN.md Phase 6). It shares the agent session with
@@ -178,7 +179,7 @@ function useConversation(): { entries: Entry[]; working: boolean } {
   return { entries, working };
 }
 
-type View = "chat" | "missions" | "settings";
+type View = "chat" | "missions" | "runs" | "settings";
 
 export function AppWindow() {
   const { entries, working } = useConversation();
@@ -218,6 +219,9 @@ export function AppWindow() {
           <button className={view === "missions" ? "active" : ""} onClick={() => setView("missions")}>
             Missions
           </button>
+          <button className={view === "runs" ? "active" : ""} onClick={() => setView("runs")}>
+            Runs
+          </button>
           <button className={view === "settings" ? "active" : ""} onClick={() => setView("settings")}>
             Settings
           </button>
@@ -248,6 +252,8 @@ export function AppWindow() {
         <SettingsPanel />
       ) : view === "missions" ? (
         <MissionBoard />
+      ) : view === "runs" ? (
+        <RunsPanel />
       ) : (
         <>
           <div className="conversation" ref={scroller}>

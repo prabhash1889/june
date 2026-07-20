@@ -12,7 +12,7 @@ import { genericMcpServers, type McpServerEntry } from "../src/lib/mcp-servers.t
 import { type Brain, type TurnHooks, type TurnResult } from "./brain.ts";
 import { ClaudeBrain } from "./claude-brain.ts";
 import { OpenAiCompatBrain } from "./openai-brain.ts";
-import { SYSTEM_PROMPT, withLessons, withMemory } from "./prompt.ts";
+import { SYSTEM_PROMPT, withAutomations, withLessons, withMemory } from "./prompt.ts";
 
 /** Absolute path to Phase 2's MCP server, resolved from this file so it works
  *  wherever June is launched from. */
@@ -33,6 +33,11 @@ function memoryServerPath(): string {
 /** Absolute path to Phase 17.1's post-run lessons capability. */
 function lessonsServerPath(): string {
   return fileURLToPath(new URL("../mcp/lessons/server.ts", import.meta.url));
+}
+
+/** Absolute path to improvement-5 P1.5's voice-automation capability. */
+function automationServerPath(): string {
+  return fileURLToPath(new URL("../mcp/automation/server.ts", import.meta.url));
 }
 
 /** The files capability (PLAN.md Phase 9), scoped to a single allowed root. Only
@@ -83,6 +88,24 @@ export function lessonsMcpServer(file: string): Record<string, McpServerConfig> 
   };
 }
 
+/** The voice-automation capability (improvement-5 P1.5). Attached when a settings
+ *  file path is set: June can create scheduled runs and watch loops by voice. Local
+ *  and user-visible (the automations show in settings), so like memory it stays on
+ *  in every privacy mode; the add_* tools are gated in policy.ts so June never
+ *  schedules itself without a yes. */
+export function automationMcpServer(settingsFile: string): Record<string, McpServerConfig> {
+  return {
+    automation: {
+      command: "npx",
+      args: ["tsx", automationServerPath()],
+      // Keep the tools in the prompt (like the other built-ins) so a brain with no
+      // tool-search can actually call add_schedule / add_watch.
+      alwaysLoad: true,
+      env: { ...process.env, JUNE_SETTINGS_FILE: settingsFile },
+    },
+  };
+}
+
 /** The committed capability: the saple-bridge-control MCP server, run with tsx. */
 export function defaultMcpServers(workspaceId?: string): Record<string, McpServerConfig> {
   return {
@@ -125,6 +148,10 @@ export interface JuneAgentOptions {
   /** Whether June has any saved lessons yet (Phase 17). Drives one line of the
    *  system prompt so June knows to write lessons even before recall kicks in. */
   hasLessons?: boolean;
+  /** Path to settings.json (improvement-5 P1.5). When set, the automation MCP
+   *  server is attached so June can create schedules/watch loops by voice. Unset ->
+   *  no automation tools. */
+  settingsFile?: string;
   /** Extra MCP capabilities merged over the default (e.g. saple-memory). */
   extraMcpServers?: Record<string, McpServerConfig>;
   /** User-added capability servers (Phase 13). Each becomes an MCP server with
@@ -153,16 +180,20 @@ export function createJuneAgent(opts: JuneAgentOptions = {}): JuneAgent {
     ...(opts.filesRoot ? filesMcpServer(opts.filesRoot) : {}),
     ...(opts.memoryFile ? memoryMcpServer(opts.memoryFile) : {}),
     ...(opts.lessonsFile ? lessonsMcpServer(opts.lessonsFile) : {}),
+    ...(opts.settingsFile ? automationMcpServer(opts.settingsFile) : {}),
     // User-added capabilities (Phase 13): merged like any other server. Adding a
     // capability is data here, not new code. Cast: the shared builder types the
     // config loosely (SDK-free) but the shape matches McpServerConfig exactly.
     ...(genericMcpServers(opts.mcpEntries ?? []) as Record<string, McpServerConfig>),
     ...opts.extraMcpServers,
   };
-  const systemPrompt = withLessons(withMemory(SYSTEM_PROMPT, opts.memory), {
-    enabled: Boolean(opts.lessonsFile),
-    hasLessons: Boolean(opts.hasLessons),
-  });
+  const systemPrompt = withAutomations(
+    withLessons(withMemory(SYSTEM_PROMPT, opts.memory), {
+      enabled: Boolean(opts.lessonsFile),
+      hasLessons: Boolean(opts.hasLessons),
+    }),
+    Boolean(opts.settingsFile),
+  );
   const provider = opts.provider ?? "claude";
   const brain: Brain =
     provider === "claude"

@@ -14,12 +14,14 @@ import { useMission, writeMission } from "../lib/session.ts";
 export function MissionBoard() {
   const mission = useMission();
   const [outcome, setOutcome] = useState("");
+  // Per-task verify → retry loop (improvement-5 P1.4), on by default.
+  const [verify, setVerify] = useState(true);
   const { running, error } = useSyncExternalStore(subscribeRunner, runnerState);
 
   const start = () => {
     const o = outcome.trim();
     if (!o || running) return;
-    void startMission(o).then(() => {
+    void startMission(o, verify).then(() => {
       if (!runnerState().error) setOutcome("");
     });
   };
@@ -45,6 +47,10 @@ export function MissionBoard() {
               Stop
             </button>
           )}
+          <label className="wake-toggle" title="After each task, June checks it succeeded and retries once if not.">
+            <input type="checkbox" checked={verify} disabled={running} onChange={(e) => setVerify(e.target.checked)} />
+            <span>Verify each task</span>
+          </label>
         </div>
         {error && <p className="err">{error}</p>}
       </div>
@@ -73,7 +79,10 @@ function Board({ mission, running }: { mission: Mission; running: boolean }) {
             <span className="mission-task-mark" aria-hidden="true">
               {t.status === "done" ? "✓" : t.status === "failed" ? "✕" : t.status === "active" ? "▸" : "○"}
             </span>
-            <span className="mission-task-title">{t.title}</span>
+            <span className="mission-task-title">
+              {t.title}
+              {t.note && <span className="mission-task-note"> - {t.note}</span>}
+            </span>
           </li>
         ))}
       </ul>

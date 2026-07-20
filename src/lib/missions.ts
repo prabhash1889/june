@@ -17,6 +17,9 @@ export interface MissionTask {
   id: string;
   title: string;
   status: TaskStatus;
+  /** Why a task failed (improvement-5 P1.4): the verification turn's reason, shown
+   *  under the task so a failed board explains itself. Absent unless failed. */
+  note?: string;
 }
 
 export type MissionStatus = "active" | "done" | "failed";
@@ -78,15 +81,16 @@ export function activeTask(mission: Mission): MissionTask | null {
   return mission.tasks.find((t) => t.status === "active") ?? null;
 }
 
-/** Advance the board after the active task ran: mark it done (or failed), then
- *  activate the next pending task. When none remain, the mission finishes - failed
- *  if any task failed, else done. Pure and immutable, so the reducer is unit-tested
- *  without dispatching a single real run. */
-export function advanceMission(mission: Mission, ok: boolean): Mission {
+/** Advance the board after the active task ran: mark it done (or failed, with an
+ *  optional reason note, P1.4), then activate the next pending task. When none
+ *  remain, the mission finishes - failed if any task failed, else done. Pure and
+ *  immutable, so the reducer is unit-tested without dispatching a single real run. */
+export function advanceMission(mission: Mission, ok: boolean, note?: string): Mission {
   const idx = mission.tasks.findIndex((t) => t.status === "active");
   if (idx < 0) return mission; // nothing active - already finished
   const tasks = mission.tasks.map((t) => ({ ...t }));
   tasks[idx].status = ok ? "done" : "failed";
+  if (!ok && note?.trim()) tasks[idx].note = note.trim();
   const next = tasks.findIndex((t) => t.status === "pending");
   if (next >= 0) {
     tasks[next].status = "active";
@@ -133,6 +137,55 @@ export function relevantServers(entries: McpServerEntry[], toolsetIds: string[])
   return entries.filter((e) => want.has(e.id));
 }
 
+// --- Verify → retry (improvement-5 P1.4) -----------------------------------
+// After a task runs, an optional cheap verification turn grades PASS/FAIL; a FAIL
+// gets one retry with the failure reason as context. These are the pure pieces
+// (the verdict parser + the two prompt builders); the orchestration lives in
+// mission-runner.ts, so the risky parsing is unit-tested without a brain.
+
+export interface Verdict {
+  pass: boolean;
+  /** One short reason, for the retry prompt and the task note. */
+  reason: string;
+}
+
+/** The first non-empty line of `text`, capped, as a one-sentence reason. */
+function firstLine(text: string, cap = 200): string {
+  const line = text.split("\n").map((l) => l.trim()).find(Boolean) ?? "";
+  return line.length > cap ? `${line.slice(0, cap)}…` : line;
+}
+
+/** Parse a verification turn's reply into PASS/FAIL + a reason (sibling of
+ *  parseTaskList). Conservative: PASS only on an explicit PASS with no FAIL, so an
+ *  ambiguous or errored verdict fails the task (and triggers the retry) rather than
+ *  marking murky work done. Pure. */
+export function parseVerdict(text: string): Verdict {
+  for (const raw of text.split("\n")) {
+    const line = raw.trim().replace(/^[^A-Za-z]+/, "");
+    if (/^pass\b/i.test(line)) return { pass: true, reason: firstLine(line) };
+    if (/^fail\b/i.test(line)) return { pass: false, reason: firstLine(line) || "The task did not pass verification." };
+  }
+  const up = text.toUpperCase();
+  const pass = up.includes("PASS") && !up.includes("FAIL");
+  return { pass, reason: firstLine(text) || "The task did not pass verification." };
+}
+
+/** The verification-turn prompt: ask the brain to grade whether the task actually
+ *  succeeded toward the outcome, PASS/FAIL + one reason. Pure. */
+export function verifyPrompt(outcome: string, task: string): string {
+  return (
+    `You just attempted this task, part of the goal "${outcome.trim()}":\n\n${task.trim()}\n\n` +
+    `Check whether it actually succeeded - use tools to look if you can. Reply with the single word ` +
+    `PASS or FAIL on the first line, then one short sentence explaining why.`
+  );
+}
+
+/** The retry prompt: re-run the task with the prior failure reason as context. Pure. */
+export function retryPrompt(task: string, reason: string): string {
+  const why = reason.trim();
+  return `${task.trim()}\n\nA previous attempt did not succeed${why ? `: ${why}` : ""}. Try again, addressing that.`;
+}
+
 const STATUSES: TaskStatus[] = ["pending", "active", "done", "failed"];
 const M_STATUSES: MissionStatus[] = ["active", "done", "failed"];
 
@@ -150,10 +203,12 @@ export function coerceMission(raw: unknown): Mission | null {
     const tr = t as Record<string, unknown>;
     const title = typeof tr.title === "string" ? tr.title.trim() : "";
     if (!title) continue;
+    const note = typeof tr.note === "string" && tr.note.trim() ? tr.note.trim() : undefined;
     tasks.push({
       id: typeof tr.id === "string" && tr.id ? tr.id : `t${tasks.length}`,
       title,
       status: STATUSES.includes(tr.status as TaskStatus) ? (tr.status as TaskStatus) : "pending",
+      ...(note ? { note } : {}),
     });
   }
   if (tasks.length === 0) return null;

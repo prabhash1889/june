@@ -11,7 +11,7 @@
     "prebuild": "node scripts/fetch-models.mjs",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "typecheck": "tsc --noEmit && tsc --noEmit -p mcp/saple-bridge-control/tsconfig.json && tsc --noEmit -p mcp/files/tsconfig.json && tsc --noEmit -p mcp/memory/tsconfig.json && tsc --noEmit -p mcp/lessons/tsconfig.json && tsc --noEmit -p agent/tsconfig.json",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p mcp/saple-bridge-control/tsconfig.json && tsc --noEmit -p mcp/files/tsconfig.json && tsc --noEmit -p mcp/memory/tsconfig.json && tsc --noEmit -p mcp/lessons/tsconfig.json && tsc --noEmit -p mcp/automation/tsconfig.json && tsc --noEmit -p agent/tsconfig.json",
     "agent": "tsx agent/cli.ts",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",

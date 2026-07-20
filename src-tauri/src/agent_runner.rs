@@ -28,6 +28,7 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use chrono::Local;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 /// Idle watchdog (B3.2): a turn that emits NO reader event (text/tool/result/
@@ -70,6 +71,85 @@ fn append_audit(app: &AppHandle, entry: &serde_json::Value) {
     if let Err(e) = write {
         eprintln!("[audit] could not write {}: {e}", path.display());
     }
+}
+
+/// Roll `june-runs.jsonl` at this size, mirroring the audit log's rotation (P1.3).
+const MAX_RUNS_BYTES: u64 = 2 * 1024 * 1024;
+
+/// Cap a string to `max` chars (adding an ellipsis), so a long prompt/reply can't
+/// bloat one ledger line. Char-based so it never splits a UTF-8 sequence.
+fn cap_chars(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let mut out: String = s.chars().take(max).collect();
+    out.push('…');
+    out
+}
+
+/// Append one record to the run ledger (improvement-5 P1.3): what one unattended
+/// run did, to `<app_data_dir>/june-runs.jsonl`, read back by the Runs tab. The
+/// prompt/reply text is redacted to a length marker under any on-device privacy
+/// mode (mirroring the audit redaction, policy.ts), so a headless run's content
+/// never lands on disk when the user asked June to keep things local. Best-effort:
+/// a failed ledger write must never break the run. Rotates one generation like the
+/// audit log so a long-lived resident can't grow it without bound.
+#[allow(clippy::too_many_arguments)]
+fn append_run(
+    app: &AppHandle,
+    id: u64,
+    source: &str,
+    prompt: &str,
+    started: &str,
+    reply: &str,
+    is_error: bool,
+    blocked: &[String],
+) {
+    let on_device = matches!(
+        crate::settings::read_settings(app).get("privacyMode").and_then(|v| v.as_str()),
+        Some("local-voice") | Some("strict-offline")
+    );
+    let redact = |s: &str| -> String {
+        if on_device {
+            format!("[redacted {} chars]", s.chars().count())
+        } else {
+            cap_chars(s, 2000)
+        }
+    };
+    let ended = Local::now().naive_local().format("%Y-%m-%dT%H:%M:%S").to_string();
+    let record = serde_json::json!({
+        "id": id,
+        "source": source,
+        "prompt": redact(prompt),
+        "started": started,
+        "ended": ended,
+        "reply": redact(reply),
+        "isError": is_error,
+        "blocked": blocked,
+    });
+    let Ok(dir) = app.path().app_data_dir() else {
+        return;
+    };
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join("june-runs.jsonl");
+    if std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0) > MAX_RUNS_BYTES {
+        let _ = std::fs::rename(&path, dir.join("june-runs.jsonl.1"));
+    }
+    let line = record.to_string();
+    let write = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .and_then(|mut f| writeln!(f, "{line}"));
+    if let Err(e) = write {
+        eprintln!("[runs] could not write {}: {e}", path.display());
+    }
+}
+
+/// Drain the blocked-actions collected for an unattended `turn` (P1.3), so each
+/// run's ledger record carries exactly what it wanted to do but couldn't.
+fn drain_blocked(session: &AgentSession, turn: u64) -> Vec<String> {
+    session.blocked_actions.lock().unwrap().remove(&turn).unwrap_or_default()
 }
 
 /// A gated tool call awaiting a human yes/no. Serialized straight to the UI as
@@ -168,6 +248,10 @@ pub struct AgentSession {
     /// unexpectedly" the review found). Instead we mark it here and respawn lazily:
     /// when the turn finishes (reader `final`) or at the next turn's spawn.
     respawn_pending: Arc<AtomicBool>,
+    /// Gated actions blocked (auto-denied) per unattended turn (improvement-5 P1.3),
+    /// collected by the reader thread so `run_unattended` can record what a headless
+    /// run couldn't do in the run ledger. Drained per turn once the run finishes.
+    blocked_actions: Arc<Mutex<HashMap<u64, Vec<String>>>>,
 }
 
 /// ponytail: keep the last N latency samples for the P50/P95 readout; older ones
@@ -373,6 +457,16 @@ fn lessons_env(app: &AppHandle) -> Vec<(String, String)> {
     }
 }
 
+/// settings.json path for the resident's automation capability (improvement-5
+/// P1.5). Always attached: the automation server writes schedules/watch loops the
+/// scheduler reads each tick. Local + user-visible, so on in every privacy mode.
+fn settings_env(app: &AppHandle) -> Vec<(String, String)> {
+    match crate::settings::settings_file(app) {
+        Some(p) => vec![("JUNE_SETTINGS_FILE".into(), p.to_string_lossy().into_owned())],
+        None => vec![],
+    }
+}
+
 /// Absolute path to agent/serve.ts, resolved from this crate at compile time
 /// (`<repo>/src-tauri` -> `<repo>/agent/serve.ts`).
 fn serve_script() -> PathBuf {
@@ -397,6 +491,7 @@ fn spawn_serve(app: &AppHandle) -> Result<(ChildStdin, std::process::ChildStdout
     brain_vars.extend(files_env(app));
     brain_vars.extend(memory_env(app));
     brain_vars.extend(lessons_env(app));
+    brain_vars.extend(settings_env(app));
     brain_vars.extend(mcp_servers_env(app));
 
     let mut cmd = if cfg!(windows) {
@@ -570,6 +665,11 @@ fn spawn_reader(session: AgentSession, app: AppHandle, stdout: std::process::Chi
                     // (never auto-approved). Notify so the user knows a scheduled run
                     // needs their attention; the audit log holds the full record.
                     let summary = str_at("summary");
+                    let action = str_at("action");
+                    // Record it against this turn for the run ledger (P1.3), so the
+                    // Runs tab shows what a headless run wanted to do but couldn't.
+                    let label = if summary.is_empty() { action } else { summary.clone() };
+                    session.blocked_actions.lock().unwrap().entry(turn).or_default().push(label);
                     crate::scheduler::notify(
                         &app,
                         "June paused an unattended action",
@@ -803,6 +903,13 @@ pub fn run_unattended(
     source: String,
     untrusted: Option<String>,
 ) -> Result<Option<String>, String> {
+    // Stamp when the run was requested (P1.3 ledger); the reply's end time is
+    // stamped when it lands. Keep the source/prompt for the record before they are
+    // moved into the run request below.
+    let started = Local::now().naive_local().format("%Y-%m-%dT%H:%M:%S").to_string();
+    let source_rec = source.clone();
+    let prompt_rec = prompt.clone();
+
     // Bring the resident up FIRST - this can block for seconds (spawn + crash
     // backoff). Only once it is live do we claim a turn slot, so a user turn that
     // arrived DURING the spawn is caught by the busy re-check below (B3.3): the
@@ -840,9 +947,17 @@ pub fn run_unattended(
         return Err(e);
     }
 
-    match await_turn(&rx, WATCHDOG) {
-        Ok(Ok(reply)) => Ok(Some(reply.text)),
-        Ok(Err(msg)) => Err(msg),
+    let outcome = await_turn(&rx, WATCHDOG);
+    let blocked = drain_blocked(session, turn);
+    match outcome {
+        Ok(Ok(reply)) => {
+            append_run(app, turn, &source_rec, &prompt_rec, &started, &reply.text, reply.is_error, &blocked);
+            Ok(Some(reply.text))
+        }
+        Ok(Err(msg)) => {
+            append_run(app, turn, &source_rec, &prompt_rec, &started, &msg, true, &blocked);
+            Err(msg)
+        }
         Err(()) => {
             session.turns.lock().unwrap().remove(&turn);
             session.shutdown();
@@ -853,6 +968,7 @@ pub fn run_unattended(
                 "agent://final",
                 serde_json::json!({ "turn": turn, "text": msg, "isError": true }),
             );
+            append_run(app, turn, &source_rec, &prompt_rec, &started, &msg, true, &blocked);
             Err(msg)
         }
     }
@@ -1018,6 +1134,30 @@ pub fn write_lessons(
     std::fs::rename(&tmp, &path).map_err(|e| e.to_string())?;
     session.request_respawn();
     Ok(())
+}
+
+/// The recent run-ledger records (improvement-5 P1.3), newest first, for the Runs
+/// tab. Reads the rolled generation then the current file so history survives a
+/// rotation, and caps the count so a long-lived ledger never floods the UI. A
+/// missing file reads as no runs (a fresh install shows an empty Runs tab).
+#[tauri::command]
+pub fn read_runs(app: AppHandle) -> Vec<serde_json::Value> {
+    let Ok(dir) = app.path().app_data_dir() else {
+        return vec![];
+    };
+    let mut out: Vec<serde_json::Value> = Vec::new();
+    for name in ["june-runs.jsonl.1", "june-runs.jsonl"] {
+        if let Ok(text) = std::fs::read_to_string(dir.join(name)) {
+            for line in text.lines() {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+                    out.push(v);
+                }
+            }
+        }
+    }
+    out.reverse(); // newest first
+    out.truncate(200);
+    out
 }
 
 /// Absolute path to the current mission board (improvement-4 Phase 19.1),

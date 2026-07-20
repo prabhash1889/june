@@ -18,7 +18,7 @@ import {
   slugify,
 } from "../lib/mcp-servers.ts";
 import { PRIVACY_MODES, type PrivacyMode } from "../lib/privacy.ts";
-import { type FileTrigger, type Schedule } from "../lib/schedules.ts";
+import { type FileTrigger, type Schedule, type WatchLoop } from "../lib/schedules.ts";
 import {
   defaultVoiceFor,
   keyedProviders,
@@ -1092,10 +1092,11 @@ function McpServerCard({
 const DAY_LABELS = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
 
 function AutomationSection({ settings, update }: { settings: JuneSettings; update: (s: JuneSettings) => void }) {
-  const { schedules, triggers } = settings;
+  const { schedules, triggers, watches } = settings;
 
   const setSchedules = (next: Schedule[]) => update({ ...settings, schedules: next });
   const setTriggers = (next: FileTrigger[]) => update({ ...settings, triggers: next });
+  const setWatches = (next: WatchLoop[]) => update({ ...settings, watches: next });
 
   const freshId = (base: string, taken: { id: string }[]): string => {
     if (!taken.some((t) => t.id === base)) return base;
@@ -1105,18 +1106,25 @@ function AutomationSection({ settings, update }: { settings: JuneSettings; updat
   const addSchedule = () =>
     setSchedules([
       ...schedules,
-      { id: freshId("schedule", schedules), label: "New schedule", prompt: "", time: "09:00", days: [], enabled: false },
+      { id: freshId("schedule", schedules), label: "New schedule", prompt: "", kind: "daily", time: "09:00", days: [], everyMinutes: 60, enabled: false },
     ]);
   const addTrigger = () =>
     setTriggers([
       ...triggers,
       { id: freshId("trigger", triggers), label: "New trigger", path: "", prompt: "", enabled: false },
     ]);
+  const addWatch = () =>
+    setWatches([
+      ...watches,
+      { id: freshId("watch", watches), label: "New watch", prompt: "", everyMinutes: 10, untilCondition: "", enabled: false },
+    ]);
 
   const patchSchedule = (id: string, p: Partial<Schedule>) =>
     setSchedules(schedules.map((s) => (s.id === id ? { ...s, ...p } : s)));
   const patchTrigger = (id: string, p: Partial<FileTrigger>) =>
     setTriggers(triggers.map((t) => (t.id === id ? { ...t, ...p } : t)));
+  const patchWatch = (id: string, p: Partial<WatchLoop>) =>
+    setWatches(watches.map((w) => (w.id === id ? { ...w, ...p } : w)));
 
   return (
     <section className="settings-section">
@@ -1143,28 +1151,53 @@ function AutomationSection({ settings, update }: { settings: JuneSettings; updat
             <button onClick={() => setSchedules(schedules.filter((x) => x.id !== s.id))}>Remove</button>
           </div>
           <div className="stage-row">
-            <span className="stage-label">At</span>
-            <input type="time" value={s.time} onChange={(e) => patchSchedule(s.id, { time: e.target.value || "09:00" })} />
-            <span className="settings-hint">
-              {DAY_LABELS.map((lbl, d) => {
-                const on = s.days.includes(d);
-                return (
-                  <button
-                    key={d}
-                    className={on ? "day-on" : "day-off"}
-                    onClick={() =>
-                      patchSchedule(s.id, {
-                        days: on ? s.days.filter((x) => x !== d) : [...s.days, d].sort((a, b) => a - b),
-                      })
-                    }
-                  >
-                    {lbl}
-                  </button>
-                );
-              })}
-              {s.days.length === 0 ? " every day" : ""}
-            </span>
+            <span className="stage-label">Repeat</span>
+            <select
+              value={s.kind}
+              onChange={(e) => patchSchedule(s.id, { kind: e.target.value === "every" ? "every" : "daily" })}
+              title="How this schedule recurs"
+            >
+              <option value="daily">Daily at a time</option>
+              <option value="every">Every N minutes</option>
+            </select>
           </div>
+          {s.kind === "every" ? (
+            <div className="stage-row">
+              <span className="stage-label">Every</span>
+              <input
+                type="number"
+                min={1}
+                className="num"
+                value={s.everyMinutes}
+                onChange={(e) => patchSchedule(s.id, { everyMinutes: Math.max(1, Math.floor(Number(e.target.value) || 1)) })}
+              />
+              <span className="settings-hint">minutes</span>
+            </div>
+          ) : (
+            <div className="stage-row">
+              <span className="stage-label">At</span>
+              <input type="time" value={s.time} onChange={(e) => patchSchedule(s.id, { time: e.target.value || "09:00" })} />
+              <span className="settings-hint">
+                {DAY_LABELS.map((lbl, d) => {
+                  const on = s.days.includes(d);
+                  return (
+                    <button
+                      key={d}
+                      className={on ? "day-on" : "day-off"}
+                      onClick={() =>
+                        patchSchedule(s.id, {
+                          days: on ? s.days.filter((x) => x !== d) : [...s.days, d].sort((a, b) => a - b),
+                        })
+                      }
+                    >
+                      {lbl}
+                    </button>
+                  );
+                })}
+                {s.days.length === 0 ? " every day" : ""}
+              </span>
+            </div>
+          )}
           <textarea
             className="memory-text"
             value={s.prompt}
@@ -1218,6 +1251,60 @@ function AutomationSection({ settings, update }: { settings: JuneSettings; updat
       ))}
       <div className="settings-test">
         <button onClick={addTrigger}>Add trigger</button>
+      </div>
+
+      <h3 className="settings-subhead">Watch loops</h3>
+      <p className="settings-hint">
+        June re-checks something on an interval and stops when a condition holds - "check the build every ten minutes until
+        it's green". Each check is <strong>unattended</strong> (observe-only), and June stops after {30} checks even if the
+        condition never comes true.
+      </p>
+      {watches.map((w) => (
+        <div key={w.id} className="stage-card">
+          <div className="stage-row">
+            <input
+              className="wide"
+              value={w.label}
+              onChange={(e) => patchWatch(w.id, { label: e.target.value })}
+              placeholder="Build watch"
+            />
+            <label className="wake-toggle">
+              <input type="checkbox" checked={w.enabled} onChange={(e) => patchWatch(w.id, { enabled: e.target.checked })} />
+              <span>Enabled</span>
+            </label>
+            <button onClick={() => setWatches(watches.filter((x) => x.id !== w.id))}>Remove</button>
+          </div>
+          <div className="stage-row">
+            <span className="stage-label">Every</span>
+            <input
+              type="number"
+              min={1}
+              className="num"
+              value={w.everyMinutes}
+              onChange={(e) => patchWatch(w.id, { everyMinutes: Math.max(1, Math.floor(Number(e.target.value) || 1)) })}
+            />
+            <span className="settings-hint">minutes</span>
+          </div>
+          <textarea
+            className="memory-text"
+            value={w.prompt}
+            onChange={(e) => patchWatch(w.id, { prompt: e.target.value })}
+            placeholder="Check whether the CI build for the main branch has finished."
+            rows={2}
+          />
+          <div className="stage-row">
+            <span className="stage-label">Until</span>
+            <input
+              className="wide"
+              value={w.untilCondition}
+              onChange={(e) => patchWatch(w.id, { untilCondition: e.target.value })}
+              placeholder="the build is green"
+            />
+          </div>
+        </div>
+      ))}
+      <div className="settings-test">
+        <button onClick={addWatch}>Add watch loop</button>
       </div>
     </section>
   );

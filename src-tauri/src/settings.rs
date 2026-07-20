@@ -10,6 +10,14 @@ fn settings_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(dir.join("settings.json"))
 }
 
+/// Absolute path to settings.json for the resident's automation capability
+/// (improvement-5 P1.5). The automation MCP server writes schedules/watch loops
+/// here; the scheduler re-reads them each tick. None if the app-data dir can't be
+/// resolved, in which case the capability is simply not attached.
+pub(crate) fn settings_file(app: &tauri::AppHandle) -> Option<PathBuf> {
+    settings_path(app).ok()
+}
+
 fn read_settings_file(path: &Path) -> Result<Value, String> {
     match fs::read_to_string(path) {
         Ok(raw) => serde_json::from_str(&raw).map_err(|e| e.to_string()),

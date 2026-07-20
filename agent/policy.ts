@@ -27,6 +27,7 @@ const BUILTIN_SERVERS: ReadonlySet<string> = new Set([
   "files",
   "memory",
   "lessons",
+  "automation",
 ]);
 
 /** The memory/lessons write tools - blocked on unattended runs (B1.3) so an
@@ -63,6 +64,14 @@ const ACTION_CLASS: Record<string, SafetyClass> = {
   // contained lessons file is auto for the same reason as remember - local-only,
   // user-visible and editable in settings, trivially reversible.
   record_lesson: "reversible",
+  // automation capability (improvement-5 P1.5): creating a scheduled run or a watch
+  // loop is EXPENSIVE - it commits June to future unattended runs, so it needs a
+  // yes (spoken-approvable, 14.2). Being gated also means an UNATTENDED run can't
+  // create automations (18.2 blocks expensive), so a schedule can't spawn more of
+  // itself. Listing is a read-only local observe.
+  add_schedule: "expensive",
+  add_watch: "expensive",
+  list_automations: "observe",
 };
 
 /**
@@ -220,6 +229,22 @@ export function summarize(action: string, input: Record<string, unknown>): strin
       return `Remember: ${s("fact") || "?"}`;
     case "record_lesson":
       return `Note lesson: ${s("lesson") || "?"}`;
+    case "add_schedule": {
+      // Expensive + spoken-approvable (14.2): state exactly what recurring run the
+      // user is authorizing, since it commits June to future unattended runs.
+      const label = s("label") || "a task";
+      const recur =
+        s("kind") === "every"
+          ? `every ${Number(input.everyMinutes ?? 0) || "?"} min`
+          : `daily at ${s("time") || "?"}`;
+      return `Schedule "${label}" to run ${recur} (unattended)`;
+    }
+    case "add_watch":
+      return `Watch "${s("label") || "a task"}" every ${Number(input.everyMinutes ?? 0) || "?"} min${
+        s("untilCondition") ? ` until ${showPayload(s("untilCondition"))}` : ""
+      } (unattended)`;
+    case "list_automations":
+      return "List automations";
     default: {
       // An unknown gated tool (a generic server's action) still fails closed to
       // destructive, so the user WILL be asked to approve it - and must see what

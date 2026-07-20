@@ -47,7 +47,7 @@ const SLUG = /^[a-z0-9][a-z0-9-]*$/;
  *  entry claiming one of these would SHADOW the trusted server (e.g. its arbitrary
  *  `remember` inheriting the built-in ungated class), so such an entry is dropped.
  *  Kept in step with agent/policy.ts's BUILTIN_SERVERS. */
-const RESERVED_IDS: ReadonlySet<string> = new Set(["memory", "lessons", "files", "saple-bridge-control"]);
+const RESERVED_IDS: ReadonlySet<string> = new Set(["memory", "lessons", "files", "saple-bridge-control", "automation"]);
 
 /** Turn a label into a safe server id/slug: lowercase, non-alphanumerics to `-`,
  *  trimmed. Used when the caller doesn't supply an id. */

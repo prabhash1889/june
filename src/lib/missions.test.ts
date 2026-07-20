@@ -9,8 +9,11 @@ import {
   missionProgress,
   newMission,
   parseTaskList,
+  parseVerdict,
   relevantServers,
+  retryPrompt,
   stopMission,
+  verifyPrompt,
 } from "./missions.ts";
 
 describe("parseTaskList", () => {
@@ -98,6 +101,50 @@ describe("stopMission (B3.5)", () => {
     let m = newMission("do it", ["a"])!;
     m = advanceMission(m, true); // done, nothing active
     expect(stopMission(m)).toEqual(m);
+  });
+});
+
+describe("advanceMission notes (P1.4)", () => {
+  it("records a failure reason on the failed task, none on success", () => {
+    let m = newMission("do it", ["a", "b"])!;
+    m = advanceMission(m, false, "the file was not written");
+    expect(m.tasks[0].note).toBe("the file was not written");
+    m = advanceMission(m, true, "ignored on success");
+    expect(m.tasks[1].note).toBeUndefined();
+  });
+});
+
+describe("parseVerdict (P1.4)", () => {
+  it("reads an explicit PASS/FAIL on the first line", () => {
+    expect(parseVerdict("PASS\nThe tests all ran green.").pass).toBe(true);
+    const fail = parseVerdict("FAIL - the changelog was not updated.");
+    expect(fail.pass).toBe(false);
+    expect(fail.reason).toContain("changelog");
+  });
+
+  it("fails conservatively on an ambiguous or errored verdict", () => {
+    expect(parseVerdict("I could not tell if it worked.").pass).toBe(false);
+    expect(parseVerdict("It both passed and failed in parts.").pass).toBe(false); // mentions FAIL
+    expect(parseVerdict("").pass).toBe(false);
+  });
+
+  it("treats an unqualified pass mention as pass", () => {
+    expect(parseVerdict("Everything looks good, this is a PASS.").pass).toBe(true);
+  });
+});
+
+describe("verify/retry prompt builders (P1.4)", () => {
+  it("verifyPrompt names the outcome and asks for PASS/FAIL", () => {
+    const p = verifyPrompt("ship the release", "run the tests");
+    expect(p).toContain("ship the release");
+    expect(p).toContain("run the tests");
+    expect(p).toMatch(/PASS or FAIL/);
+  });
+
+  it("retryPrompt folds in the failure reason", () => {
+    expect(retryPrompt("run the tests", "two tests errored")).toContain("two tests errored");
+    // No reason still produces a usable retry.
+    expect(retryPrompt("run the tests", "")).toContain("Try again");
   });
 });
 

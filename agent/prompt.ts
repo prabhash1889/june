@@ -36,6 +36,18 @@ These are durable facts you saved in earlier conversations, quoted inside a data
 ${fenceUntrusted(m)}`;
 }
 
+/** Add the automations instruction to the system prompt (improvement-5 P1.5). When
+ *  the automation capability is on, June is told it can create scheduled runs and
+ *  watch loops by voice, and that these need the user's approval (they are gated).
+ *  With the capability off, the base prompt is unchanged. */
+export function withAutomations(base: string, enabled: boolean): string {
+  if (!enabled) return base;
+  return `${base}
+
+## Setting up automations
+You can create automations that run on their own. Use add_schedule for a recurring task (daily at a time, or every N minutes), add_watch for a repeat-until loop that re-checks something until a condition holds, and list_automations to see what exists. When the user asks you to run something regularly, or to keep checking until something is true, offer to set it up. Creating one needs the user's approval, and these runs are unattended - they can read and report but cannot take actions that need approval, so use them for checks and briefings.`;
+}
+
 /** Add the lessons instruction to the system prompt (improvement-4 Phase 17.1).
  *  When the lessons capability is on, June is told to save a short lesson after a
  *  non-trivial task so it does that task better next time. The lessons themselves
