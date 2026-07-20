@@ -5,7 +5,7 @@ import { matchApproval } from "../lib/approval-voice.ts";
 import { hasOpenAiKey, injectText, runAgent, setOpenAiKey, transcribe } from "../lib/stt.ts";
 import { type Approval, cancelAgent, newConversation, openApp, useMission, usePendingApproval } from "../lib/session.ts";
 import { missionProgress } from "../lib/missions.ts";
-import { DEFAULT_SETTINGS, type HandsFreeConfig, type JuneSettings, loadSettings, saveSettings, voiceAllowed, voiceNeedsOpenAiKey } from "../lib/settings.ts";
+import { DEFAULT_SETTINGS, type HandsFreeConfig, type JuneSettings, loadSettings, saveSettings, voiceAllowed, voiceNeedsOpenAiKey, type WakeConfig } from "../lib/settings.ts";
 import { captureCorrections, cleanTranscript } from "../lib/transcript.ts";
 import { recordLatency, TurnTimer } from "../lib/latency.ts";
 import { SentenceBuffer, SpeechQueue } from "../lib/tts.ts";
@@ -41,6 +41,22 @@ const AUTO_ACCEPT_SECONDS = 3; // 14.1: review-card countdown before auto-send
 const FOLLOWUP_WINDOW_MS = 6_000; // 14.3: how long the mic stays armed after a reply
 const SPOKEN_APPROVAL_MS = 8_000; // 14.2: how long to listen for a spoken yes/no
 const DICTATED_CONFIRM_MS = 2_500; // 15.4: how long the "sent to your app" note lingers
+const ERROR_EXPIRE_MS = 4_000; // B2.5: how long an error lingers before returning to idle
+
+// Compare the effects-driving voice configs by value (B2.3): a settings save that
+// didn't touch these must not hand the wake/hands-free effects a new object, or
+// they tear down and re-arm the mic on every keystroke-driven settings://changed.
+function sameWake(a: WakeConfig, b: WakeConfig): boolean {
+  return a.enabled === b.enabled && a.phrase === b.phrase && a.sensitivity === b.sensitivity;
+}
+function sameHandsFree(a: HandsFreeConfig, b: HandsFreeConfig): boolean {
+  return (
+    a.autoAccept === b.autoAccept &&
+    a.spokenApprovals === b.spokenApprovals &&
+    a.followUp === b.followUp &&
+    a.backchannel === b.backchannel
+  );
+}
 
 // `onActiveChange` lets the widget shell expand into a card while June is doing
 // anything (and collapse back to a bare orb at rest) - the shell owns the window
@@ -111,8 +127,10 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
   const refreshSettings = useCallback(async () => {
     const s = await loadSettings().catch(() => DEFAULT_SETTINGS);
     settingsRef.current = s;
-    setWake(s.wake);
-    setHandsFree(s.handsFree);
+    // Keep the previous object identity when the value is unchanged (B2.3) so the
+    // wake / hands-free effects don't needlessly re-arm the mic on every save.
+    setWake((prev) => (sameWake(prev, s.wake) ? prev : s.wake));
+    setHandsFree((prev) => (sameHandsFree(prev, s.handsFree) ? prev : s.handsFree));
     const blocked = !voiceAllowed(s);
     voiceBlockedRef.current = blocked;
     setVoiceBlocked(blocked);
@@ -121,7 +139,12 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
     const needsKey = !blocked && voiceNeedsOpenAiKey(s);
     const hasKey = needsKey ? await hasOpenAiKey().catch(() => false) : true;
     setPhase((p) => {
-      if (needsKey && !hasKey) return p.s === "need-key" ? p : { s: "need-key" };
+      // Only demand the key from a RESTING phase (B2.8): entering need-key from a
+      // live review/thinking/speaking phase (a settings change to an OpenAI stack
+      // mid-turn) would discard the turn in flight.
+      if (needsKey && !hasKey) {
+        return p.s === "idle" || p.s === "error" || p.s === "need-key" ? { s: "need-key" } : p;
+      }
       // Key satisfied or no longer needed: release the gate, but never interrupt
       // work already in flight - only the resting need-key/idle phase is touched.
       if (p.s === "need-key") return { s: "idle" };
@@ -252,7 +275,6 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
   }, []);
 
   const accept = useCallback(async (transcript: string, original?: string) => {
-    if (original) void learnCorrections(original, transcript);
     const turn = (turnRef.current += 1);
     splitterRef.current = new SentenceBuffer();
     streamTextRef.current = "";
@@ -285,6 +307,10 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
     try {
       const reply = await runAgent(transcript, turn);
       if (turnRef.current !== turn) return; // barged in while generating
+      // Learn the review-gate correction only now the turn is dispatched and done
+      // (B2.2): growing the dictionary persists settings, which respawns the
+      // resident - doing it before the turn killed the very command being sent.
+      if (original) void learnCorrections(original, transcript);
       timer?.firstToken(); // no-op if a text delta already marked it (no-delta brains)
       replyRef.current = reply;
       agentDone = true;
@@ -389,6 +415,16 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
   useEffect(() => {
     if (phase.s !== "dictated") return;
     const id = window.setTimeout(() => setPhase({ s: "idle" }), DICTATED_CONFIRM_MS);
+    return () => window.clearTimeout(id);
+  }, [phase.s]);
+
+  // Auto-recover from a transient error back to rest (B2.5). One "I didn't hear a
+  // command" otherwise parks in `error` forever, which permanently disables the
+  // hands-free wake listener (it only runs while idle) until the orb is clicked.
+  // Expire to idle after a few seconds so wake re-arms; a press clears it sooner.
+  useEffect(() => {
+    if (phase.s !== "error") return;
+    const id = window.setTimeout(() => setPhase({ s: "idle" }), ERROR_EXPIRE_MS);
     return () => window.clearTimeout(id);
   }, [phase.s]);
 
@@ -498,7 +534,10 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
   // a denial, announced aloud. The click path stays live: if the user (or the
   // other window) decides first, this effect's cleanup aborts the spoken flow.
   useEffect(() => {
-    if (!approval || !handsFree.spokenApprovals || approval.cls !== "expensive") return;
+    // Bail under a voice-off privacy mode (B2.9): with no usable STT this flow
+    // would open no mic and silently auto-deny the gate ~8s in, racing the user's
+    // click. Leave the decision entirely to the approval card in that mode.
+    if (!approval || !handsFree.spokenApprovals || approval.cls !== "expensive" || voiceBlocked) return;
     let alive = true;
     let listening = false;
     let cap: CaptureHandle | null = null;
@@ -545,11 +584,14 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
       prompt.stop();
       cap?.cancel();
     };
-  }, [approval, handsFree.spokenApprovals, decide]);
+  }, [approval, handsFree.spokenApprovals, voiceBlocked, decide]);
 
   // Tell the shell to expand whenever June is doing anything (or awaiting an
   // approval, or a mission is running), and collapse back to the bare orb at rest.
-  const active = phase.s !== "idle" || approval != null || missionActive;
+  // Dictation is included (B2.6): latched-and-idle, the card must stay visible so
+  // its on/off toggle and "dictation on" status are reachable (the orb is disabled
+  // in this mode), matching 15.4's "visible indicator throughout".
+  const active = phase.s !== "idle" || approval != null || missionActive || dictation;
   useEffect(() => {
     onActiveChange?.(active);
   }, [active, onActiveChange]);
@@ -581,6 +623,22 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
   const startNewConversation = useCallback(() => {
     cancel();
     void newConversation();
+  }, [cancel]);
+
+  // React to a "New conversation" started from the OTHER face (B2.7). The app
+  // window can reset the resident while this widget is mid-reply or capturing;
+  // the backend broadcasts agent://reset, so tear our pipeline down (same as
+  // Cancel) instead of speaking/capturing a turn the resident has forgotten.
+  // Skip it while `thinking`: that is our OWN idle-reset (Phase 11.2), which fires
+  // agent://reset at the start of a turn we just dispatched - tearing down then
+  // would kill the very turn in flight.
+  useEffect(() => {
+    const unlisten = listen("agent://reset", () => {
+      if (phaseRef.current.s !== "thinking") cancel();
+    });
+    return () => {
+      void unlisten.then((f) => f());
+    };
   }, [cancel]);
 
   const speakingText = phase.s === "speaking" ? phase.text : phase.s === "reply" ? phase.text : "";

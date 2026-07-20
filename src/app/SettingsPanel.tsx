@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
+import { MapTextarea } from "./MapTextarea.tsx";
 import {
   bridgeHealth,
   type BridgeHealth,
@@ -55,6 +56,7 @@ import { startCapture } from "../lib/voice-capture.ts";
 
 const EFFORTS: Effort[] = ["low", "medium", "high"];
 const TEST_SAMPLE = "June is ready when you are.";
+const SAVE_DEBOUNCE_MS = 800; // B2.3: coalesce keystroke-driven saves
 
 function msg(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
@@ -87,13 +89,33 @@ export function SettingsPanel() {
       .catch(() => setSettings(DEFAULT_SETTINGS));
   }, []);
 
+  // Debounced persistence (B2.3): a text field fires update() on every keystroke,
+  // and each save respawns the resident and re-broadcasts settings://changed
+  // (which churns the wake mic). Coalesce to one save after typing settles; flush
+  // any pending save if the window closes so a last change isn't lost.
+  const saveTimer = useRef<number | null>(null);
+  const pendingSave = useRef<JuneSettings | null>(null);
+  useEffect(
+    () => () => {
+      if (saveTimer.current != null && pendingSave.current) {
+        clearTimeout(saveTimer.current);
+        void saveSettings(pendingSave.current).catch(() => {});
+      }
+    },
+    [],
+  );
+
   if (!settings) return <div className="settings-view">Loading settings…</div>;
 
-  // Persist on every change: settings are read fresh at the start of each turn,
-  // so a change here never disrupts a running command or a pending approval.
   const update = (next: JuneSettings) => {
-    setSettings(next);
-    void saveSettings(next).catch(() => {});
+    setSettings(next); // UI stays responsive immediately; the write is debounced
+    pendingSave.current = next;
+    if (saveTimer.current != null) clearTimeout(saveTimer.current);
+    saveTimer.current = window.setTimeout(() => {
+      saveTimer.current = null;
+      pendingSave.current = null;
+      void saveSettings(next).catch(() => {});
+    }, SAVE_DEBOUNCE_MS);
   };
 
   return (
@@ -598,11 +620,11 @@ function TranscriptSection({ settings, update }: { settings: JuneSettings; updat
           Corrections for words June mishears, one per line as <code>heard = correction</code> (e.g.{" "}
           <code>june = June</code>). Edits you make at the review card are added here automatically.
         </p>
-        <textarea
+        <MapTextarea
           className="memory-text wide"
           rows={4}
-          value={mapToText(t.dictionary)}
-          onChange={(e) => setT({ dictionary: textToMap(e.target.value) })}
+          map={t.dictionary}
+          onCommit={(m) => setT({ dictionary: m })}
           placeholder="june = June"
         />
       </div>
@@ -615,11 +637,11 @@ function TranscriptSection({ settings, update }: { settings: JuneSettings; updat
           Spoken shortcuts, one per line as <code>cue = expansion</code> (e.g.{" "}
           <code>insert my intro = Hi, I'm …</code>). Saying the cue inserts the saved text.
         </p>
-        <textarea
+        <MapTextarea
           className="memory-text wide"
           rows={4}
-          value={mapToText(t.snippets)}
-          onChange={(e) => setT({ snippets: textToMap(e.target.value) })}
+          map={t.snippets}
+          onCommit={(m) => setT({ snippets: m })}
           placeholder="insert my intro = Hi, I'm June's owner."
         />
       </div>
@@ -852,24 +874,11 @@ const CLASS_OPTIONS: { value: "" | McpClass; label: string }[] = [
   { value: "destructive", label: "Destructive (always ask)" },
 ];
 
-/** env / headers edited as `KEY=value` lines - the same shape Claude Desktop's
- *  mcp.json uses. Not for long-lived secrets in a shared file, but it is how the
- *  MCP ecosystem passes tokens today; a keychain-per-server surface is a follow-up. */
-function mapToText(map: Record<string, string>): string {
-  return Object.entries(map)
-    .map(([k, v]) => `${k}=${v}`)
-    .join("\n");
-}
-function textToMap(text: string): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const line of text.split("\n")) {
-    const i = line.indexOf("=");
-    if (i <= 0) continue;
-    const k = line.slice(0, i).trim();
-    if (k) out[k] = line.slice(i + 1).trim();
-  }
-  return out;
-}
+// env / headers are edited as `KEY=value` lines (the same shape Claude Desktop's
+// mcp.json uses) via MapTextarea (./MapTextarea.tsx), which keeps a half-typed
+// line alive instead of eating its first character (B2.4). Not for long-lived
+// secrets in a shared file, but it is how the MCP ecosystem passes tokens today;
+// a keychain-per-server surface is a follow-up.
 
 function McpServersSubsection({ settings, update }: { settings: JuneSettings; update: (s: JuneSettings) => void }) {
   const servers = settings.mcpServers;
@@ -988,11 +997,11 @@ function McpServerCard({
           </div>
           <div className="stage-row">
             <span className="stage-label">Env</span>
-            <textarea
+            <MapTextarea
               className="memory-text mcp-env wide"
               rows={2}
-              value={mapToText(t.env)}
-              onChange={(e) => setTransport({ ...t, env: textToMap(e.target.value) })}
+              map={t.env}
+              onCommit={(m) => setTransport({ ...t, env: m })}
               placeholder="GITHUB_PERSONAL_ACCESS_TOKEN=ghp_…"
             />
           </div>
@@ -1010,11 +1019,11 @@ function McpServerCard({
           </div>
           <div className="stage-row">
             <span className="stage-label">Headers</span>
-            <textarea
+            <MapTextarea
               className="memory-text mcp-env wide"
               rows={2}
-              value={mapToText(t.headers)}
-              onChange={(e) => setTransport({ ...t, headers: textToMap(e.target.value) })}
+              map={t.headers}
+              onCommit={(m) => setTransport({ ...t, headers: m })}
               placeholder="Authorization=Bearer …"
             />
           </div>

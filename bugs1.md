@@ -24,9 +24,23 @@ Goal: no tool call can dodge, spoof, or self-satisfy the approval gate.
 
 **Exit:** the spoof shapes from the review classify gated on both brains; an unattended run provably cannot open a browser, write memory, or reach a promoted networked server; a silent clip cannot approve; all prior tests still green.
 
-## Phase B2 - Daily use: the resident stops dying under the user's hands
+## Phase B2 - Daily use: the resident stops dying under the user's hands  ✅ DONE (2026-07-20)
 
 Goal: normal interaction (typing in settings, correcting a transcript) never kills an in-flight turn or wipes conversation memory.
+
+**Status:** all of B2.1-B2.9 landed. Suite green: 179/179 TS tests (was 176, +3 regression tests for B2.4), 15/15 Rust (was 14, +1 for B2.1/B2.2), `npm run typecheck` (all 6 tsconfigs), `eslint .` (zero warnings), `cargo clippy --all-targets` (clean), production `vite build` (chunks stay code-split). The resident-kill choke point now defers while busy (`AgentSession::request_respawn`, applied at `settings.rs` save + `write_memory`/`write_lessons`); the deferred respawn lands in the reader's `final` handler (`apply_pending_respawn`) or at the next `ensure_resident` spawn.
+
+- **B2.1 Deferred-while-busy resident shutdown** ✅ - `AgentSession` gained a `respawn_pending` flag and `request_respawn()`: busy -> mark, idle -> shut down now. `settings.rs:save_settings`, `write_memory`, and `write_lessons` route through it; `ensure_resident` applies a pending respawn at the spawn boundary, the reader's `final` applies it when the last turn drains. `shutdown()` stays unconditional for the watchdog.
+- **B2.2 Review-card correction kills the command being sent** ✅ - `learnCorrections` moved to AFTER `runAgent` resolves in `accept`, so persisting the grown dictionary (which now defers the respawn via B2.1) can't kill the in-flight turn. Rust regression test proves a config change while a turn is registered spares the child and applies once idle.
+- **B2.3 Every keystroke in Settings kills the resident + churns the mic** ✅ - `SettingsPanel.update` debounces the save ~800ms (flushes any pending write on unmount); `VoicePanel.refreshSettings` keeps the prior `wake`/`handsFree` object identity when the value is unchanged (`sameWake`/`sameHandsFree`) so their effects don't re-arm the mic per save.
+- **B2.4 `KEY=value` textareas eat keystrokes** ✅ - new `MapTextarea` (raw-string local state, parse on blur) replaces the four re-derived-each-render textareas (dictionary, snippets, MCP env, headers); pure parse/format split into `lib/kv-map.ts`. 3 regression tests.
+- **B2.5 Error phase dead-ends hands-free** ✅ - an `error` phase auto-expires to `idle` after 4s (`ERROR_EXPIRE_MS`), re-arming wake.
+- **B2.6 Dictation-on at rest is invisible and unreachable** ✅ - `dictation` folded into the widget's `active` signal so the card (with its off-toggle + status) stays visible while latched-and-idle.
+- **B2.7 Widget ignores `agent://reset`** ✅ - `VoicePanel` listens for `agent://reset` and runs its `cancel` teardown, skipping only its own `thinking` phase (the Phase 11.2 idle-reset, which would otherwise kill the just-dispatched turn).
+- **B2.8 Mid-turn `need-key` clobber** ✅ - `refreshSettings` only enters `need-key` from `idle`/`error`/`need-key`, never from a live review/thinking/speaking phase.
+- **B2.9 Spoken-approval effect ignores `voiceBlocked`** ✅ - the spoken-approval effect bails under a voice-off mode (added to guard + deps) so it can't silently auto-deny the gate.
+
+<details><summary>Original findings</summary>
 
 - **B2.1 Deferred-while-busy resident shutdown** (`src-tauri/src/settings.rs:57-70`, `agent_runner.rs:559-563`). `save_settings` unconditionally kills the resident. Fix at the choke point: if `AgentSession::is_busy`, mark respawn-pending instead of killing; apply the shutdown lazily when the turn completes (or on next-turn spawn, the mechanism that already exists). This single fix covers both B2.2 and B2.3's kill paths.
 - **B2.2 Review-card correction kills the very command being sent** (`src/voice/VoicePanel.tsx:255` -> `save_settings`). `learnCorrections` races the just-dispatched turn and typically kills it ("The agent stopped unexpectedly"), the exact opposite of the code comment. Fix: with B2.1 in place, additionally delay the save until `agent://final` for that turn. Test: a Rust test that `save_settings` while busy does not kill the child.
@@ -37,6 +51,8 @@ Goal: normal interaction (typing in settings, correcting a transcript) never kil
 - **B2.7 Widget ignores `agent://reset`** - a "New conversation" from the app face resets the resident while the widget keeps speaking/capturing a dead turn. Fix: `VoicePanel` listens and runs its existing teardown.
 - **B2.8 Mid-turn `need-key` clobber** (`VoicePanel.tsx:124`). A settings change to an OpenAI stack discards a live review card / speaking state. Fix: only enter `need-key` from `idle`/`error`.
 - **B2.9 Spoken-approval effect ignores `voiceBlocked`** (`VoicePanel.tsx:501`). Under a blocked mode it silently auto-denies the gate ~8s in, racing the user's click. Fix: bail unless voice is actually available; leave the card to the click path.
+
+</details>
 
 **Exit:** type a full schedule + dictionary entry by hand in Settings while a turn runs - the turn completes and the entry persists; correct a transcript and Send - the corrected command executes; a hands-free error self-recovers; dictation mode always shows its state.
 

@@ -23,7 +23,7 @@ use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -130,6 +130,12 @@ pub struct AgentSession {
     /// records them and the full-app Diagnostics panel reads them back - separate
     /// webviews, so this shared, capped, in-memory buffer is their common ground.
     latency: Arc<Mutex<Vec<serde_json::Value>>>,
+    /// A config change (settings/memory/lessons edit) arrived while a turn was in
+    /// flight (B2.1). The resident reads its env once at spawn, so it must respawn -
+    /// but killing it now would abort the running turn (the exact "The agent stopped
+    /// unexpectedly" the review found). Instead we mark it here and respawn lazily:
+    /// when the turn finishes (reader `final`) or at the next turn's spawn.
+    respawn_pending: Arc<AtomicBool>,
 }
 
 /// ponytail: keep the last N latency samples for the P50/P95 readout; older ones
@@ -193,6 +199,18 @@ fn clear_conversation(session: &AgentSession, app: &AppHandle) {
     session.events.lock().unwrap().clear();
     *session.pending.lock().unwrap() = None;
     let _ = app.emit("agent://reset", serde_json::json!({}));
+}
+
+/// Apply a deferred (B2.1) respawn once the session is idle: a settings/memory/
+/// lessons change that landed mid-turn marked the resident for respawn instead of
+/// killing it. Now that no turn is in flight, drop the child so the next turn
+/// spawns with the fresh env. A no-op while still busy - the flag stays set until
+/// the last turn drains.
+fn apply_pending_respawn(session: &AgentSession) {
+    if session.respawn_pending.load(Ordering::Relaxed) && !session.is_busy() {
+        session.respawn_pending.store(false, Ordering::Relaxed);
+        session.shutdown();
+    }
 }
 
 /// Resolve the brain the user chose (settings.json) into environment variables
@@ -375,6 +393,11 @@ fn spawn_serve(app: &AppHandle) -> Result<(ChildStdin, std::process::ChildStdout
 /// Ensure a live resident exists, respawning (with backoff) if it is absent or
 /// has exited. Blocking - call inside `spawn_blocking`.
 fn ensure_resident(app: &AppHandle, session: &AgentSession) -> Result<(), String> {
+    // B2.1: a config change deferred while a turn was running is applied at this
+    // spawn boundary - drop the stale-env child so the block below respawns it.
+    if session.respawn_pending.swap(false, Ordering::Relaxed) {
+        session.shutdown();
+    }
     {
         let mut guard = session.resident.lock().unwrap();
         if let Some(r) = guard.as_mut() {
@@ -527,6 +550,8 @@ fn spawn_reader(session: AgentSession, app: AppHandle, stdout: std::process::Chi
                         // pre-11 behaviour; the recorded event carries isError for UI.
                         let _ = tx.send(Ok(text));
                     }
+                    // B2.1: a config change deferred mid-turn can land now the turn is done.
+                    apply_pending_respawn(&session);
                 }
                 _ => {}
             }
@@ -554,11 +579,26 @@ fn spawn_reader(session: AgentSession, app: AppHandle, stdout: std::process::Chi
 }
 
 impl AgentSession {
-    /// Kill the resident so the next `run_agent` respawns it - called when
-    /// settings change (the child reads its config once at spawn).
+    /// Kill the resident so the next `run_agent` respawns it. Unconditional - used
+    /// by the watchdog to drop a wedged process. A config change should go through
+    /// `request_respawn` instead, which defers this when a turn is in flight.
     pub fn shutdown(&self) {
         if let Some(mut r) = self.resident.lock().unwrap().take() {
             let _ = r.child.kill();
+        }
+    }
+
+    /// Apply a config change (settings / memory / lessons edit) to the resident,
+    /// which reads its env once at spawn. If a turn is in flight, killing the child
+    /// now would abort it - a settings save or a review-gate correction must never
+    /// kill the very command being sent (B2.1/B2.2) - so mark a respawn instead; it
+    /// lands when the turn finishes (reader `final`) or at the next spawn
+    /// (`ensure_resident`). Idle -> shut down at once, as before.
+    pub fn request_respawn(&self) {
+        if self.is_busy() {
+            self.respawn_pending.store(true, Ordering::Relaxed);
+        } else {
+            self.shutdown();
         }
     }
 }
@@ -853,7 +893,7 @@ pub fn write_memory(
     let tmp = path.with_extension("md.tmp");
     std::fs::write(&tmp, content.as_bytes()).map_err(|e| e.to_string())?;
     std::fs::rename(&tmp, &path).map_err(|e| e.to_string())?;
-    session.shutdown();
+    session.request_respawn();
     Ok(())
 }
 
@@ -883,7 +923,7 @@ pub fn write_lessons(
     let tmp = path.with_extension("md.tmp");
     std::fs::write(&tmp, content.as_bytes()).map_err(|e| e.to_string())?;
     std::fs::rename(&tmp, &path).map_err(|e| e.to_string())?;
-    session.shutdown();
+    session.request_respawn();
     Ok(())
 }
 
@@ -975,6 +1015,67 @@ mod tests {
         // Oldest five dropped; the buffer keeps the newest window.
         assert_eq!(buf[0]["total"].as_u64(), Some(5));
         assert_eq!(buf[MAX_LATENCY - 1]["total"].as_u64(), Some(MAX_LATENCY as u64 + 4));
+    }
+
+    /// A long-lived child so a test can prove the resident survives (or is killed).
+    /// Killed by `shutdown()` at the end of each test; never runs to completion.
+    fn dummy_resident() -> Resident {
+        let mut cmd = if cfg!(windows) {
+            let mut c = Command::new("cmd");
+            c.args(["/C", "ping", "-n", "30", "127.0.0.1"]);
+            c
+        } else {
+            let mut c = Command::new("sleep");
+            c.arg("30");
+            c
+        };
+        let mut child = cmd
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn dummy child");
+        let stdin = child.stdin.take().unwrap();
+        Resident { stdin, child, gen: 1 }
+    }
+
+    #[test]
+    fn config_change_while_busy_defers_the_respawn_and_spares_the_child() {
+        let session = AgentSession::default();
+        *session.resident.lock().unwrap() = Some(dummy_resident());
+
+        // A registered turn == busy (B2.2: the just-sent command's turn).
+        let (tx, _rx) = std::sync::mpsc::channel();
+        session.turns.lock().unwrap().insert(1, tx);
+        assert!(session.is_busy());
+
+        // A settings save (or learned correction) while busy must NOT kill the child.
+        session.request_respawn();
+        assert!(session.respawn_pending.load(Ordering::Relaxed), "respawn should be deferred");
+        assert!(
+            session
+                .resident
+                .lock()
+                .unwrap()
+                .as_mut()
+                .unwrap()
+                .child
+                .try_wait()
+                .unwrap()
+                .is_none(),
+            "the in-flight turn's resident was killed by a mid-turn config change"
+        );
+
+        // Turn done -> the deferred respawn lands, dropping the stale resident.
+        session.turns.lock().unwrap().remove(&1);
+        apply_pending_respawn(&session);
+        assert!(!session.respawn_pending.load(Ordering::Relaxed));
+        assert!(session.resident.lock().unwrap().is_none(), "idle: deferred respawn should apply");
+
+        // Idle path unchanged: a config change with no turn in flight kills at once.
+        *session.resident.lock().unwrap() = Some(dummy_resident());
+        session.request_respawn();
+        assert!(session.resident.lock().unwrap().is_none(), "idle: respawn should be immediate");
     }
 
     #[test]

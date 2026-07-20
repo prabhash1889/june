@@ -61,10 +61,11 @@ pub fn save_settings(app: tauri::AppHandle, settings: Value) -> Result<(), Strin
     let _ = app.emit("settings://changed", ());
     // The resident agent (Phase 11.1) reads its brain/privacy/files config once at
     // spawn, so a settings change must respawn it - otherwise a live brain or
-    // privacy-mode switch wouldn't take effect until an app restart. Shut it down;
-    // the next turn spawns a fresh process with the new env.
+    // privacy-mode switch wouldn't take effect until an app restart. Respawn is
+    // DEFERRED if a turn is in flight (B2.1): killing mid-turn would abort the very
+    // command being sent (e.g. a review-gate correction saved as the turn runs).
     if let Some(session) = app.try_state::<crate::agent_runner::AgentSession>() {
-        session.shutdown();
+        session.request_respawn();
     }
     Ok(())
 }
