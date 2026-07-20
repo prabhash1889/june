@@ -153,7 +153,8 @@ button {
 }
 
 .open-app,
-.new-convo-orb {
+.new-convo-orb,
+.dictation-toggle {
   display: grid;
   place-items: center;
   width: 28px;
@@ -171,9 +172,21 @@ button {
 }
 
 .open-app:hover,
-.new-convo-orb:hover {
+.new-convo-orb:hover,
+.dictation-toggle:hover:enabled {
   background: var(--blue-tint);
   color: var(--ink);
+}
+
+/* Dictation mode is a latched toggle: when on, it reads as the active tool it is. */
+.dictation-toggle.on {
+  background: var(--blue);
+  color: #fff;
+}
+
+.dictation-toggle:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 /* ---- The orb (state is the interface: rest / listen / think / speak) ------ */

@@ -1,4 +1,5 @@
 mod agent_runner;
+mod dictation;
 mod diagnostics;
 mod keychain;
 mod settings;
@@ -80,6 +81,7 @@ pub fn run() {
             keychain::delete_api_key,
             stt::transcribe,
             tts::synthesize,
+            dictation::inject_text,
             diagnostics::bridge_health,
             diagnostics::test_brain,
             agent_runner::run_agent,

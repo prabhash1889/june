@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { coerceMcpServers, type McpServerEntry } from "./mcp-servers.ts";
 import { type PrivacyMode, providerAllowed } from "./privacy.ts";
 import { PROVIDERS, resolveProvider, type Stage } from "./providers.ts";
+import type { TermMap } from "./transcript.ts";
 
 // June's typed settings (PLAN.md §4, Phase 7). Persisted to
 // `<app_data_dir>/settings.json` by the Rust side (src-tauri/src/settings.rs) as
@@ -43,6 +44,20 @@ export interface HandsFreeConfig {
   backchannel: boolean;
 }
 
+/** Transcript quality & dictation (PLAN.md Phase 15). All local, no network: the
+ *  cleaner (transcript.ts) runs on-device, so these apply in every privacy mode.
+ *  `dictionary` and `snippets` are lowercased-key -> replacement maps, editable in
+ *  settings and grown automatically from review-gate corrections (15.2). */
+export interface TranscriptConfig {
+  /** 15.1: run the cosmetic cleanup (strip fillers, fix punctuation) before the
+   *  review gate and before dictation injection. Off by default. */
+  autoEdit: boolean;
+  /** 15.2: heard-term -> correction, applied whole-word to every transcript. */
+  dictionary: TermMap;
+  /** 15.3: spoken cue -> saved expansion ("insert my intro"). */
+  snippets: TermMap;
+}
+
 /** The local files capability (PLAN.md Phase 9) - a non-saple MCP server proving
  *  June is general-purpose. Off by default: the filesystem is only exposed once
  *  the user opts in and scopes it to a folder. Local/offline-safe. */
@@ -64,6 +79,7 @@ export interface JuneSettings {
   privacyMode: PrivacyMode;
   wake: WakeConfig;
   handsFree: HandsFreeConfig;
+  transcript: TranscriptConfig;
   files: FilesConfig;
   /** User-added MCP capability servers (Phase 13). Empty by default: June ships
    *  with only its built-in capabilities; the user adds any others here. */
@@ -79,6 +95,7 @@ export const DEFAULT_SETTINGS: JuneSettings = {
   privacyMode: "standard",
   wake: { enabled: false, phrase: "hey june", sensitivity: 0.5 },
   handsFree: { autoAccept: false, spokenApprovals: false, followUp: false, backchannel: false },
+  transcript: { autoEdit: false, dictionary: {}, snippets: {} },
   files: { enabled: false, root: "" },
   mcpServers: [],
 };
@@ -101,6 +118,22 @@ function nonNegInt(v: unknown, fallback: number): number {
   return typeof v === "number" && Number.isFinite(v) && v >= 0 ? Math.floor(v) : fallback;
 }
 
+/** Coerce an arbitrary value into a string->string term map (dictionary/snippets),
+ *  dropping non-string cells and capping the entry count so a corrupt or runaway
+ *  file can't bloat the settings bag. Keys are lowercased so matching is stable. */
+function termMap(v: unknown, cap = 200): TermMap {
+  if (typeof v !== "object" || v === null) return {};
+  const out: TermMap = {};
+  let n = 0;
+  for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
+    const key = k.trim().toLowerCase();
+    if (!key || typeof val !== "string") continue;
+    out[key] = val;
+    if (++n >= cap) break;
+  }
+  return out;
+}
+
 /** Coerce an arbitrary bag into a valid JuneSettings, falling back per-field to
  *  the defaults. A provider/model that no longer exists in the registry falls
  *  back so the UI never renders a dangling selection. */
@@ -120,6 +153,7 @@ function coerce(raw: RawSettings): JuneSettings {
   const hands = obj("handsFree");
   const bool = (v: unknown, fallback: boolean): boolean => (typeof v === "boolean" ? v : fallback);
   const files = obj("files");
+  const transcript = obj("transcript");
   return {
     stt: stage("stt", d.stt),
     brain: {
@@ -140,6 +174,11 @@ function coerce(raw: RawSettings): JuneSettings {
       spokenApprovals: bool(hands.spokenApprovals, d.handsFree.spokenApprovals),
       followUp: bool(hands.followUp, d.handsFree.followUp),
       backchannel: bool(hands.backchannel, d.handsFree.backchannel),
+    },
+    transcript: {
+      autoEdit: bool(transcript.autoEdit, d.transcript.autoEdit),
+      dictionary: termMap(transcript.dictionary),
+      snippets: termMap(transcript.snippets),
     },
     files: {
       enabled: typeof files.enabled === "boolean" ? files.enabled : d.files.enabled,

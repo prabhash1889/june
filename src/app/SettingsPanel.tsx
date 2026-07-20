@@ -94,6 +94,7 @@ export function SettingsPanel() {
       <PrivacySection settings={settings} update={update} />
       <ActivationSection settings={settings} update={update} />
       <HandsFreeSection settings={settings} update={update} />
+      <TranscriptSection settings={settings} update={update} />
       <ConversationSection settings={settings} update={update} />
       <MemorySection />
       <CapabilitiesSection settings={settings} update={update} />
@@ -538,6 +539,78 @@ function HandsFreeSection({ settings, update }: { settings: JuneSettings; update
         {voiceOff && (
           <p className="settings-hint">Hands-free is unavailable in your current privacy mode. Switch to Standard to use it.</p>
         )}
+      </div>
+    </section>
+  );
+}
+
+// --- Dictation & transcript ----------------------------------------------
+
+// Transcript quality & system-wide dictation (PLAN.md Phase 15). All on-device:
+// the cleaner (src/lib/transcript.ts) is pure and runs in every privacy mode.
+// Auto-edit tidies each transcript before the review gate; the dictionary and
+// snippets are user term maps (the dictionary also grows itself from corrections
+// made at the review gate). Dictation mode itself is a toggle in the widget - a
+// held Ctrl+Shift+Space types your speech into the focused app.
+function TranscriptSection({ settings, update }: { settings: JuneSettings; update: (s: JuneSettings) => void }) {
+  const t = settings.transcript;
+  const setT = (next: Partial<JuneSettings["transcript"]>) =>
+    update({ ...settings, transcript: { ...t, ...next } });
+
+  return (
+    <section className="settings-section">
+      <h2>Dictation &amp; transcript</h2>
+      <p className="settings-hint">
+        Turn on <strong>dictation</strong> from the widget (the keyboard icon), then hold <kbd>Ctrl</kbd> + <kbd>Shift</kbd>{" "}
+        + <kbd>Space</kbd> to type your speech into whatever app is focused. Cleaning below applies to both dictation and
+        spoken commands, and runs entirely on-device.
+      </p>
+
+      <div className="stage-card">
+        <label className="wake-toggle">
+          <input type="checkbox" checked={t.autoEdit} onChange={(e) => setT({ autoEdit: e.target.checked })} />
+          <span>
+            <span className="privacy-name">Auto-edit transcripts</span>
+            <span className="privacy-desc">
+              Strip fillers (“um”, “uh”), tidy spacing and punctuation, and capitalize - before the review card and before
+              dictation injection. Your dictionary and snippets always apply regardless.
+            </span>
+          </span>
+        </label>
+      </div>
+
+      <div className="stage-card">
+        <div className="stage-row">
+          <span className="stage-label">Dictionary</span>
+        </div>
+        <p className="settings-hint">
+          Corrections for words June mishears, one per line as <code>heard = correction</code> (e.g.{" "}
+          <code>june = June</code>). Edits you make at the review card are added here automatically.
+        </p>
+        <textarea
+          className="memory-text wide"
+          rows={4}
+          value={mapToText(t.dictionary)}
+          onChange={(e) => setT({ dictionary: textToMap(e.target.value) })}
+          placeholder="june = June"
+        />
+      </div>
+
+      <div className="stage-card">
+        <div className="stage-row">
+          <span className="stage-label">Snippets</span>
+        </div>
+        <p className="settings-hint">
+          Spoken shortcuts, one per line as <code>cue = expansion</code> (e.g.{" "}
+          <code>insert my intro = Hi, I'm …</code>). Saying the cue inserts the saved text.
+        </p>
+        <textarea
+          className="memory-text wide"
+          rows={4}
+          value={mapToText(t.snippets)}
+          onChange={(e) => setT({ snippets: textToMap(e.target.value) })}
+          placeholder="insert my intro = Hi, I'm June's owner."
+        />
       </div>
     </section>
   );

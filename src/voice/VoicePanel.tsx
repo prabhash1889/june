@@ -2,9 +2,10 @@ import { type CSSProperties, useCallback, useEffect, useRef, useState } from "re
 import { listen } from "@tauri-apps/api/event";
 
 import { matchApproval } from "../lib/approval-voice.ts";
-import { hasOpenAiKey, runAgent, setOpenAiKey, transcribe } from "../lib/stt.ts";
+import { hasOpenAiKey, injectText, runAgent, setOpenAiKey, transcribe } from "../lib/stt.ts";
 import { type Approval, cancelAgent, newConversation, openApp, usePendingApproval } from "../lib/session.ts";
-import { DEFAULT_SETTINGS, type HandsFreeConfig, type JuneSettings, loadSettings, voiceAllowed, voiceNeedsOpenAiKey } from "../lib/settings.ts";
+import { DEFAULT_SETTINGS, type HandsFreeConfig, type JuneSettings, loadSettings, saveSettings, voiceAllowed, voiceNeedsOpenAiKey } from "../lib/settings.ts";
+import { captureCorrections, cleanTranscript } from "../lib/transcript.ts";
 import { recordLatency, TurnTimer } from "../lib/latency.ts";
 import { SentenceBuffer, SpeechQueue } from "../lib/tts.ts";
 import { startBargeMonitor, startCapture, type CaptureError, type CaptureHandle } from "../lib/voice-capture.ts";
@@ -28,6 +29,7 @@ type Phase =
   | { s: "thinking" }
   | { s: "speaking"; text: string }
   | { s: "reply"; text: string }
+  | { s: "dictated"; text: string } // Phase 15.4: text was injected into the focused app
   | { s: "error"; message: string };
 
 const MAX_CAPTURE_MS = 15_000;
@@ -37,6 +39,7 @@ const WAVE_BARS = 28;
 const AUTO_ACCEPT_SECONDS = 3; // 14.1: review-card countdown before auto-send
 const FOLLOWUP_WINDOW_MS = 6_000; // 14.3: how long the mic stays armed after a reply
 const SPOKEN_APPROVAL_MS = 8_000; // 14.2: how long to listen for a spoken yes/no
+const DICTATED_CONFIRM_MS = 2_500; // 15.4: how long the "sent to your app" note lingers
 
 // `onActiveChange` lets the widget shell expand into a card while June is doing
 // anything (and collapse back to a bare orb at rest) - the shell owns the window
@@ -84,6 +87,16 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
   const ackRef = useRef<SpeechQueue | null>(null);
   const ackTurnRef = useRef(-1);
 
+  // Dictation mode (Phase 15.4): when on, a user-held PTT press dictates the
+  // cleaned transcript into the focused app instead of running a command. Kept in
+  // state (drives the header toggle + status) and a ref (read in the ptt handler).
+  // `captureMode` tags each capture so beginTranscribe routes it: only a dictation
+  // PTT press sets "dictation", so injection is strictly user-PTT-gated.
+  const [dictation, setDictation] = useState(false);
+  const dictationRef = useRef(false);
+  dictationRef.current = dictation;
+  const captureModeRef = useRef<"command" | "dictation">("command");
+
   // Load the voice stack + privacy mode, and decide the key gate. Under a mode
   // that blocks cloud voice (June has no local voice provider yet) the mic is
   // disabled up front rather than failing mid-capture (§5). The OpenAI key is
@@ -98,6 +111,7 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
     const blocked = !voiceAllowed(s);
     voiceBlockedRef.current = blocked;
     setVoiceBlocked(blocked);
+    if (blocked) setDictation(false); // no usable STT for this mode - leave dictation mode
 
     const needsKey = !blocked && voiceNeedsOpenAiKey(s);
     const hasKey = needsKey ? await hasOpenAiKey().catch(() => false) : true;
@@ -145,13 +159,33 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
         ),
       ]);
       if (transcribeRef.current !== tid) return; // cancelled while transcribing
-      if (!text.trim()) {
-        setPhase({ s: "error", message: "I didn't hear a command. Try again." });
+      // Phase 15.1-15.3: clean the raw transcript (snippets -> dictionary -> filler
+      // pass) before it reaches the review gate or the injector. Pure and local.
+      const cleaned = cleanTranscript(text, settingsRef.current.transcript);
+      const dictating = captureModeRef.current === "dictation";
+      if (!cleaned.trim()) {
+        // Nothing usable: a dictation clip just stands down quietly; a command
+        // surfaces the same "try again" it always has.
+        setPhase(dictating ? { s: "idle" } : { s: "error", message: "I didn't hear a command. Try again." });
+        return;
+      }
+      // Phase 15.4: dictation injects into the focused app instead of the agent.
+      // This is the ONLY caller of injectText, and it is reached only from a
+      // user-held PTT press (captureMode is set to "dictation" nowhere else).
+      if (dictating) {
+        try {
+          await injectText(cleaned);
+          if (transcribeRef.current !== tid) return;
+          setPhase({ s: "dictated", text: cleaned });
+        } catch (e) {
+          if (transcribeRef.current !== tid) return;
+          setPhase({ s: "error", message: e instanceof Error ? e.message : String(e) });
+        }
         return;
       }
       timer.gotTranscript();
       timerRef.current = timer;
-      setPhase({ s: "review", transcript: text });
+      setPhase({ s: "review", transcript: cleaned });
     } catch (e) {
       if (transcribeRef.current !== tid) return;
       setPhase({ s: "error", message: e instanceof Error ? e.message : String(e) });
@@ -198,7 +232,22 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
     void startListening();
   }, [startListening, decide]);
 
-  const accept = useCallback(async (transcript: string) => {
+  // Learn corrections from a review-gate edit (Phase 15.2): if the user changed
+  // words before sending, capture the 1:1 substitutions into the personal
+  // dictionary so the same mishearing self-corrects next time. Persisted AFTER the
+  // turn is dispatched (not before), so growing the dictionary never respawns the
+  // resident in the middle of the very command being sent.
+  const learnCorrections = useCallback(async (before: string, after: string) => {
+    const cfg = settingsRef.current.transcript;
+    const dictionary = captureCorrections(before, after, cfg.dictionary);
+    if (dictionary === cfg.dictionary) return; // nothing new to store
+    const next = { ...settingsRef.current, transcript: { ...cfg, dictionary } };
+    settingsRef.current = next;
+    await saveSettings(next).catch(() => {});
+  }, []);
+
+  const accept = useCallback(async (transcript: string, original?: string) => {
+    if (original) void learnCorrections(original, transcript);
     const turn = (turnRef.current += 1);
     splitterRef.current = new SentenceBuffer();
     streamTextRef.current = "";
@@ -254,7 +303,7 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
       if (turnRef.current !== turn) return;
       setPhase({ s: "error", message: e instanceof Error ? e.message : String(e) });
     }
-  }, []);
+  }, [learnCorrections]);
 
   // Stream text deltas from the running turn into speech, sentence by sentence.
   useEffect(() => {
@@ -330,24 +379,46 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
   }, [phase.s]);
   const level = levels.length > 0 ? levels[levels.length - 1] : 0;
 
+  // Clear the "sent to your app" dictation note after a moment (15.4), returning
+  // the widget to rest. A new PTT press cancels it early via startListening.
+  useEffect(() => {
+    if (phase.s !== "dictated") return;
+    const id = window.setTimeout(() => setPhase({ s: "idle" }), DICTATED_CONFIRM_MS);
+    return () => window.clearTimeout(id);
+  }, [phase.s]);
+
   // A press (orb or push-to-talk down) either starts a command or barges in on
   // one in progress; a release ends the capture. Keep the current phase in a ref
   // so the global listeners can stay attached once.
   const phaseRef = useRef(phase);
   phaseRef.current = phase;
   const activate = useCallback(() => {
+    captureModeRef.current = "command"; // every activate() path is a command; only PTT dictation opts out
     const s = phaseRef.current.s;
     if (s === "thinking" || s === "speaking") bargeIn();
     // A press during transcription abandons it and records again - a stalled
     // network must never lock the user out of the mic.
-    else if (s === "idle" || s === "reply" || s === "error" || s === "transcribing") {
+    else if (s === "idle" || s === "reply" || s === "error" || s === "transcribing" || s === "dictated") {
       transcribeRef.current += 1;
       void startListening();
     }
   }, [bargeIn, startListening]);
 
   useEffect(() => {
-    const unlistenDown = listen("ptt://down", () => activate());
+    const unlistenDown = listen("ptt://down", () => {
+      // Dictation mode (15.4): a PTT press captures for injection into the focused
+      // app. Start it directly (not via activate, which is command-only) so the
+      // capture is tagged "dictation" and never routed to the agent. PTT is the one
+      // and only dictation trigger - the orb is disabled in this mode.
+      if (dictationRef.current) {
+        if (phaseRef.current.s === "listening") return;
+        captureModeRef.current = "dictation";
+        transcribeRef.current += 1;
+        void startListening();
+        return;
+      }
+      activate();
+    });
     const unlistenUp = listen("ptt://up", () => {
       if (phaseRef.current.s === "listening") stopListening();
     });
@@ -355,7 +426,7 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
       void unlistenDown.then((f) => f());
       void unlistenUp.then((f) => f());
     };
-  }, [activate, stopListening]);
+  }, [activate, stopListening, startListening]);
 
   // Hands-free wake word (PLAN.md Phase 8): while June is at rest and voice is
   // allowed, listen ambiently for the phrase and activate on it - exactly what a
@@ -363,7 +434,7 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
   // June is already capturing, thinking, or speaking; the effect tears the
   // listener down the moment activation moves us out of "idle".
   useEffect(() => {
-    if (!wake.enabled || voiceBlocked || approval || phase.s !== "idle") return;
+    if (!wake.enabled || voiceBlocked || approval || dictation || phase.s !== "idle") return;
     let alive = true;
     let stop = () => {};
     startWakeListener({
@@ -378,7 +449,7 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
       alive = false;
       stop();
     };
-  }, [wake, voiceBlocked, approval, phase.s, activate]);
+  }, [wake, voiceBlocked, approval, dictation, phase.s, activate]);
 
   // Follow-up mode (Phase 14.3): after each reply, keep the mic armed for a few
   // seconds with no wake word so the user can just keep talking. Reuses the Silero
@@ -388,7 +459,7 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
   // ponytail: the first ~200ms of the follow-up can clip while the capture opens
   // after onset; acceptable for v1, a continuous rolling buffer is the upgrade.
   useEffect(() => {
-    if (!handsFree.followUp || voiceBlocked || approval || phase.s !== "reply") return;
+    if (!handsFree.followUp || voiceBlocked || approval || dictation || phase.s !== "reply") return;
     let alive = true;
     let stop = () => {};
     const timer = window.setTimeout(() => {
@@ -411,7 +482,7 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
       window.clearTimeout(timer);
       stop();
     };
-  }, [handsFree.followUp, voiceBlocked, approval, phase.s, activate]);
+  }, [handsFree.followUp, voiceBlocked, approval, dictation, phase.s, activate]);
 
   // Spoken approvals (Phase 14.2): for EXPENSIVE actions only, June speaks the
   // exact repeat-back and listens for a strict local yes/no. Destructive/external
@@ -524,6 +595,28 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
           </span>
           <span className="voice-title">June</span>
           <button
+            className={`dictation-toggle${dictation ? " on" : ""}`}
+            title={
+              dictation
+                ? "Dictation on - hold Ctrl+Shift+Space to type into your focused app. Click to turn off."
+                : "Dictation mode - type your speech into the focused app"
+            }
+            aria-label="Toggle dictation mode"
+            aria-pressed={dictation}
+            disabled={voiceBlocked}
+            onClick={() => setDictation((d) => !d)}
+          >
+            <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <rect x="1" y="4" width="14" height="8" rx="1.5" stroke="currentColor" strokeWidth="1.2" />
+              <path
+                d="M3.5 6.5h.01M6 6.5h.01M8.5 6.5h.01M11 6.5h.01M3.5 9h.01M13 9h.01M5.5 9.5h5"
+                stroke="currentColor"
+                strokeWidth="1.2"
+                strokeLinecap="round"
+              />
+            </svg>
+          </button>
+          <button
             className="new-convo-orb"
             title="New conversation - June forgets this session"
             aria-label="Start a new conversation"
@@ -561,7 +654,7 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
           <KeyGate onSaved={() => setPhase({ s: "idle" })} />
         ) : (
           <>
-            <Status phase={phase} approval={approval} />
+            <Status phase={phase} approval={approval} dictation={dictation} />
             {voiceBlocked && (
               <p className="err">Voice is off in your privacy mode. Change it in the full app settings.</p>
             )}
@@ -574,6 +667,12 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
                 onCancel={cancel}
                 onRedo={() => void startListening()}
               />
+            )}
+            {phase.s === "dictated" && (
+              <div className="reply-block">
+                <span className="who">Sent to your app</span>
+                <p className="reply">{phase.text}</p>
+              </div>
             )}
             {speakingText && (
               <div className="reply-block">
@@ -590,7 +689,9 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
       <button
         className={`orb ${orbState}`}
         style={phase.s === "listening" ? ({ "--level": Math.min(level * 6, 1) } as CSSProperties) : undefined}
-        disabled={phase.s === "need-key"}
+        // Disabled in dictation mode: injection must come only from a held PTT
+        // press (never a click, which would focus June and mis-target the text).
+        disabled={phase.s === "need-key" || dictation}
         // Pointer capture, not mouse events: pressing the orb expands the OS
         // window mid-press, and WebView2 drops the plain mouseup when the window
         // moves under a held button - the widget then sticks in "listening".
@@ -635,17 +736,22 @@ function Waveform({ levels }: { levels: number[] }) {
   );
 }
 
-function Status({ phase, approval }: { phase: Phase; approval: Approval | null }) {
+function Status({ phase, approval, dictation }: { phase: Phase; approval: Approval | null; dictation: boolean }) {
   if (approval) return <p className="status">June needs your OK before it can continue.</p>;
+  // Dictation mode (15.4) rewords the resting/listening prompts: the target is the
+  // user's focused app, and the orb is disabled, so the hint points at the hotkey.
   const text: Record<Phase["s"], string> = {
     "need-key": "",
-    idle: "Hold Ctrl + Shift + Space, or click the orb, and speak.",
-    listening: "Listening…",
-    transcribing: "Transcribing… press the orb to cancel.",
+    idle: dictation
+      ? "Dictation on - hold Ctrl + Shift + Space and speak; text goes to your focused app."
+      : "Hold Ctrl + Shift + Space, or click the orb, and speak.",
+    listening: dictation ? "Dictating…" : "Listening…",
+    transcribing: dictation ? "Writing it out…" : "Transcribing… press the orb to cancel.",
     review: "Is this right?",
     thinking: "Working on it…",
     speaking: "Speaking… talk or press to interrupt.",
     reply: "",
+    dictated: "",
     error: "",
   };
   const busy = phase.s === "listening" || phase.s === "transcribing" || phase.s === "thinking" || phase.s === "speaking";
@@ -686,11 +792,13 @@ function ReviewCard({
 }: {
   transcript: string;
   autoAccept: boolean;
-  onAccept: (t: string) => void;
+  onAccept: (t: string, original: string) => void;
   onCancel: () => void;
   onRedo: () => void;
 }) {
   const [text, setText] = useState(transcript);
+  // `transcript` is the cleaned text as first shown; it is passed back on send so an
+  // edit can teach the personal dictionary (15.2, diffed in learnCorrections).
   // Auto-accept countdown (Phase 14.1): only when opted in, and paused by any
   // interaction (edit, focus, Re-record, Cancel) so the user is always in control.
   const [paused, setPaused] = useState(!autoAccept);
@@ -703,12 +811,12 @@ function ReviewCard({
       return;
     }
     if (remaining <= 0) {
-      onAccept(text.trim());
+      onAccept(text.trim(), transcript);
       return;
     }
     const id = window.setTimeout(() => setRemaining((r) => r - 1), 1000);
     return () => window.clearTimeout(id);
-  }, [paused, remaining, text, onAccept]);
+  }, [paused, remaining, text, onAccept, transcript]);
   return (
     <div className="review">
       <span className="who">You said</span>
@@ -722,7 +830,7 @@ function ReviewCard({
         rows={3}
       />
       <div className="row">
-        <button className="primary" disabled={!text.trim()} onClick={() => onAccept(text.trim())}>
+        <button className="primary" disabled={!text.trim()} onClick={() => onAccept(text.trim(), transcript)}>
           {paused ? "Send to June" : `Sending in ${remaining}…`}
         </button>
         <button

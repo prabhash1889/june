@@ -33,6 +33,14 @@ export function runAgent(transcript: string, turn: number): Promise<string> {
   return invoke<string>("run_agent", { transcript, turn });
 }
 
+/** Dictation injection (Phase 15.4): type the cleaned transcript into the focused
+ *  app. Called ONLY from the user-held PTT dictation path in the widget - never by
+ *  the agent - so June is the keyboard, not an actor. Rejects with a readable
+ *  message if the OS input path is unavailable. */
+export function injectText(text: string): Promise<void> {
+  return invoke("inject_text", { text });
+}
+
 /** Whether an OpenAI key is present, so the UI can prompt for one up front. */
 export function hasOpenAiKey(): Promise<boolean> {
   return invoke<boolean>("has_api_key", { service: "june_provider_openai_api_key" });
