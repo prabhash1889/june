@@ -120,7 +120,7 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
       // Belt-and-braces over the backend's own timeout: if the invoke never
       // settles, the UI must not sit in "Transcribing…" forever.
       const text = await Promise.race([
-        transcribe(audio, mime),
+        transcribe(audio, mime, settingsRef.current.stt),
         new Promise<string>((_, reject) =>
           window.setTimeout(
             () => reject(new Error("Transcription took too long. Check your connection and try again.")),
@@ -198,8 +198,7 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
       () => {
         if (turnRef.current === turn && agentDone) setPhase({ s: "reply", text: replyRef.current });
       },
-      settingsRef.current.tts.voice,
-      settingsRef.current.tts.model,
+      settingsRef.current.tts,
       () => {
         const sample = timer?.firstAudio();
         if (sample) void recordLatency(sample).catch(() => {});

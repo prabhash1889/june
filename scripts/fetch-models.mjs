@@ -33,6 +33,17 @@ const copies = [
   ["@ricky0123/vad-web/dist/vad.worklet.bundle.min.js", "vad/vad.worklet.bundle.min.js"],
   ["onnxruntime-web/dist/ort-wasm-simd-threaded.wasm", "ort/ort-wasm-simd-threaded.wasm"],
   ["onnxruntime-web/dist/ort-wasm-simd-threaded.mjs", "ort/ort-wasm-simd-threaded.mjs"],
+  // Phase 12.3/12.4: transformers.js (local STT/TTS) bundles its own onnxruntime
+  // build and defaults its wasm to jsdelivr; stage that wasm locally instead so
+  // inference is offline (xformers.ts points env.backends.onnx.wasm.wasmPaths here).
+  [
+    "@huggingface/transformers/dist/ort-wasm-simd-threaded.jsep.wasm",
+    "xformers/ort-wasm-simd-threaded.jsep.wasm",
+  ],
+  [
+    "@huggingface/transformers/dist/ort-wasm-simd-threaded.jsep.mjs",
+    "xformers/ort-wasm-simd-threaded.jsep.mjs",
+  ],
 ];
 
 // openWakeWord (12.2): the shared melspectrogram + speech-embedding models and

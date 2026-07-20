@@ -10,6 +10,8 @@ const cloudBrain = resolveProvider("brain", "openai")!;
 const localBrain = resolveProvider("brain", "ollama")!;
 const cloudStt = resolveProvider("stt", "openai")!;
 const cloudTts = resolveProvider("tts", "openai")!;
+const localStt = resolveProvider("stt", "moonshine")!;
+const localTts = resolveProvider("tts", "kokoro")!;
 
 describe("privacy modes", () => {
   it("standard allows any provider at any stage", () => {
@@ -28,5 +30,14 @@ describe("privacy modes", () => {
     expect(providerAllowed("strict-offline", "brain", cloudBrain)).toBe(false);
     expect(providerAllowed("strict-offline", "stt", cloudStt)).toBe(false);
     expect(providerAllowed("strict-offline", "brain", localBrain)).toBe(true);
+  });
+
+  it("allows the local voice stack (Moonshine STT, Kokoro TTS) under every mode", () => {
+    // Phase 12.3/12.4: local voice is offline-safe, so a full on-device stack is
+    // usable even under strict-offline - the exit criterion for the phase.
+    expect(providerAllowed("strict-offline", "stt", localStt)).toBe(true);
+    expect(providerAllowed("strict-offline", "tts", localTts)).toBe(true);
+    expect(providerAllowed("local-voice", "stt", localStt)).toBe(true);
+    expect(providerAllowed("local-voice", "tts", localTts)).toBe(true);
   });
 });

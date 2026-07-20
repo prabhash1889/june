@@ -1,13 +1,28 @@
 import { invoke } from "@tauri-apps/api/core";
 
+import { resolveProvider } from "./providers.ts";
+import type { StageChoice } from "./settings.ts";
+
 // Thin webview wrappers over the Rust STT + agent commands (PLAN.md Phase 4).
 // The webview captures audio and holds no secrets; Rust adds the OpenAI key and
-// makes the Whisper call, and runs the agent core, so keys never cross IPC.
+// makes the cloud Whisper call, and runs the agent core, so keys never cross IPC.
+//
+// Phase 12.3: when the selected STT provider is local, transcription runs entirely
+// in the webview (local-stt.ts, Moonshine via transformers.js) instead of Rust -
+// nothing leaves the machine. The dynamic import keeps transformers.js out of the
+// cloud path. Callers that don't pass a `choice` (the wake cloud fallback) keep the
+// cloud Whisper behaviour.
 
 /** Transcribe a captured clip. `audio` is the raw encoded bytes from
- *  MediaRecorder; `mime` is its container type. Returns the transcript (may be
- *  empty for silence). Rejects with a human-readable message on failure. */
-export function transcribe(audio: Uint8Array, mime: string): Promise<string> {
+ *  MediaRecorder; `mime` is its container type. `choice` is the caller's selected
+ *  STT stack - a local provider routes to on-device inference, everything else to
+ *  cloud Whisper in Rust. Returns the transcript (may be empty for silence).
+ *  Rejects with a human-readable message on failure. */
+export async function transcribe(audio: Uint8Array, mime: string, choice?: StageChoice): Promise<string> {
+  if (choice && resolveProvider("stt", choice.provider)?.kind === "local") {
+    const { transcribeLocal } = await import("./local-stt.ts");
+    return transcribeLocal(audio, choice.model);
+  }
   return invoke<string>("transcribe", { audio: Array.from(audio), mime });
 }
 

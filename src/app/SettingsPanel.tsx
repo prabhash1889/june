@@ -4,12 +4,13 @@ import { bridgeHealth, type BridgeHealth, type ProbeResult, testBrain } from "..
 import { type LatencySample, latencySamples, percentile } from "../lib/latency.ts";
 import { PRIVACY_MODES, type PrivacyMode } from "../lib/privacy.ts";
 import {
+  defaultVoiceFor,
   keyedProviders,
   type Provider,
   providersFor,
   resolveProvider,
   type Stage,
-  TTS_VOICES,
+  voicesFor,
 } from "../lib/providers.ts";
 import {
   DEFAULT_SETTINGS,
@@ -51,8 +52,8 @@ function brainBaseUrl(s: JuneSettings): string {
   return p?.baseUrl ?? "";
 }
 
-async function playBytes(bytes: Uint8Array): Promise<void> {
-  const url = URL.createObjectURL(new Blob([bytes], { type: "audio/mpeg" }));
+async function playBytes(bytes: Uint8Array, mime: string): Promise<void> {
+  const url = URL.createObjectURL(new Blob([bytes], { type: mime }));
   const el = new Audio(url);
   await new Promise<void>((resolve) => {
     el.onended = () => resolve();
@@ -189,7 +190,7 @@ function SttCard({ settings, update }: { settings: JuneSettings; update: (s: Jun
     await new Promise((r) => setTimeout(r, 2500));
     const { audio, mime } = await handle.stop();
     if (audio.length === 0) return { ok: false, detail: "No audio captured - is the microphone allowed?", ms: 0 };
-    const text = (await transcribe(audio, mime)).trim();
+    const text = (await transcribe(audio, mime, settings.stt)).trim();
     const ms = Math.round(performance.now() - t0);
     return text
       ? { ok: true, detail: `Heard: "${text}"`, ms }
@@ -254,10 +255,10 @@ function TtsCard({ settings, update }: { settings: JuneSettings; update: (s: Jun
 
   const runTest = async (): Promise<ProbeResult> => {
     const t0 = performance.now();
-    const bytes = await synthesize(TEST_SAMPLE, settings.tts.voice, settings.tts.model);
+    const { bytes, mime } = await synthesize(TEST_SAMPLE, settings.tts);
     const ms = Math.round(performance.now() - t0);
     if (bytes.length === 0) return { ok: false, detail: "No audio returned.", ms };
-    await playBytes(bytes);
+    await playBytes(bytes, mime);
     return { ok: true, detail: `Spoke a sample in the ${settings.tts.voice} voice.`, ms };
   };
 
@@ -268,7 +269,7 @@ function TtsCard({ settings, update }: { settings: JuneSettings; update: (s: Jun
         <ProviderSelect stage="tts" value={settings.tts.provider} onChange={(id) => update(withProvider(settings, "tts", id))} />
         {provider && <ModelInput provider={provider} value={settings.tts.model} onChange={(v) => update({ ...settings, tts: { ...settings.tts, model: v } })} />}
         <select value={settings.tts.voice} onChange={(e) => update({ ...settings, tts: { ...settings.tts, voice: e.target.value } })} title="Voice">
-          {TTS_VOICES.map((v) => (
+          {voicesFor(settings.tts.provider).map((v) => (
             <option key={v.id} value={v.id}>
               {v.label}
             </option>
@@ -281,11 +282,16 @@ function TtsCard({ settings, update }: { settings: JuneSettings; update: (s: Jun
 }
 
 /** Change a stage's provider and reset its model to that provider's first
- *  suggestion (avoids leaving a model id that doesn't belong to the provider). */
+ *  suggestion (avoids leaving a model id that doesn't belong to the provider).
+ *  For TTS also reset the voice, so switching engines (OpenAI <-> local Kokoro,
+ *  whose voice tables are disjoint) never leaves a voice the new engine lacks. */
 function withProvider(settings: JuneSettings, stage: Stage, providerId: string): JuneSettings {
   const p = resolveProvider(stage, providerId);
   const model = p?.models[0]?.id ?? "";
   const cur = settings[stage];
+  if (stage === "tts") {
+    return { ...settings, tts: { ...settings.tts, provider: providerId, model, voice: defaultVoiceFor(providerId) } };
+  }
   return { ...settings, [stage]: { ...cur, provider: providerId, model } };
 }
 

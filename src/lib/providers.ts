@@ -5,9 +5,9 @@
 // wiring - that is the whole point of the per-stage interface seam (§3).
 //
 // Honesty rule (matches every prior phase): a provider is only `available: true`
-// if June can actually run it today. Local voice (faster-whisper, Kokoro) is the
-// design target but not yet wired, so it is listed - so the intended stack is
-// visible - but not selectable. We never offer a stage that would error.
+// if June can actually run it today. Since Phase 12.3/12.4 the local voice stack
+// (Moonshine STT, Kokoro TTS) runs in the webview via transformers.js, so it is
+// available and offline-safe. We never offer a stage that would error.
 
 export type Stage = "stt" | "brain" | "tts";
 export type ProviderKind = "local" | "api";
@@ -56,14 +56,15 @@ export const PROVIDERS: Record<Stage, Provider[]> = {
       models: [{ id: "whisper-1", label: "whisper-1" }],
     },
     {
-      id: "faster-whisper",
-      label: "faster-whisper (local)",
+      id: "moonshine",
+      label: "Moonshine (local)",
       kind: "local",
       offlineSafe: true,
-      available: false, // Phase 7 tail - local STT not yet wired
+      available: true, // Phase 12.3 - runs in the webview via transformers.js
       models: [
-        { id: "base", label: "base" },
-        { id: "small", label: "small" },
+        { id: "onnx-community/moonshine-base-ONNX", label: "Moonshine base" },
+        { id: "onnx-community/moonshine-tiny-ONNX", label: "Moonshine tiny (faster)" },
+        { id: "onnx-community/whisper-base", label: "Whisper base (alternate)" },
       ],
     },
   ],
@@ -161,8 +162,8 @@ export const PROVIDERS: Record<Stage, Provider[]> = {
       label: "Kokoro-82M (local)",
       kind: "local",
       offlineSafe: true,
-      available: false, // Phase 7 tail - local TTS not yet wired
-      models: [{ id: "kokoro", label: "kokoro" }],
+      available: true, // Phase 12.4 - runs in the webview via kokoro-js
+      models: [{ id: "onnx-community/Kokoro-82M-v1.0-ONNX", label: "Kokoro 82M" }],
     },
   ],
 };
@@ -176,6 +177,31 @@ export const TTS_VOICES: ProviderModel[] = [
   { id: "nova", label: "Nova" },
   { id: "shimmer", label: "Shimmer" },
 ];
+
+/** A representative slice of Kokoro's voice table for the local TTS picker (12.4).
+ *  Not exhaustive - the model ships dozens - and validated at synthesis time
+ *  against the loaded model's real set (local-tts.ts), so an unlisted id the user
+ *  types still works and a stale one falls back safely. */
+export const KOKORO_VOICES: ProviderModel[] = [
+  { id: "af_heart", label: "Heart (US, warm)" },
+  { id: "af_bella", label: "Bella (US)" },
+  { id: "af_nicole", label: "Nicole (US)" },
+  { id: "am_michael", label: "Michael (US)" },
+  { id: "am_adam", label: "Adam (US)" },
+  { id: "bf_emma", label: "Emma (UK)" },
+  { id: "bm_george", label: "George (UK)" },
+];
+
+/** The default voice for a TTS provider, used when the user switches providers so
+ *  the voice never dangles as one the new engine doesn't have (§4). */
+export function defaultVoiceFor(providerId: string): string {
+  return providerId === "kokoro" ? "af_heart" : "alloy";
+}
+
+/** The voice options a TTS provider offers, for the settings picker. */
+export function voicesFor(providerId: string): ProviderModel[] {
+  return providerId === "kokoro" ? KOKORO_VOICES : TTS_VOICES;
+}
 
 export function providersFor(stage: Stage): Provider[] {
   return PROVIDERS[stage];
