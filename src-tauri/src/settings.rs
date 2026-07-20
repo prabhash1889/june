@@ -42,7 +42,7 @@ pub(crate) fn read_settings(app: &tauri::AppHandle) -> Value {
 
 /// True if the current privacy mode keeps voice on-device, so cloud STT/TTS must
 /// be refused at the execution boundary (10.3) - the same rule the brain already
-/// gets in agent/run-once.ts. There is no local voice provider yet, so under
+/// gets in agent/serve.ts. There is no local voice provider yet, so under
 /// these modes cloud voice is simply blocked. Mirrors src/lib/privacy.ts.
 pub(crate) fn cloud_voice_blocked(app: &tauri::AppHandle) -> bool {
     matches!(

@@ -27,6 +27,13 @@ describe("cleanTranscript", () => {
     expect(cleanTranscript("junebug", { dictionary })).toBe("junebug");
   });
 
+  it("inserts dictionary/snippet values literally, so `$&` is not a back-reference (B4.9)", () => {
+    // A value containing a `$&` (or `$1`) must appear verbatim, never expand to the
+    // matched text - otherwise a user's term/snippet could rewrite itself.
+    expect(cleanTranscript("say total", { dictionary: { total: "$&100" } })).toBe("say $&100");
+    expect(cleanTranscript("insert sig", { snippets: { sig: "Best $&" } })).toBe("insert Best $&");
+  });
+
   it("expands voice snippets from a spoken cue", () => {
     const snippets = { "insert my intro": "Hi, I'm June's owner." };
     expect(cleanTranscript("insert my intro", { snippets })).toBe("Hi, I'm June's owner.");

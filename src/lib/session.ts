@@ -108,7 +108,12 @@ export function usePendingApproval(): {
     const a = ref.current;
     if (!a) return;
     setApproval(null); // optimistic; the resolved/final event confirms for the other window
-    void resolveApproval(a.id, decision);
+    void resolveApproval(a.id, decision).catch(() => {
+      // The write failed (transient IPC error): the gate may still be pending on the
+      // backend, so restore the card rather than silently dropping it (B4.10). If it
+      // was genuinely already resolved, a resolved/final event re-clears it.
+      setApproval((cur) => cur ?? a);
+    });
   }, []);
 
   return { approval, decide };
@@ -145,10 +150,16 @@ export function useMission(): Mission | null {
   const [mission, setMission] = useState<Mission | null>(null);
   useEffect(() => {
     let alive = true;
+    let gotEvent = false;
     void readMission().then((m) => {
-      if (alive) setMission(m);
+      // Don't let a slow initial file read clobber a live event that already landed
+      // (B4.10): the broadcast is newer than whatever the file held at mount.
+      if (alive && !gotEvent) setMission(m);
     });
-    const unlisten = listen<unknown>("mission://updated", (e) => setMission(coerceMission(e.payload)));
+    const unlisten = listen<unknown>("mission://updated", (e) => {
+      gotEvent = true;
+      setMission(coerceMission(e.payload));
+    });
     return () => {
       alive = false;
       void unlisten.then((f) => f());

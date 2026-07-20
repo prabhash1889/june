@@ -62,7 +62,11 @@ server.registerTool(
       const existing = await fs.readFile(FILE, "utf-8").catch(() => "");
       const next = appendFact(existing, fact, MAX_MEMORY_BYTES);
       await fs.mkdir(path.dirname(FILE), { recursive: true });
-      await fs.writeFile(FILE, next.endsWith("\n") ? next : `${next}\n`, "utf-8");
+      // Atomic write (temp + rename, mirroring the Rust side): a crash mid-write
+      // can never leave the memory file truncated or half-rewritten (B4.2).
+      const tmp = `${FILE}.tmp`;
+      await fs.writeFile(tmp, next.endsWith("\n") ? next : `${next}\n`, "utf-8");
+      await fs.rename(tmp, FILE);
       return ok(`Remembered: ${fact.trim()}`);
     } catch (e) {
       return fail(e instanceof Error ? e.message : String(e));

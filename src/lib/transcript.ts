@@ -46,7 +46,9 @@ function applyMap(text: string, map: TermMap | undefined): string {
   for (const [rawKey, value] of Object.entries(map)) {
     const key = rawKey.trim();
     if (!key) continue;
-    out = out.replace(new RegExp(`\\b${esc(key)}\\b`, "gi"), value);
+    // A FUNCTION replacement (B4.9) so `$&` / `$1` etc. in a user's dictionary or
+    // snippet value are inserted literally, not treated as match-reference patterns.
+    out = out.replace(new RegExp(`\\b${esc(key)}\\b`, "gi"), () => value);
   }
   return out;
 }

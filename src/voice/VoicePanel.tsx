@@ -72,6 +72,14 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
   const capture = useRef<CaptureHandle | null>(null);
   // Guard the async stop path so a hotkey-up and a VAD endpoint can't both fire it.
   const stopping = useRef(false);
+  // A PTT release that arrived WHILE startCapture was still opening the mic (B4.8):
+  // the up handler can't stop a capture that isn't "listening" yet, so it flags this
+  // and startListening honours it the instant the capture is ready - otherwise a
+  // quick tap leaves the mic open until the 15s cap.
+  const releaseDuringSetup = useRef(false);
+  // Approval state mirrored to a ref so the always-attached backchannel listener can
+  // read it without re-subscribing (B4.10: no "On it." over a spoken repeat-back).
+  const approvalRef = useRef<Approval | null>(null);
   // Bumped to abandon an in-flight transcription (press-to-cancel, Cancel,
   // barge into a new capture) so a slow network can never lock the widget in
   // "Transcribing…" and a late result can't overwrite a newer state.
@@ -118,6 +126,7 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
   const [dictation, setDictation] = useState(false);
   const dictationRef = useRef(false);
   dictationRef.current = dictation;
+  approvalRef.current = approval;
   const captureModeRef = useRef<"command" | "dictation">("command");
 
   // Load the voice stack + privacy mode, and decide the key gate. Under a mode
@@ -237,9 +246,16 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
       return;
     }
     stopping.current = false;
+    releaseDuringSetup.current = false;
     try {
       capture.current = await startCapture({ onEndpoint: () => stopListening(), maxMs: MAX_CAPTURE_MS });
       setPhase({ s: "listening" });
+      // A PTT release landed while the mic was still opening (B4.8): stop now so a
+      // quick tap doesn't sit recording until the 15s cap.
+      if (releaseDuringSetup.current) {
+        releaseDuringSetup.current = false;
+        stopListening();
+      }
     } catch (e) {
       const err = e as CaptureError;
       setPhase({ s: "error", message: err?.message ?? "Could not start the microphone." });
@@ -366,6 +382,7 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
     const unlisten = listen<{ turn: number }>("agent://tool", (e) => {
       if (e.payload.turn !== turnRef.current) return; // stale (barged-in) turn
       if (!settingsRef.current.handsFree.backchannel || spokeRef.current) return;
+      if (approvalRef.current) return; // B4.10: never "On it." over a spoken repeat-back
       if (ackTurnRef.current === e.payload.turn) return; // one "on it" per turn
       ackTurnRef.current = e.payload.turn;
       const ack = new SpeechQueue(() => {}, settingsRef.current.tts);
@@ -440,8 +457,9 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
     const s = phaseRef.current.s;
     if (s === "thinking" || s === "speaking") bargeIn();
     // A press during transcription abandons it and records again - a stalled
-    // network must never lock the user out of the mic.
-    else if (s === "idle" || s === "reply" || s === "error" || s === "transcribing" || s === "dictated") {
+    // network must never lock the user out of the mic. A press in `review` re-records
+    // (B4.10: the orb was inert there), same as the card's Re-record button.
+    else if (s === "idle" || s === "reply" || s === "error" || s === "transcribing" || s === "dictated" || s === "review") {
       transcribeRef.current += 1;
       void startListening();
     }
@@ -464,6 +482,7 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
     });
     const unlistenUp = listen("ptt://up", () => {
       if (phaseRef.current.s === "listening") stopListening();
+      else releaseDuringSetup.current = true; // released before the mic finished opening (B4.8)
     });
     return () => {
       void unlistenDown.then((f) => f());
@@ -485,6 +504,7 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
       sensitivity: wake.sensitivity,
       onWake: () => alive && activate(),
       allowCloudFallback: !voiceBlocked,
+      stt: settingsRef.current.stt, // B4.6: burst fallback uses the user's STT choice
     })
       .then((h) => (alive ? (stop = h.stop) : h.stop()))
       .catch(() => {}); // no mic -> hands-free unavailable; PTT and the orb still work
@@ -540,6 +560,10 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
     // would open no mic and silently auto-deny the gate ~8s in, racing the user's
     // click. Leave the decision entirely to the approval card in that mode.
     if (!approval || !handsFree.spokenApprovals || approval.cls !== "expensive" || voiceBlocked) return;
+    // Silence any lingering "on it" backchannel before the repeat-back so the two
+    // never overlap (B4.10); the guard in the backchannel listener stops a new one.
+    ackRef.current?.stop();
+    ackRef.current = null;
     let alive = true;
     let listening = false;
     let cap: CaptureHandle | null = null;

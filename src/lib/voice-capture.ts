@@ -199,7 +199,15 @@ export async function startCapture(opts: CaptureOptions = {}): Promise<CaptureHa
   }
 
   const mime = pickMimeType();
-  const recorder = new MediaRecorder(stream, { mimeType: mime });
+  let recorder: MediaRecorder;
+  try {
+    recorder = new MediaRecorder(stream, { mimeType: mime });
+  } catch (err) {
+    // Construction can throw (a webview that reports a mime supported then rejects
+    // it): free the mic we just opened instead of leaking it open (B4.8).
+    stream.getTracks().forEach((t) => t.stop());
+    throw classifyGetUserMediaError(err);
+  }
   const chunks: BlobPart[] = [];
   recorder.ondataavailable = (e) => {
     if (e.data.size > 0) chunks.push(e.data);

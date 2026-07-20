@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 
 import { MapTextarea } from "./MapTextarea.tsx";
 import {
@@ -104,6 +105,22 @@ export function SettingsPanel() {
     },
     [],
   );
+
+  // Pick up out-of-band settings changes (B4.10): the widget can learn a transcript
+  // correction and save it, or a scheduled run can edit settings. Reload so a later
+  // in-panel edit doesn't save over that with a stale copy - but ONLY while no local
+  // edit is pending (saveTimer null), so we never clobber what the user is typing.
+  useEffect(() => {
+    const unlisten = listen("settings://changed", () => {
+      if (saveTimer.current != null) return; // mid-edit: our own debounce owns the state
+      loadSettings()
+        .then(setSettings)
+        .catch(() => {});
+    });
+    return () => {
+      void unlisten.then((f) => f());
+    };
+  }, []);
 
   if (!settings) return <div className="settings-view">Loading settings…</div>;
 
@@ -398,7 +415,7 @@ function KeyRow({ label, keyService }: { label: string; keyService: string }) {
       <button className="primary" onClick={save} disabled={busy || !value.trim()}>
         Save
       </button>
-      <button onClick={clear} disabled={busy || present === false}>
+      <button onClick={clear} disabled={busy || present !== true}>
         Clear
       </button>
     </div>

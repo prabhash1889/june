@@ -72,4 +72,29 @@ describe("WakeModel streaming", () => {
     }
     expect(r.classify).not.toHaveBeenCalled();
   });
+
+  // B4.7: the caller fires feed() per frame WITHOUT awaiting (void model.feed(...)),
+  // so overlapping inference on the shared streaming buffers would clobber the
+  // accumulator. feed() must serialize, so inference never runs concurrently.
+  it("serializes concurrent feed() calls so inference never overlaps (B4.7)", async () => {
+    let inFlight = 0;
+    let overlap = false;
+    const mel = vi.fn(async (_s: Float32Array) => {
+      inFlight++;
+      if (inFlight > 1) overlap = true; // two mel runs at once => buffers can race
+      await new Promise((r) => setTimeout(r, 5));
+      inFlight--;
+      return new Float32Array(8 * MEL_BINS).fill(1);
+    });
+    const model = new WakeModel({
+      mel,
+      embed: vi.fn(async () => new Float32Array(96).fill(0.5)),
+      classify: vi.fn(async () => 0.9),
+    });
+    // Fire five full-chunk feeds without awaiting, exactly as startLocalWake does.
+    const pending = Array.from({ length: 5 }, () => model.feed(frame(CHUNK, 0.2)));
+    await Promise.all(pending);
+    expect(overlap).toBe(false);
+    expect(mel).toHaveBeenCalledTimes(5); // one per whole chunk, none dropped or doubled
+  });
 });

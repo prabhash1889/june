@@ -43,6 +43,11 @@ export interface OpenAiCompatBrainConfig {
 // Bound the tool loop so a model that keeps calling tools can't spin forever.
 const MAX_STEPS = 12;
 
+// Cap retained conversation turns so a long-lived session can't grow `#messages`
+// without bound (B4.5). Generous (trimming drops older context) and always cut at
+// a whole-turn boundary so a tool result never loses its assistant tool_call.
+const MAX_HISTORY = 60;
+
 interface OpenAiToolCall {
   id: string;
   type?: string;
@@ -122,11 +127,16 @@ export class OpenAiCompatBrain implements Brain {
 
     const abort = new AbortController();
     this.#abort = abort;
-    // Snapshot the history so a mid-turn failure (or barge-in) can roll back to a
-    // consistent state - the chat API rejects an assistant tool_call with no
-    // matching tool result, so a half-finished turn must never persist.
-    const mark = this.#messages.length;
-    this.#messages.push({ role: "user", content: prompt });
+    // Operate on the history array CAPTURED NOW (B4.4): a mid-turn reset() swaps the
+    // `#messages` FIELD to a fresh array, so rolling back or appending must target
+    // this captured reference, never the field - otherwise a mid-turn rollback
+    // truncates (corrupts) the freshly-reset conversation. `mark` snapshots the
+    // length so a mid-turn failure/barge-in rolls back to a consistent state (the
+    // chat API rejects an assistant tool_call with no matching tool result, so a
+    // half-finished turn must never persist).
+    const history = this.#messages;
+    const mark = history.length;
+    history.push({ role: "user", content: prompt });
 
     try {
       const tools = servers.flatMap((s) => s.tools);
@@ -142,8 +152,8 @@ export class OpenAiCompatBrain implements Brain {
 
       let finalText = "";
       for (let step = 0; step < MAX_STEPS; step++) {
-        const reply = await this.#complete(this.#messages, tools, abort.signal);
-        this.#messages.push(reply);
+        const reply = await this.#complete(history, tools, abort.signal);
+        history.push(reply);
         if (reply.content) {
           finalText = reply.content;
           hooks.onText?.(reply.content);
@@ -153,14 +163,18 @@ export class OpenAiCompatBrain implements Brain {
 
         for (const call of calls) {
           const result = await this.#runToolCall(call, routeOf, hooks);
-          this.#messages.push({ role: "tool", tool_call_id: call.id, content: result });
+          history.push({ role: "tool", tool_call_id: call.id, content: result });
         }
       }
 
+      // Trim retained history so it can't grow without bound across turns (B4.5);
+      // no-op if a reset() swapped `#messages` mid-turn (leave the fresh one).
+      this.#trimHistory(history);
       return { text: finalText || "I didn't produce a reply.", isError: !finalText };
     } catch (e) {
-      // Drop the failed/aborted turn so the retained history stays valid.
-      this.#messages.length = mark;
+      // Roll back the CAPTURED array (B4.4). If a reset swapped the field mid-turn,
+      // this rewinds the now-discarded old array and leaves the fresh one intact.
+      history.length = mark;
       const aborted = abort.signal.aborted;
       return {
         text: aborted ? "" : `June hit an error: ${errMsg(e)}`,
@@ -177,6 +191,12 @@ export class OpenAiCompatBrain implements Brain {
 
   reset(): void {
     this.#messages = [{ role: "system", content: this.#systemPrompt }];
+  }
+
+  /** Trim retained history to the most recent turns (B4.5). No-op if a reset()
+   *  swapped `#messages` for a fresh array mid-turn - leave that one alone. */
+  #trimHistory(history: OpenAiMessage[]): void {
+    if (this.#messages === history) this.#messages = trimTurnHistory(history, MAX_HISTORY);
   }
 
   async dispose(): Promise<void> {
@@ -328,6 +348,19 @@ export function toOpenAiTool(t: { name: string; description?: string; inputSchem
       ? (t.inputSchema as Record<string, unknown>)
       : { type: "object", properties: {} };
   return { type: "function", function: { name: t.name, description: t.description, parameters: params } };
+}
+
+/** Keep the system message plus the most recent turns of `messages`, capped at
+ *  `maxHistory` messages after the system prompt (B4.5). Cuts ONLY at a `user`
+ *  message (a turn boundary) so an assistant tool_call is never split from its
+ *  tool results, which the chat API rejects. Returns the same array when nothing
+ *  needs trimming. Pure, so the boundary logic is unit-tested. */
+export function trimTurnHistory<T extends { role: string }>(messages: T[], maxHistory: number): T[] {
+  if (messages.length <= 1 + maxHistory) return messages;
+  let cut = messages.length - maxHistory;
+  while (cut < messages.length && messages[cut].role !== "user") cut++;
+  if (cut >= messages.length) return messages; // no boundary in range - keep as-is
+  return [messages[0], ...messages.slice(cut)];
 }
 
 function parseMaybe(text: string): unknown {

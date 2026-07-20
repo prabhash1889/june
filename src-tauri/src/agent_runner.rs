@@ -36,6 +36,10 @@ use tauri::{AppHandle, Emitter, Manager, State};
 /// work, or a 120s approval) survives while a truly hung process still times out.
 const WATCHDOG: Duration = Duration::from_secs(180);
 
+/// Roll `audit.jsonl` to `audit.jsonl.1` once it passes this size (B4.5), so the
+/// tray resident's audit trail can't grow without bound.
+const MAX_AUDIT_BYTES: u64 = 5 * 1024 * 1024;
+
 /// Append one already-redacted, turn-stamped audit record (a `{"t":"audit",...}`
 /// line from serve.ts) to `<app_data_dir>/audit.jsonl` (10.7). Best-effort: a
 /// failed audit write must never break a turn, but it is the record phases 17-19
@@ -50,6 +54,13 @@ fn append_audit(app: &AppHandle, entry: &serde_json::Value) {
     };
     let _ = std::fs::create_dir_all(&dir);
     let path = dir.join("audit.jsonl");
+    // Cap the audit log (B4.5): once it passes the size cap, roll it to
+    // audit.jsonl.1 (replacing any prior roll) so a long-lived tray resident can't
+    // grow it without bound. One generation of history is kept - plenty for the
+    // "reviewable audit trail" the exit criterion names, without unbounded disk.
+    if std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0) > MAX_AUDIT_BYTES {
+        let _ = std::fs::rename(&path, dir.join("audit.jsonl.1"));
+    }
     let line = entry.to_string();
     let write = std::fs::OpenOptions::new()
         .create(true)
@@ -419,13 +430,17 @@ fn ensure_resident(app: &AppHandle, session: &AgentSession) -> Result<(), String
     if session.respawn_pending.swap(false, Ordering::Relaxed) {
         session.shutdown();
     }
-    {
-        let mut guard = session.resident.lock().unwrap();
-        if let Some(r) = guard.as_mut() {
-            match r.child.try_wait() {
-                Ok(None) => return Ok(()), // still running
-                _ => *guard = None,        // exited or unknown - respawn below
-            }
+    // Hold the resident lock across the check AND the spawn (B4.3): otherwise two
+    // callers (an interactive turn and a scheduled/mission run, say) can both see
+    // "no resident" and each spawn one, orphaning a child (and its reader thread).
+    // Blocking while holding it is fine - ensure_resident always runs inside
+    // spawn_blocking or the scheduler thread, and a concurrent write_request simply
+    // waits for the spawn to finish, which is exactly what we want.
+    let mut guard = session.resident.lock().unwrap();
+    if let Some(r) = guard.as_mut() {
+        match r.child.try_wait() {
+            Ok(None) => return Ok(()), // still running
+            _ => *guard = None,        // exited or unknown - respawn below
         }
     }
 
@@ -446,7 +461,7 @@ fn ensure_resident(app: &AppHandle, session: &AgentSession) -> Result<(), String
     let gen = session.generation.fetch_add(1, Ordering::Relaxed) + 1;
     let (stdin, stdout, child) = spawn_serve(app)?;
     spawn_reader(session.clone(), app.clone(), stdout, gen);
-    *session.resident.lock().unwrap() = Some(Resident { stdin, child, gen });
+    *guard = Some(Resident { stdin, child, gen });
     Ok(())
 }
 

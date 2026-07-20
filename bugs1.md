@@ -86,7 +86,23 @@ Goal: normal interaction (typing in settings, correcting a transcript) never kil
 
 **Exit:** a file change during a user turn fires on the next tick; a 4-minute turn with one approval completes; a failed mission task shows ✕ and the mission finishes `failed`; Stop provably stops token spend.
 
-## Phase B4 - Hygiene & polish
+## Phase B4 - Hygiene & polish  ✅ DONE (2026-07-20)
+
+**Status:** all of B4.1-B4.11 landed. Suite green: 187/187 TS tests (was 183, +4 regression tests: `trimTurnHistory` x2, transcript `$`-injection, `WakeModel.feed` serialization), 17/17 Rust, `npm run typecheck` (all 6 tsconfigs), `eslint .` (zero warnings), `cargo clippy --all-targets` (clean), production `vite build` (chunks stay code-split). The second, divergent gate implementation is gone from the tree; the node memory/lessons writers are atomic; `ensure_resident` holds the resident lock across check+spawn; the OpenAI brain rolls back and trims against the array captured at turn start; `audit.jsonl` rotates; and the doc claims match the post-fix code.
+
+- **B4.1 Delete `agent/run-once.ts`** ✅ - removed; nothing imported it (only comments/graphify referenced it). The two stale comments that pointed at it as a *live* path (`settings.rs`) now point at `serve.ts`.
+- **B4.2 Atomic writes in node MCP servers** ✅ - `mcp/memory/server.ts` and `mcp/lessons/server.ts` now write to a `.tmp` then `rename`, mirroring the Rust side, so a crash mid-write can't truncate the file.
+- **B4.3 `ensure_resident` double-spawn race** ✅ - the resident lock is now held across the try_wait check AND the spawn, so two callers (an interactive turn and a scheduled/mission run) can't both spawn and orphan a child.
+- **B4.4 OpenAI-brain `reset()` mid-turn corrupts `#messages`** ✅ - `run()` captures `const history = this.#messages` at turn start and rolls back / appends / trims against that reference; a mid-turn `reset()` swaps the field to a fresh array without the in-flight turn corrupting it.
+- **B4.5 Cap/rotate `audit.jsonl` + trim OpenAI-brain history** ✅ - `audit.jsonl` rolls to `audit.jsonl.1` past 5 MiB; a new pure `trimTurnHistory` caps retained `#messages` at 60 messages, cutting only at a `user` turn boundary so a tool result never loses its assistant tool_call.
+- **B4.6 Wake fallback respects the user's STT choice** ✅ - `startWakeListener` takes the user's `stt` choice and the burst fallback transcribes with it, so a local-STT user never has the wake fallback silently hit cloud Whisper; the cloud burst path is already gated by `allowCloudFallback`/`voiceBlocked`.
+- **B4.7 Serialize `WakeModel.feed`** ✅ - `feed` now promise-chains each per-frame call (`#pending`), so the fire-and-forget caller can't overlap inference and clobber the streaming buffers. Regression test proves no concurrent mel runs.
+- **B4.8 Mic-stream leaks** ✅ - `startCapture` stops the stream if `MediaRecorder` construction throws; a PTT release that lands while the capture is still opening is flagged (`releaseDuringSetup`) and honoured the instant the mic is ready, so a quick tap no longer sits recording to the 15s cap.
+- **B4.9 `applyMap` `$`-pattern injection** ✅ - `applyMap` uses a function replacement, so `$&`/`$1` in a user's dictionary/snippet value insert literally. Regression test.
+- **B4.10 Small UI states** ✅ - orb press in `review` now re-records; `decide()` restores the approval card if `resolve_approval` rejects; `useMission` ignores a slow seed read once a live event has landed; `SettingsPanel` reloads on `settings://changed` while no local edit is pending (no stale-save over a widget-learned correction); KeyRow Clear is disabled until key presence is confirmed; and the backchannel "On it." is suppressed while an approval is pending (never over a spoken repeat-back).
+- **B4.11 Doc corrections in improvement-4.md** ✅ - 19.2 marked as dormant dead code (nothing populates `toolsetIds`); the phase-12 headless-Chromium check reworded as an uncommitted one-off; and the 13.2 (B1.1), 16.3 (B1.6/B1.7), 18.2 (B1.3), 19.1 (B3.7) and 15.2 (test count) claims updated to post-fix reality.
+
+<details><summary>Original findings</summary>
 
 - **B4.1 Delete `agent/run-once.ts`** - dead code carrying a second, divergent gate implementation with no unattended branch; pure drift risk.
 - **B4.2 Atomic writes in node MCP servers** (`mcp/memory/server.ts:62-65`, `mcp/lessons/server.ts:67-70`) - temp+rename, mirroring the Rust side.
@@ -99,6 +115,8 @@ Goal: normal interaction (typing in settings, correcting a transcript) never kil
 - **B4.9 `applyMap` `$`-pattern injection** (`src/lib/transcript.ts:49`) - use a function replacement so `$&`/`$1` in dictionary values are literal.
 - **B4.10 Small UI states**: orb inert in `review` phase (make press = re-record); `decide()` optimistically clears the approval card even if `resolve_approval` rejects; `useMission` seed race (event before file read resolves); SettingsPanel doesn't reload on `settings://changed` (stale-save overwrites a widget-learned correction); KeyRow Clear enabled while presence unknown; backchannel "On it." can overlap the spoken repeat-back.
 - **B4.11 Doc corrections in improvement-4.md**: 19.2 toolset scoping is dead code (nothing populates `toolsetIds`); the 12-follow-up headless-Chromium harness is not in the repo (either commit it under `scripts/` or reword the claim); update the 13.2 / 18.2 / 15.2 / 15.4 / 16.3 / 19.1 claims to match post-fix reality.
+
+</details>
 
 **Exit:** full suite green; no dead gate code in the tree; every doc claim reproducible from the checkout.
 

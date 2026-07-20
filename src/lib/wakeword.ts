@@ -64,9 +64,22 @@ export class WakeModel {
 
   constructor(private readonly runners: WakeRunners) {}
 
+  // Serialize feed() calls (B4.7): the buffers (#raw/#mel/#feat/#accumulated) are
+  // shared mutable state, and the caller fires feed() per frame WITHOUT awaiting,
+  // so overlapping async inference would interleave their pushes and clobber the
+  // accumulator. Chain each call after the previous so frames process in order.
+  #pending: Promise<number | null> = Promise.resolve(null);
+
   /** Feed one frame of normalized (-1..1) 16kHz audio. Returns the latest score
-   *  after any new embeddings, or null while there are fewer than 16 embeddings. */
-  async feed(frame: Float32Array): Promise<number | null> {
+   *  after any new embeddings, or null while there are fewer than 16 embeddings.
+   *  Serialized so concurrent per-frame calls can't corrupt the streaming buffers. */
+  feed(frame: Float32Array): Promise<number | null> {
+    const run = this.#pending.catch(() => null).then(() => this.#feedNow(frame));
+    this.#pending = run;
+    return run;
+  }
+
+  async #feedNow(frame: Float32Array): Promise<number | null> {
     let x = frame;
     if (this.#remainder.length) {
       x = Float32Array.from([...this.#remainder, ...frame]);

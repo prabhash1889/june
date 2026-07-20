@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 
-import { namespaceTools, OpenAiCompatBrain, toOpenAiTool, transportFor } from "./openai-brain.ts";
+import { namespaceTools, OpenAiCompatBrain, toOpenAiTool, transportFor, trimTurnHistory } from "./openai-brain.ts";
 import { type ToolGate } from "./brain.ts";
 import { actionOf, classify, isGated, serverOf, setServerDefaults } from "./policy.ts";
 
@@ -119,5 +119,33 @@ describe("cancel", () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+});
+
+// B4.5: retained history is trimmed so a long-lived session can't grow #messages
+// without bound - but only ever at a whole-turn (user) boundary, so an assistant
+// tool_call is never split from its tool results (which the chat API rejects).
+describe("trimTurnHistory (B4.5)", () => {
+  it("keeps the system prompt and cuts only at a user turn boundary", () => {
+    const msgs = [
+      { role: "system", content: "s" },
+      { role: "user", content: "u1" },
+      { role: "assistant", content: null }, // tool_call turn
+      { role: "tool", content: "t" },
+      { role: "assistant", content: "a1" },
+      { role: "user", content: "u2" },
+      { role: "assistant", content: "a2" },
+    ];
+    const out = trimTurnHistory(msgs, 2);
+    expect(out[0].role).toBe("system"); // system prompt always survives
+    expect(out[1].role).toBe("user"); // trimmed to a clean turn start
+    expect(out[out.length - 1]).toBe(msgs[msgs.length - 1]); // newest kept
+    // A tool message never lands without its preceding assistant (no orphaned pair).
+    expect(out.some((m, i) => m.role === "tool" && out[i - 1]?.role !== "assistant")).toBe(false);
+  });
+
+  it("returns the same array untouched when nothing needs trimming", () => {
+    const msgs = [{ role: "system" }, { role: "user" }, { role: "assistant" }];
+    expect(trimTurnHistory(msgs, 60)).toBe(msgs);
   });
 });

@@ -14,6 +14,7 @@
 // wakeword.ts's `createWakeRunners` with no code change. Until then the local
 // wake phrase is "hey jarvis".
 
+import type { StageChoice } from "./settings.ts";
 import { transcribe } from "./stt.ts";
 import { classifyGetUserMediaError, pickMimeType, rms, SilenceDetector } from "./voice-capture.ts";
 // wakeword.ts (local openWakeWord) is imported dynamically in startWakeListener so
@@ -114,6 +115,10 @@ export async function startWakeListener(opts: {
   sensitivity: number;
   onWake: () => void;
   allowCloudFallback?: boolean;
+  /** The user's chosen STT stack (B4.6): the burst fallback transcribes with it, so
+   *  a user on a local STT provider never has the wake fallback silently hit cloud
+   *  Whisper. Omitted defaults to cloud Whisper (unchanged prior behaviour). */
+  stt?: StageChoice;
 }): Promise<WakeHandle> {
   let stream: MediaStream;
   try {
@@ -182,7 +187,7 @@ export async function startWakeListener(opts: {
       const audioBlob = new Blob(chunks, { type: mime });
       void audioBlob
         .arrayBuffer()
-        .then((ab) => (ab.byteLength > 0 ? transcribe(new Uint8Array(ab), mime) : ""))
+        .then((ab) => (ab.byteLength > 0 ? transcribe(new Uint8Array(ab), mime, opts.stt) : ""))
         .then((text) => {
           failures = 0; // a completed transcription (even empty) clears the backoff
           if (!stopped && phraseMatches(text, opts.phrase, opts.sensitivity)) opts.onWake();
