@@ -27,6 +27,22 @@ export interface WakeConfig {
   sensitivity: number;
 }
 
+/** Hands-free & conversational voice UX (PLAN.md Phase 14). Every field is
+ *  opt-in: manual review + click-to-approve stays the default, so June never
+ *  auto-acts until the user turns one of these on. */
+export interface HandsFreeConfig {
+  /** 14.1: the review card auto-sends after a short countdown; any edit pauses it. */
+  autoAccept: boolean;
+  /** 14.2: June speaks the repeat-back and takes a spoken yes/no - but only for
+   *  EXPENSIVE actions. Destructive/external effects still require a click. */
+  spokenApprovals: boolean;
+  /** 14.3: after each reply the mic reopens briefly (no wake word) for a natural
+   *  back-and-forth. */
+  followUp: boolean;
+  /** 14.4: a brief spoken "on it" when a turn starts tool calls. */
+  backchannel: boolean;
+}
+
 /** The local files capability (PLAN.md Phase 9) - a non-saple MCP server proving
  *  June is general-purpose. Off by default: the filesystem is only exposed once
  *  the user opts in and scopes it to a folder. Local/offline-safe. */
@@ -47,6 +63,7 @@ export interface JuneSettings {
   conversationIdleMinutes: number;
   privacyMode: PrivacyMode;
   wake: WakeConfig;
+  handsFree: HandsFreeConfig;
   files: FilesConfig;
   /** User-added MCP capability servers (Phase 13). Empty by default: June ships
    *  with only its built-in capabilities; the user adds any others here. */
@@ -61,6 +78,7 @@ export const DEFAULT_SETTINGS: JuneSettings = {
   conversationIdleMinutes: 10,
   privacyMode: "standard",
   wake: { enabled: false, phrase: "hey june", sensitivity: 0.5 },
+  handsFree: { autoAccept: false, spokenApprovals: false, followUp: false, backchannel: false },
   files: { enabled: false, root: "" },
   mcpServers: [],
 };
@@ -99,6 +117,8 @@ function coerce(raw: RawSettings): JuneSettings {
   const brainEffort = obj("brain").effort;
   const mode = raw.privacyMode;
   const wake = obj("wake");
+  const hands = obj("handsFree");
+  const bool = (v: unknown, fallback: boolean): boolean => (typeof v === "boolean" ? v : fallback);
   const files = obj("files");
   return {
     stt: stage("stt", d.stt),
@@ -114,6 +134,12 @@ function coerce(raw: RawSettings): JuneSettings {
       enabled: typeof wake.enabled === "boolean" ? wake.enabled : d.wake.enabled,
       phrase: str(wake.phrase, d.wake.phrase),
       sensitivity: unit(wake.sensitivity, d.wake.sensitivity),
+    },
+    handsFree: {
+      autoAccept: bool(hands.autoAccept, d.handsFree.autoAccept),
+      spokenApprovals: bool(hands.spokenApprovals, d.handsFree.spokenApprovals),
+      followUp: bool(hands.followUp, d.handsFree.followUp),
+      backchannel: bool(hands.backchannel, d.handsFree.backchannel),
     },
     files: {
       enabled: typeof files.enabled === "boolean" ? files.enabled : d.files.enabled,

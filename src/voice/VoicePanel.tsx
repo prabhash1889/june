@@ -1,9 +1,10 @@
 import { type CSSProperties, useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 
+import { matchApproval } from "../lib/approval-voice.ts";
 import { hasOpenAiKey, runAgent, setOpenAiKey, transcribe } from "../lib/stt.ts";
 import { type Approval, cancelAgent, newConversation, openApp, usePendingApproval } from "../lib/session.ts";
-import { DEFAULT_SETTINGS, type JuneSettings, loadSettings, voiceAllowed, voiceNeedsOpenAiKey } from "../lib/settings.ts";
+import { DEFAULT_SETTINGS, type HandsFreeConfig, type JuneSettings, loadSettings, voiceAllowed, voiceNeedsOpenAiKey } from "../lib/settings.ts";
 import { recordLatency, TurnTimer } from "../lib/latency.ts";
 import { SentenceBuffer, SpeechQueue } from "../lib/tts.ts";
 import { startBargeMonitor, startCapture, type CaptureError, type CaptureHandle } from "../lib/voice-capture.ts";
@@ -31,6 +32,11 @@ type Phase =
 
 const MAX_CAPTURE_MS = 15_000;
 const WAVE_BARS = 28;
+
+// Hands-free timings (Phase 14). Small, fixed constants - not settings knobs.
+const AUTO_ACCEPT_SECONDS = 3; // 14.1: review-card countdown before auto-send
+const FOLLOWUP_WINDOW_MS = 6_000; // 14.3: how long the mic stays armed after a reply
+const SPOKEN_APPROVAL_MS = 8_000; // 14.2: how long to listen for a spoken yes/no
 
 // `onActiveChange` lets the widget shell expand into a card while June is doing
 // anything (and collapse back to a bare orb at rest) - the shell owns the window
@@ -68,6 +74,15 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
   // Wake config in state (not just the ref) so the hands-free listener effect
   // re-arms when settings load or the user toggles it.
   const [wake, setWake] = useState(DEFAULT_SETTINGS.wake);
+  // Hands-free config (Phase 14) in state so the follow-up / spoken-approval /
+  // auto-accept effects re-arm live when the user toggles them; the backchannel
+  // listener reads it off the ref instead.
+  const [handsFree, setHandsFree] = useState<HandsFreeConfig>(DEFAULT_SETTINGS.handsFree);
+  // A one-shot queue for June's "on it" backchannel (14.4), kept separate from the
+  // reply queue so it never pollutes the latency mark; torn down on barge/cancel
+  // and the moment the real reply starts speaking.
+  const ackRef = useRef<SpeechQueue | null>(null);
+  const ackTurnRef = useRef(-1);
 
   // Load the voice stack + privacy mode, and decide the key gate. Under a mode
   // that blocks cloud voice (June has no local voice provider yet) the mic is
@@ -79,6 +94,7 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
     const s = await loadSettings().catch(() => DEFAULT_SETTINGS);
     settingsRef.current = s;
     setWake(s.wake);
+    setHandsFree(s.handsFree);
     const blocked = !voiceAllowed(s);
     voiceBlockedRef.current = blocked;
     setVoiceBlocked(blocked);
@@ -176,6 +192,8 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
     turnRef.current += 1;
     queueRef.current?.stop();
     queueRef.current = null;
+    ackRef.current?.stop(); // silence any "on it" backchannel too (14.4)
+    ackRef.current = null;
     decide("deny"); // interrupting also withdraws any approval the old turn was awaiting
     void startListening();
   }, [startListening, decide]);
@@ -200,6 +218,10 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
       },
       settingsRef.current.tts,
       () => {
+        // The real reply is starting: silence any lingering "on it" backchannel
+        // (14.4) so the two never overlap, and mark voice-to-voice latency.
+        ackRef.current?.stop();
+        ackRef.current = null;
         const sample = timer?.firstAudio();
         if (sample) void recordLatency(sample).catch(() => {});
       },
@@ -253,12 +275,34 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
     };
   }, []);
 
+  // Backchannel (Phase 14.4): a brief spoken "on it" the first time a turn starts
+  // a tool call, so the user hears June is working during a slow action. Skipped
+  // once June is already talking (a reply sentence has been spoken) - no need to
+  // acknowledge over its own voice - and only once per turn. Spoken on a dedicated
+  // one-shot queue so it stays out of the reply's latency mark.
+  useEffect(() => {
+    const unlisten = listen<{ turn: number }>("agent://tool", (e) => {
+      if (e.payload.turn !== turnRef.current) return; // stale (barged-in) turn
+      if (!settingsRef.current.handsFree.backchannel || spokeRef.current) return;
+      if (ackTurnRef.current === e.payload.turn) return; // one "on it" per turn
+      ackTurnRef.current = e.payload.turn;
+      const ack = new SpeechQueue(() => {}, settingsRef.current.tts);
+      ackRef.current = ack;
+      ack.enqueue("On it.");
+    });
+    return () => {
+      void unlisten.then((f) => f());
+    };
+  }, []);
+
   // Open an echo-cancelled monitor mic only while June is speaking, so the user's
   // voice can barge in. June's own audio is removed by the browser's AEC, so it
   // can't trip the monitor (PLAN.md Phase 5: "June's own audio must never be
   // picked up"). No mic for barge-in? Press-to-interrupt still works.
   useEffect(() => {
-    if (phase.s !== "speaking") return;
+    // Not while an approval is pending: the mic then belongs to the spoken-approval
+    // flow (14.2), and answering a gate isn't barging into a reply.
+    if (phase.s !== "speaking" || approval) return;
     let active = true;
     let stop = () => {};
     startBargeMonitor({ onSpeech: () => active && bargeIn() })
@@ -268,7 +312,7 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
       active = false;
       stop();
     };
-  }, [phase.s, bargeIn]);
+  }, [phase.s, approval, bargeIn]);
 
   // Poll the input level while listening: the newest sample drives the orb's
   // glow ring, the trailing window renders as the live waveform.
@@ -336,6 +380,93 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
     };
   }, [wake, voiceBlocked, approval, phase.s, activate]);
 
+  // Follow-up mode (Phase 14.3): after each reply, keep the mic armed for a few
+  // seconds with no wake word so the user can just keep talking. Reuses the Silero
+  // speech-onset monitor (same as barge-in): on confirmed speech we open a real
+  // capture; if nothing is said in the window we quietly stand down (no empty-
+  // capture error, no 15s hang). Opt-in.
+  // ponytail: the first ~200ms of the follow-up can clip while the capture opens
+  // after onset; acceptable for v1, a continuous rolling buffer is the upgrade.
+  useEffect(() => {
+    if (!handsFree.followUp || voiceBlocked || approval || phase.s !== "reply") return;
+    let alive = true;
+    let stop = () => {};
+    const timer = window.setTimeout(() => {
+      alive = false;
+      stop();
+    }, FOLLOWUP_WINDOW_MS);
+    startBargeMonitor({
+      onSpeech: () => {
+        if (!alive) return;
+        alive = false;
+        window.clearTimeout(timer);
+        stop();
+        activate(); // in "reply", this starts a fresh capture
+      },
+    })
+      .then((s) => (alive ? (stop = s) : s()))
+      .catch(() => {}); // no mic -> follow-up unavailable; PTT and the orb still work
+    return () => {
+      alive = false;
+      window.clearTimeout(timer);
+      stop();
+    };
+  }, [handsFree.followUp, voiceBlocked, approval, phase.s, activate]);
+
+  // Spoken approvals (Phase 14.2): for EXPENSIVE actions only, June speaks the
+  // exact repeat-back and listens for a strict local yes/no. Destructive/external
+  // actions are deliberately excluded - they still require a click on the approval
+  // card. The matcher (approval-voice.ts) runs only over the user's own speech and
+  // is a fixed word list, never the LLM and never tool output, so nothing but a
+  // human "yes" can approve. No clear yes within ~8s (or a no/gibberish/silence) is
+  // a denial, announced aloud. The click path stays live: if the user (or the
+  // other window) decides first, this effect's cleanup aborts the spoken flow.
+  useEffect(() => {
+    if (!approval || !handsFree.spokenApprovals || approval.cls !== "expensive") return;
+    let alive = true;
+    let listening = false;
+    let cap: CaptureHandle | null = null;
+    const tts = settingsRef.current.tts;
+    const say = (text: string) => new SpeechQueue(() => {}, tts).enqueue(text);
+    const finish = (decision: "allow" | "deny", spoken?: string) => {
+      if (!alive) return;
+      alive = false;
+      if (spoken) say(spoken);
+      decide(decision);
+    };
+
+    const endCapture = async () => {
+      const c = cap;
+      cap = null;
+      if (!c || !alive) return;
+      const { audio, mime } = await c.stop();
+      if (!alive) return;
+      let decision: "allow" | "deny" | null = null;
+      if (audio.length > 0) {
+        decision = await transcribe(audio, mime, settingsRef.current.stt).then(matchApproval).catch(() => null);
+      }
+      if (decision === "allow") finish("allow");
+      else if (decision === "deny") finish("deny", "Okay, cancelled.");
+      else finish("deny", "I didn't catch a yes, so I cancelled that.");
+    };
+
+    // Speak the repeat-back, then start listening once it drains (onIdle).
+    const prompt = new SpeechQueue(() => {
+      if (!alive || listening) return;
+      listening = true;
+      startCapture({ onEndpoint: () => void endCapture(), maxMs: SPOKEN_APPROVAL_MS })
+        .then((h) => (alive ? (cap = h) : h.cancel()))
+        .catch(() => finish("deny", "I couldn't open the microphone, so I cancelled that."));
+    }, tts);
+    prompt.enqueue(`${approval.summary}. Say yes to approve, or no to cancel.`);
+
+    return () => {
+      alive = false;
+      prompt.stop();
+      cap?.cancel();
+    };
+  }, [approval, handsFree.spokenApprovals, decide]);
+
   // Tell the shell to expand whenever June is doing anything (or awaiting an
   // approval), and collapse back to the bare orb at rest.
   const active = phase.s !== "idle" || approval != null;
@@ -344,7 +475,10 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
   }, [active, onActiveChange]);
 
   // Stop any audio if the panel unmounts mid-reply.
-  useEffect(() => () => queueRef.current?.stop(), []);
+  useEffect(() => () => {
+    queueRef.current?.stop();
+    ackRef.current?.stop();
+  }, []);
 
   const cancel = useCallback(() => {
     void cancelAgent(turnRef.current); // abort any in-flight turn on the backend (Phase 11.3)
@@ -352,6 +486,8 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
     capture.current = null;
     queueRef.current?.stop();
     queueRef.current = null;
+    ackRef.current?.stop();
+    ackRef.current = null;
     timerRef.current = null; // abandon this turn's latency sample
     turnRef.current += 1;
     transcribeRef.current += 1; // drop any in-flight transcription result
@@ -433,6 +569,7 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
             {phase.s === "review" && (
               <ReviewCard
                 transcript={phase.transcript}
+                autoAccept={handsFree.autoAccept}
                 onAccept={accept}
                 onCancel={cancel}
                 onRedo={() => void startListening()}
@@ -542,26 +679,68 @@ function ApprovalCard({ approval, onDecide }: { approval: Approval; onDecide: (d
 
 function ReviewCard({
   transcript,
+  autoAccept,
   onAccept,
   onCancel,
   onRedo,
 }: {
   transcript: string;
+  autoAccept: boolean;
   onAccept: (t: string) => void;
   onCancel: () => void;
   onRedo: () => void;
 }) {
   const [text, setText] = useState(transcript);
+  // Auto-accept countdown (Phase 14.1): only when opted in, and paused by any
+  // interaction (edit, focus, Re-record, Cancel) so the user is always in control.
+  const [paused, setPaused] = useState(!autoAccept);
+  const [remaining, setRemaining] = useState(AUTO_ACCEPT_SECONDS);
+  const pause = () => setPaused(true);
+  useEffect(() => {
+    if (paused) return;
+    if (!text.trim()) {
+      setPaused(true); // nothing to send - don't fire an empty command
+      return;
+    }
+    if (remaining <= 0) {
+      onAccept(text.trim());
+      return;
+    }
+    const id = window.setTimeout(() => setRemaining((r) => r - 1), 1000);
+    return () => window.clearTimeout(id);
+  }, [paused, remaining, text, onAccept]);
   return (
     <div className="review">
       <span className="who">You said</span>
-      <textarea value={text} onChange={(e) => setText(e.target.value)} rows={3} />
+      <textarea
+        value={text}
+        onChange={(e) => {
+          pause();
+          setText(e.target.value);
+        }}
+        onFocus={pause}
+        rows={3}
+      />
       <div className="row">
         <button className="primary" disabled={!text.trim()} onClick={() => onAccept(text.trim())}>
-          Send to June
+          {paused ? "Send to June" : `Sending in ${remaining}…`}
         </button>
-        <button onClick={onRedo}>Re-record</button>
-        <button onClick={onCancel}>Cancel</button>
+        <button
+          onClick={() => {
+            pause();
+            onRedo();
+          }}
+        >
+          Re-record
+        </button>
+        <button
+          onClick={() => {
+            pause();
+            onCancel();
+          }}
+        >
+          Cancel
+        </button>
       </div>
     </div>
   );

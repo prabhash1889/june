@@ -93,6 +93,7 @@ export function SettingsPanel() {
       <KeysSection />
       <PrivacySection settings={settings} update={update} />
       <ActivationSection settings={settings} update={update} />
+      <HandsFreeSection settings={settings} update={update} />
       <ConversationSection settings={settings} update={update} />
       <MemorySection />
       <CapabilitiesSection settings={settings} update={update} />
@@ -472,6 +473,70 @@ function ActivationSection({ settings, update }: { settings: JuneSettings; updat
 
         {voiceOff && (
           <p className="settings-hint">Wake word is unavailable in your current privacy mode. Switch to Standard to use it.</p>
+        )}
+      </div>
+    </section>
+  );
+}
+
+// --- Hands-free -----------------------------------------------------------
+
+// Hands-free & conversational voice UX (PLAN.md Phase 14). Every toggle is off by
+// default: manual review + click-to-approve is the safe baseline. Voice-off modes
+// disable the whole group (there is no local voice provider for these flows yet).
+function HandsFreeSection({ settings, update }: { settings: JuneSettings; update: (s: JuneSettings) => void }) {
+  const hands = settings.handsFree;
+  const setHands = (next: Partial<JuneSettings["handsFree"]>) =>
+    update({ ...settings, handsFree: { ...hands, ...next } });
+  const voiceOff = !voiceAllowed(settings);
+
+  const rows: { key: keyof JuneSettings["handsFree"]; name: string; desc: string }[] = [
+    {
+      key: "autoAccept",
+      name: "Auto-send after review",
+      desc: `The review card sends automatically after a ${3}s countdown. Any edit, or a tap, pauses it - so you stay in control.`,
+    },
+    {
+      key: "spokenApprovals",
+      name: "Spoken approvals",
+      desc: "June reads a paid action's exact details aloud and takes a spoken yes/no. Destructive or external actions still require a click.",
+    },
+    {
+      key: "followUp",
+      name: "Follow-up mode",
+      desc: "After each reply the mic reopens briefly with no wake word, so you can keep talking. Say nothing and it stands down.",
+    },
+    {
+      key: "backchannel",
+      name: "Say “on it”",
+      desc: "A brief spoken acknowledgement when June starts working on a tool call, so a slow action doesn't feel silent.",
+    },
+  ];
+
+  return (
+    <section className="settings-section">
+      <h2>Hands-free</h2>
+      <p className="settings-hint">
+        A fully spoken loop - wake, command, spoken approval, follow-up - with hands off the keyboard. All off by
+        default; turn on only what you want.
+      </p>
+      <div className="stage-card">
+        {rows.map((r) => (
+          <label className="wake-toggle" key={r.key}>
+            <input
+              type="checkbox"
+              checked={hands[r.key]}
+              disabled={voiceOff}
+              onChange={(e) => setHands({ [r.key]: e.target.checked })}
+            />
+            <span>
+              <span className="privacy-name">{r.name}</span>
+              <span className="privacy-desc">{r.desc}</span>
+            </span>
+          </label>
+        ))}
+        {voiceOff && (
+          <p className="settings-hint">Hands-free is unavailable in your current privacy mode. Switch to Standard to use it.</p>
         )}
       </div>
     </section>
