@@ -67,6 +67,11 @@ describe("gate policy", () => {
     expect(summarize("remember", { fact: "prefers Codex agents" })).toBe("Remember: prefers Codex agents");
   });
 
+  it("does not gate recording a lesson (Phase 17.1: local, contained, reversible)", () => {
+    expect(isGated(classify("record_lesson"))).toBe(false); // reversible - auto-run
+    expect(summarize("record_lesson", { lesson: "pass the model id" })).toBe("Note lesson: pass the model id");
+  });
+
   it("an unknown action fails closed to destructive (gated), never silently auto-run", () => {
     expect(classify("some_future_action")).toBe("destructive");
     expect(isGated(classify("some_future_action"))).toBe(true);

@@ -33,10 +33,12 @@ import {
   type JuneSettings,
   loadSettings,
   privacyViolations,
+  readLessons,
   readMemory,
   saveSettings,
   setKey,
   voiceAllowed,
+  writeLessons,
   writeMemory,
 } from "../lib/settings.ts";
 import { transcribe } from "../lib/stt.ts";
@@ -103,6 +105,7 @@ export function SettingsPanel() {
       <TranscriptSection settings={settings} update={update} />
       <ConversationSection settings={settings} update={update} />
       <MemorySection />
+      <LessonsSection />
       <CapabilitiesSection settings={settings} update={update} />
       <DiagnosticsSection />
     </div>
@@ -702,6 +705,69 @@ function MemorySection() {
           value={text}
           onChange={(e) => setText(e.target.value)}
           placeholder="June hasn't remembered anything yet."
+          rows={6}
+        />
+        <div className="settings-test">
+          <button className="primary" onClick={() => save(text)} disabled={busy || !dirty}>
+            {busy ? "Saving…" : "Save"}
+          </button>
+          <button onClick={() => save("")} disabled={busy || (text.length === 0 && saved.length === 0)}>
+            Clear
+          </button>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+// --- Lessons --------------------------------------------------------------
+
+// Post-run task lessons (improvement-4 Phase 17.1): one user-editable
+// june-lessons.md next to june-memory.md. June writes a short lesson after a task
+// (the record_lesson tool) and recalls the relevant ones before a similar task
+// (17.2), so it gets better at repeated work. This surface lets the user see,
+// edit, or clear them. Local-only (no network), so it works in every privacy mode.
+function LessonsSection() {
+  const [text, setText] = useState<string | null>(null);
+  const [saved, setSaved] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    readLessons()
+      .then((l) => {
+        setText(l);
+        setSaved(l);
+      })
+      .catch(() => setText(""));
+  }, []);
+
+  if (text === null) return null;
+  const dirty = text !== saved;
+
+  const save = async (value: string) => {
+    setBusy(true);
+    try {
+      await writeLessons(value);
+      setText(value);
+      setSaved(value);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="settings-section">
+      <h2>Lessons</h2>
+      <p className="settings-hint">
+        What June has learned from past tasks. June saves a short lesson after a task on its own and recalls the relevant
+        ones next time; you can edit or clear them. Stored on-device only.
+      </p>
+      <div className="stage-card">
+        <textarea
+          className="memory-text"
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          placeholder="June hasn't learned any task lessons yet."
           rows={6}
         />
         <div className="settings-test">

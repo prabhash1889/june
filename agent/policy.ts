@@ -39,6 +39,10 @@ const ACTION_CLASS: Record<string, SafetyClass> = {
   // memory file is auto - it is local-only and trivially reversible (the user can
   // edit or clear "what June remembers" in settings), so it needs no approval.
   remember: "reversible",
+  // lessons capability (Phase 17.1): saving a post-run lesson to the local,
+  // contained lessons file is auto for the same reason as remember - local-only,
+  // user-visible and editable in settings, trivially reversible.
+  record_lesson: "reversible",
 };
 
 /**
@@ -148,6 +152,8 @@ export function summarize(action: string, input: Record<string, unknown>): strin
       return "Read swarm status";
     case "remember":
       return `Remember: ${s("fact") || "?"}`;
+    case "record_lesson":
+      return `Note lesson: ${s("lesson") || "?"}`;
     default:
       return `Run ${action}`;
   }

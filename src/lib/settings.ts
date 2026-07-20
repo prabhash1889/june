@@ -226,6 +226,18 @@ export function writeMemory(content: string): Promise<void> {
   return invoke("write_memory", { content });
 }
 
+// --- Post-run lessons (Phase 17.1) ---
+// June's task-lessons file (`june-lessons.md`), next to june-memory.md and, like
+// it, kept out of settings.json. `writeLessons("")` is the "clear" action.
+
+export function readLessons(): Promise<string> {
+  return invoke<string>("read_lessons");
+}
+
+export function writeLessons(content: string): Promise<void> {
+  return invoke("write_lessons", { content });
+}
+
 /** A stage whose chosen provider is not allowed under the current privacy mode.
  *  Drives both the settings warning and the runtime block. */
 export interface Violation {

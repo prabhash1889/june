@@ -135,8 +135,11 @@ describe("slugify + catalog", () => {
     for (const { entry } of MCP_CATALOG) {
       // A preset must survive coercion unchanged in identity (it is already valid).
       expect(coerceMcpServers([entry])).toHaveLength(1);
-      if (entry.transport.kind === "stdio") {
-        // Pinned: at least one arg carries an @version (supply-chain vetting, 13.5).
+      // Pinned: an npx preset pulls from the registry, so at least one arg must
+      // carry an @version (supply-chain vetting, 13.5). A local binary command
+      // (e.g. saple-memory's compiled saple-mcp, 17.3) has no registry surface,
+      // so pinning does not apply there.
+      if (entry.transport.kind === "stdio" && entry.transport.command === "npx") {
         expect(entry.transport.args.some((a) => /@\d/.test(a))).toBe(true);
       }
     }

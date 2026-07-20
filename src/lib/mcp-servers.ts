@@ -191,6 +191,26 @@ export const MCP_CATALOG: CatalogPreset[] = [
     },
   },
   {
+    // Phase 17.3: saple-memory attaches purely as a Phase 13 config entry - no
+    // June code. It is the SAPLE project's own local memory store (a compiled
+    // stdio binary), so it is offline-safe. It mixes reads with local writes and
+    // deletes, so `defaultClass` is left unset - unknown tools stay gated until
+    // the user inspects them and promotes reads, the same stance as GitHub.
+    note: "saple-memory: SAPLE's local task/incident/memory store. Set the command to your saple-mcp binary and the arg to your workspace folder.",
+    entry: {
+      id: "saple-memory",
+      label: "saple-memory",
+      enabled: true,
+      offlineSafe: true, // local DB, no network
+      transport: {
+        kind: "stdio",
+        command: "saple-mcp",
+        args: [],
+        env: {},
+      },
+    },
+  },
+  {
     note: "Brave Search: web search for non-Claude brains (Claude has WebSearch built in).",
     entry: {
       id: "brave-search",

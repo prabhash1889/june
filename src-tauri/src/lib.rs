@@ -92,6 +92,8 @@ pub fn run() {
             agent_runner::new_conversation,
             agent_runner::read_memory,
             agent_runner::write_memory,
+            agent_runner::read_lessons,
+            agent_runner::write_lessons,
             agent_runner::record_latency,
             agent_runner::latency_samples,
             show_app,

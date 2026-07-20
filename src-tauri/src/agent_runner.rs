@@ -272,6 +272,16 @@ fn memory_file(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(dir.join("june-memory.md"))
 }
 
+/// Absolute path to June's post-run lessons file (improvement-4 Phase 17.1),
+/// `<app_data_dir>/june-lessons.md`, next to june-memory.md. Same contract: one
+/// host-owned file the model can only ever append to (mcp/lessons takes no path
+/// argument), path-contained by construction. The file need not exist yet.
+fn lessons_file(app: &AppHandle) -> Result<PathBuf, String> {
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir.join("june-lessons.md"))
+}
+
 /// The user-added MCP capability servers (Phase 13) for the resident. Read from
 /// settings.json and passed verbatim as a JSON array in JUNE_MCP_SERVERS; serve.ts
 /// coerces the list, then filters it by enable + privacy mode and registers each
@@ -293,6 +303,17 @@ fn mcp_servers_env(app: &AppHandle) -> Vec<(String, String)> {
 fn memory_env(app: &AppHandle) -> Vec<(String, String)> {
     match memory_file(app) {
         Ok(p) => vec![("JUNE_MEMORY_FILE".into(), p.to_string_lossy().into_owned())],
+        Err(_) => vec![],
+    }
+}
+
+/// Post-run lessons path for the resident (improvement-4 Phase 17.1). Always
+/// attached for the same reason as memory: lessons are local and user-visible
+/// (editable/clearable in settings), so they stay on in every privacy mode.
+/// serve.ts recalls the top-k relevant lessons per turn (17.2).
+fn lessons_env(app: &AppHandle) -> Vec<(String, String)> {
+    match lessons_file(app) {
+        Ok(p) => vec![("JUNE_LESSONS_FILE".into(), p.to_string_lossy().into_owned())],
         Err(_) => vec![],
     }
 }
@@ -320,6 +341,7 @@ fn spawn_serve(app: &AppHandle) -> Result<(ChildStdin, std::process::ChildStdout
     let mut brain_vars = brain_env(app);
     brain_vars.extend(files_env(app));
     brain_vars.extend(memory_env(app));
+    brain_vars.extend(lessons_env(app));
     brain_vars.extend(mcp_servers_env(app));
 
     let mut cmd = if cfg!(windows) {
@@ -747,6 +769,36 @@ pub fn write_memory(
     content: String,
 ) -> Result<(), String> {
     let path = memory_file(&app)?;
+    let tmp = path.with_extension("md.tmp");
+    std::fs::write(&tmp, content.as_bytes()).map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, &path).map_err(|e| e.to_string())?;
+    session.shutdown();
+    Ok(())
+}
+
+/// Read "what June has learned" for the settings surface (Phase 17.1). A missing
+/// file reads as empty, so a fresh install shows a blank, editable lessons list.
+#[tauri::command]
+pub fn read_lessons(app: AppHandle) -> Result<String, String> {
+    let path = lessons_file(&app)?;
+    match std::fs::read_to_string(&path) {
+        Ok(s) => Ok(s),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// Save the user-edited lessons (Phase 17.1 "what June has learned"; clearing is
+/// an empty save). Written atomically (temp + rename), then the resident is shut
+/// down so the next turn respawns and picks up the edited lessons - the same
+/// mechanism memory and settings changes use.
+#[tauri::command]
+pub fn write_lessons(
+    app: AppHandle,
+    session: State<'_, AgentSession>,
+    content: String,
+) -> Result<(), String> {
+    let path = lessons_file(&app)?;
     let tmp = path.with_extension("md.tmp");
     std::fs::write(&tmp, content.as_bytes()).map_err(|e| e.to_string())?;
     std::fs::rename(&tmp, &path).map_err(|e| e.to_string())?;

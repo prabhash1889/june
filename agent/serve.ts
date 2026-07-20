@@ -34,6 +34,7 @@ import { promises as fs } from "node:fs";
 import { type Interface, createInterface } from "node:readline";
 import { stdin, stdout } from "node:process";
 
+import { recallLessons } from "../mcp/lessons/store.ts";
 import { coerceMcpServers, resolveMcpEntries, serverDefaults } from "../src/lib/mcp-servers.ts";
 import { type PrivacyMode, providerAllowed } from "../src/lib/privacy.ts";
 import { resolveProvider } from "../src/lib/providers.ts";
@@ -62,6 +63,27 @@ function parseMcpServers(raw: string | undefined): ReturnType<typeof coerceMcpSe
   } catch {
     return [];
   }
+}
+
+/** Read the lessons file (Phase 17.2), empty string if missing. Re-read each turn
+ *  so a lesson written earlier this session is recalled on the next task without a
+ *  respawn - the file is small (capped, 24KB) so a local read per turn is cheap. */
+async function readLessons(file: string | undefined): Promise<string> {
+  if (!file) return "";
+  return fs.readFile(file, "utf-8").catch(() => "");
+}
+
+/** Prepend the top-k lessons relevant to `transcript` (17.2) as a clearly-labelled
+ *  context block, so the model sees prior playbook know-how before the user's words
+ *  without the two blurring. Empty when nothing is relevant, so an unrelated turn
+ *  carries no extra tokens (voice latency). ponytail: the block joins the turn and
+ *  thus the kept conversation history; top-k is small and capped, so the drift is
+ *  bounded - trim history explicitly only if it ever bites. */
+function withRecalledLessons(transcript: string, lessonsText: string): string {
+  const hits = recallLessons(lessonsText, transcript, 3);
+  if (hits.length === 0) return transcript;
+  const block = hits.map((l) => `- ${l}`).join("\n");
+  return `[Lessons you saved from similar past tasks - use if relevant:\n${block}]\n\n${transcript}`;
 }
 
 /** Resolve the brain the host selected via env into createJuneAgent options,
@@ -192,6 +214,14 @@ async function main(): Promise<void> {
   const memoryFile = process.env.JUNE_MEMORY_FILE?.trim() || undefined;
   const memory = memoryFile ? await fs.readFile(memoryFile, "utf-8").catch(() => undefined) : undefined;
 
+  // Post-run lessons (Phase 17.1/17.2): the host points us at one june-lessons.md.
+  // Unlike memory, lessons are recalled per-turn (top-k relevant to the task, 17.2)
+  // rather than injected whole, so we only need the file path here; hasLessons
+  // seeds the system-prompt wording. The file grows during a session (record_lesson),
+  // so recall re-reads it each turn (readLessons below) rather than caching at spawn.
+  const lessonsFile = process.env.JUNE_LESSONS_FILE?.trim() || undefined;
+  const hasLessons = lessonsFile ? Boolean((await readLessons(lessonsFile)).trim()) : false;
+
   // Generic MCP capabilities (Phase 13). The host serializes the user's server
   // list into JUNE_MCP_SERVERS; we coerce it (defensively), then keep only the
   // enabled servers the privacy mode allows (a networked capability is dropped
@@ -206,6 +236,8 @@ async function main(): Promise<void> {
     filesRoot,
     memoryFile,
     memory,
+    lessonsFile,
+    hasLessons,
     mcpEntries,
     persistSession,
   });
@@ -228,7 +260,10 @@ async function main(): Promise<void> {
         emit({ t: "final", turn, text: "I did not catch a command.", isError: true });
         return;
       }
-      const result = await agent.run(text, {
+      // Pre-run recall (17.2): inject the top-k lessons relevant to this task. Read
+      // fresh so a lesson recorded earlier this session is available now.
+      const prompt = withRecalledLessons(text, await readLessons(lessonsFile));
+      const result = await agent.run(prompt, {
         gate: makeGate(turn),
         onText: (delta) => emit({ t: "text", turn, delta }),
         onToolUse: (c) => emit({ t: "tool", turn, action: c.action, input: c.input }),

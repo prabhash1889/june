@@ -12,7 +12,7 @@ import { genericMcpServers, type McpServerEntry } from "../src/lib/mcp-servers.t
 import { type Brain, type TurnHooks, type TurnResult } from "./brain.ts";
 import { ClaudeBrain } from "./claude-brain.ts";
 import { OpenAiCompatBrain } from "./openai-brain.ts";
-import { SYSTEM_PROMPT, withMemory } from "./prompt.ts";
+import { SYSTEM_PROMPT, withLessons, withMemory } from "./prompt.ts";
 
 /** Absolute path to Phase 2's MCP server, resolved from this file so it works
  *  wherever June is launched from. */
@@ -28,6 +28,11 @@ function filesServerPath(): string {
 /** Absolute path to Phase 11.4's long-term memory capability. */
 function memoryServerPath(): string {
   return fileURLToPath(new URL("../mcp/memory/server.ts", import.meta.url));
+}
+
+/** Absolute path to Phase 17.1's post-run lessons capability. */
+function lessonsServerPath(): string {
+  return fileURLToPath(new URL("../mcp/lessons/server.ts", import.meta.url));
 }
 
 /** The files capability (PLAN.md Phase 9), scoped to a single allowed root. Only
@@ -56,6 +61,24 @@ export function memoryMcpServer(file: string): Record<string, McpServerConfig> {
       // built-in tool-search can actually call `remember`.
       alwaysLoad: true,
       env: { ...process.env, JUNE_MEMORY_FILE: file },
+    },
+  };
+}
+
+/** The post-run lessons capability (improvement-4 Phase 17.1). Always attached
+ *  when a lessons file path is set: lessons are local and user-visible, so like
+ *  memory they stay on in every privacy mode. The file need not exist yet - the
+ *  record_lesson tool creates it. Recall (17.2) happens per-turn in serve.ts, not
+ *  here; this just gives the model the tool to write with. */
+export function lessonsMcpServer(file: string): Record<string, McpServerConfig> {
+  return {
+    lessons: {
+      command: "npx",
+      args: ["tsx", lessonsServerPath()],
+      // Keep the tool in the prompt (like the other servers) so the model with no
+      // built-in tool-search can actually call `record_lesson`.
+      alwaysLoad: true,
+      env: { ...process.env, JUNE_LESSONS_FILE: file },
     },
   };
 }
@@ -95,6 +118,13 @@ export interface JuneAgentOptions {
   /** June's current long-term memory (the file's contents), injected into the
    *  system prompt so a preference stated in a past conversation is recalled. */
   memory?: string;
+  /** Path to June's post-run lessons file (improvement-4 Phase 17.1). When set,
+   *  the lessons MCP server is attached so June can save task lessons. Unset ->
+   *  no record_lesson tool. Recall (17.2) is per-turn in serve.ts. */
+  lessonsFile?: string;
+  /** Whether June has any saved lessons yet (Phase 17). Drives one line of the
+   *  system prompt so June knows to write lessons even before recall kicks in. */
+  hasLessons?: boolean;
   /** Extra MCP capabilities merged over the default (e.g. saple-memory). */
   extraMcpServers?: Record<string, McpServerConfig>;
   /** User-added capability servers (Phase 13). Each becomes an MCP server with
@@ -122,13 +152,17 @@ export function createJuneAgent(opts: JuneAgentOptions = {}): JuneAgent {
     ...defaultMcpServers(opts.workspaceId),
     ...(opts.filesRoot ? filesMcpServer(opts.filesRoot) : {}),
     ...(opts.memoryFile ? memoryMcpServer(opts.memoryFile) : {}),
+    ...(opts.lessonsFile ? lessonsMcpServer(opts.lessonsFile) : {}),
     // User-added capabilities (Phase 13): merged like any other server. Adding a
     // capability is data here, not new code. Cast: the shared builder types the
     // config loosely (SDK-free) but the shape matches McpServerConfig exactly.
     ...(genericMcpServers(opts.mcpEntries ?? []) as Record<string, McpServerConfig>),
     ...opts.extraMcpServers,
   };
-  const systemPrompt = withMemory(SYSTEM_PROMPT, opts.memory);
+  const systemPrompt = withLessons(withMemory(SYSTEM_PROMPT, opts.memory), {
+    enabled: Boolean(opts.lessonsFile),
+    hasLessons: Boolean(opts.hasLessons),
+  });
   const provider = opts.provider ?? "claude";
   const brain: Brain =
     provider === "claude"

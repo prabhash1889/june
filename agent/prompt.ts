@@ -31,3 +31,20 @@ export function withMemory(base: string, memory?: string): string {
 These are durable facts you saved in earlier conversations. Use them when they are relevant, and do not ask the user to repeat something already listed here. When the user tells you a new lasting preference or fact worth recalling later, call the remember tool to save it.
 ${m}`;
 }
+
+/** Add the lessons instruction to the system prompt (improvement-4 Phase 17.1).
+ *  When the lessons capability is on, June is told to save a short lesson after a
+ *  non-trivial task so it does that task better next time. The lessons themselves
+ *  are NOT injected here - the top-k relevant ones are recalled per-turn into the
+ *  transcript (17.2, agent/serve.ts) so the prompt stays lean; this just makes
+ *  June write them. `hasLessons` softens the wording once a corpus exists. */
+export function withLessons(base: string, opts: { enabled: boolean; hasLessons: boolean }): string {
+  if (!opts.enabled) return base;
+  const recallLine = opts.hasLessons
+    ? "Before a task, you may be shown relevant lessons you saved from past runs, marked as such; use them."
+    : "";
+  return `${base}
+
+## Getting better at repeated tasks
+After you finish a task that took real work or where you learned how to do it well, call the record_lesson tool with one short, reusable lesson for next time (for example a flag that must be set, or an order of steps that worked). Skip trivial one-offs. ${recallLine}`.trimEnd();
+}
