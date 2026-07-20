@@ -4,9 +4,9 @@ import { listen } from "@tauri-apps/api/event";
 
 import { useApprovalKeys } from "../lib/approval-hooks.ts";
 import { ApprovalMeta } from "../lib/approval-ui.tsx";
-import { recoverInterruptedMission } from "../lib/mission-runner.ts";
 import { followBottom } from "../lib/scroll.ts";
-import { type Approval, newConversation, usePendingApproval } from "../lib/session.ts";
+import { allocTurn, type Approval, newConversation, usePendingApproval } from "../lib/session.ts";
+import { runAgent } from "../lib/stt.ts";
 import { MissionBoard } from "./MissionBoard.tsx";
 import { RunsPanel } from "./RunsPanel.tsx";
 import { SettingsPanel } from "./SettingsPanel.tsx";
@@ -196,35 +196,27 @@ export function AppWindow() {
     followBottom(scroller.current);
   }, [entries, approval]);
 
-  // A mission whose runner died with this window (closed/reloaded mid-run) left
-  // the board stuck "active" - close it out on mount (improvement-5 P0.3).
-  useEffect(() => {
-    void recoverInterruptedMission();
-  }, []);
-
   useEffect(() => {
     if (!note) return;
     const id = window.setTimeout(() => setNote(null), 5000);
     return () => window.clearTimeout(id);
   }, [note]);
 
+  const tab = (v: View, label: string) => (
+    <button className={view === v ? "active" : ""} aria-current={view === v ? "page" : undefined} onClick={() => setView(v)}>
+      {label}
+    </button>
+  );
+
   return (
     <div className="app-window">
       <header className="app-header">
         <div className="app-title">June</div>
         <nav className="app-nav">
-          <button className={view === "chat" ? "active" : ""} onClick={() => setView("chat")}>
-            Conversation
-          </button>
-          <button className={view === "missions" ? "active" : ""} onClick={() => setView("missions")}>
-            Missions
-          </button>
-          <button className={view === "runs" ? "active" : ""} onClick={() => setView("runs")}>
-            Runs
-          </button>
-          <button className={view === "settings" ? "active" : ""} onClick={() => setView("settings")}>
-            Settings
-          </button>
+          {tab("chat", "Conversation")}
+          {tab("missions", "Missions")}
+          {tab("runs", "Runs")}
+          {tab("settings", "Settings")}
           <button
             className="new-convo"
             title="Start a new conversation - June forgets the current one"
@@ -236,17 +228,25 @@ export function AppWindow() {
             New conversation
           </button>
         </nav>
-        <div className="app-sub">
+        <div className="app-sub" role="status">
           <span className={`status-dot ${working ? "busy" : ""}`} aria-hidden="true" />
-          {working ? "Working…" : "Ready. Speak to the widget or hold Ctrl + Shift + Space."}
+          {working ? "Working…" : "Ready. Type below, speak to the widget, or hold Ctrl + Shift + Space."}
         </div>
       </header>
 
       {/* Approvals stay visible in both views, so a gated command can be granted
           from the settings screen too. */}
       {approval && <ApprovalBanner approval={approval} onDecide={decide} />}
-      {expired && <p className="err app-note">That approval timed out, so June didn't act.</p>}
-      {note && <p className="err app-note">{note}</p>}
+      {expired && (
+        <p className="err app-note" role="alert">
+          That approval timed out, so June didn't act.
+        </p>
+      )}
+      {note && (
+        <p className="err app-note" role="alert">
+          {note}
+        </p>
+      )}
 
       {view === "settings" ? (
         <SettingsPanel />
@@ -259,18 +259,52 @@ export function AppWindow() {
           <div className="conversation" ref={scroller}>
             {entries.length === 0 && (
               <p className="empty">
-                Nothing yet. Hold Ctrl + Shift + Space and speak - your commands, June's replies, and every action it
-                takes appear here live.
+                Nothing yet. Type a command below or hold Ctrl + Shift + Space and speak - your commands, June's
+                replies, and every action it takes appear here live.
               </p>
             )}
             {entries.map((e) => (
               <ConversationEntry key={e.key} entry={e} />
             ))}
           </div>
-          <footer className="app-footer">Open Settings to choose your models, keys, and privacy mode.</footer>
+          <Composer onError={setNote} />
         </>
       )}
     </div>
+  );
+}
+
+/** Text path to the same agent session (improvement-5 P2 6.1): voice and keyboard
+ *  are equals now. Enter sends (Shift+Enter for a newline); the reply streams into
+ *  the conversation above via the shared agent://* events. Sending while June is
+ *  working preempts the active turn, exactly like barging in by voice. */
+function Composer({ onError }: { onError: (m: string) => void }) {
+  const [text, setText] = useState("");
+  const send = () => {
+    const t = text.trim();
+    if (!t) return;
+    setText("");
+    void runAgent(t, allocTurn()).catch((e) => onError(e instanceof Error ? e.message : String(e)));
+  };
+  return (
+    <footer className="app-composer">
+      <textarea
+        rows={1}
+        value={text}
+        placeholder="Type a command for June…"
+        aria-label="Type a command for June"
+        onChange={(e) => setText(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && !e.shiftKey) {
+            e.preventDefault();
+            send();
+          }
+        }}
+      />
+      <button className="primary" disabled={!text.trim()} onClick={send}>
+        Send
+      </button>
+    </footer>
   );
 }
 

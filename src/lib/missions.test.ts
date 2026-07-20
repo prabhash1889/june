@@ -1,20 +1,20 @@
 import { describe, expect, it } from "vitest";
 
 import { DEFAULT_SETTINGS } from "./settings.ts";
-import { type McpServerEntry } from "./mcp-servers.ts";
 import {
   activeTask,
-  advanceMission,
   coerceMission,
+  decomposePrompt,
+  type Mission,
   missionProgress,
-  newMission,
   parseTaskList,
-  parseVerdict,
-  relevantServers,
-  retryPrompt,
-  stopMission,
-  verifyPrompt,
+  parseToolsets,
 } from "./missions.ts";
+
+// The board reducer, verify -> retry loop, and orchestration moved to Rust
+// (src-tauri/src/missions.rs, improvement-5 P2 5.2) and are unit-tested there.
+// What stays here is the webview's share: the decomposition prompt + parsers and
+// the display-side coercion.
 
 describe("parseTaskList", () => {
   it("parses a numbered list, stripping markers and emphasis", () => {
@@ -33,8 +33,8 @@ describe("parseTaskList", () => {
     expect(parseTaskList("Sure, here are the steps.\n1. do a\n2. do b")).toEqual(["do a", "do b"]);
   });
 
-  it("falls back to non-empty lines when there are no markers", () => {
-    expect(parseTaskList("do a\n\ndo b\n")).toEqual(["do a", "do b"]);
+  it("falls back to non-empty lines when there are no markers, skipping TOOLS:", () => {
+    expect(parseTaskList("TOOLS: files\ndo a\n\ndo b\n")).toEqual(["do a", "do b"]);
   });
 
   it("caps a runaway decomposition", () => {
@@ -43,123 +43,59 @@ describe("parseTaskList", () => {
   });
 });
 
-describe("newMission", () => {
-  it("builds a board with the first task active", () => {
-    const m = newMission("ship the feature", ["design it", "build it", "test it"]);
-    expect(m).not.toBeNull();
-    expect(m!.status).toBe("active");
-    expect(m!.tasks.map((t) => t.status)).toEqual(["active", "pending", "pending"]);
-    expect(activeTask(m!)!.title).toBe("design it");
-  });
-
-  it("returns null when there is nothing to work", () => {
-    expect(newMission("x", [])).toBeNull();
-    expect(newMission("x", ["  "])).toBeNull();
-  });
-});
-
-describe("advanceMission", () => {
-  it("walks tasks to a done mission on all-success", () => {
-    let m = newMission("do it", ["a", "b"])!;
-    m = advanceMission(m, true);
-    expect(m.status).toBe("active");
-    expect(activeTask(m)!.title).toBe("b");
-    m = advanceMission(m, true);
-    expect(m.status).toBe("done");
-    expect(activeTask(m)).toBeNull();
-    expect(missionProgress(m)).toEqual({ done: 2, failed: 0, total: 2 });
-  });
-
-  it("finishes failed if any task failed, but still works the remaining tasks", () => {
-    let m = newMission("do it", ["a", "b"])!;
-    m = advanceMission(m, false); // a failed
-    expect(m.status).toBe("active"); // keeps going
-    expect(activeTask(m)!.title).toBe("b");
-    m = advanceMission(m, true); // b done, but a failed earlier
-    expect(m.status).toBe("failed");
-    expect(missionProgress(m)).toEqual({ done: 1, failed: 1, total: 2 });
-  });
-
-  it("is a no-op once the mission has finished", () => {
-    let m = newMission("do it", ["a"])!;
-    m = advanceMission(m, true);
-    expect(m.status).toBe("done");
-    expect(advanceMission(m, true)).toEqual(m);
-  });
-});
-
-describe("stopMission (B3.5)", () => {
-  it("fails the active task and closes the mission so Clear can render", () => {
-    let m = newMission("do it", ["a", "b", "c"])!;
-    m = advanceMission(m, true); // a done, b active
-    const stopped = stopMission(m);
-    expect(stopped.status).toBe("failed");
-    expect(stopped.tasks.map((t) => t.status)).toEqual(["done", "failed", "pending"]);
-  });
-
-  it("is a no-op once the mission has already finished", () => {
-    let m = newMission("do it", ["a"])!;
-    m = advanceMission(m, true); // done, nothing active
-    expect(stopMission(m)).toEqual(m);
-  });
-});
-
-describe("advanceMission notes (P1.4)", () => {
-  it("records a failure reason on the failed task, none on success", () => {
-    let m = newMission("do it", ["a", "b"])!;
-    m = advanceMission(m, false, "the file was not written");
-    expect(m.tasks[0].note).toBe("the file was not written");
-    m = advanceMission(m, true, "ignored on success");
-    expect(m.tasks[1].note).toBeUndefined();
-  });
-});
-
-describe("parseVerdict (P1.4)", () => {
-  it("reads an explicit PASS/FAIL on the first line", () => {
-    expect(parseVerdict("PASS\nThe tests all ran green.").pass).toBe(true);
-    const fail = parseVerdict("FAIL - the changelog was not updated.");
-    expect(fail.pass).toBe(false);
-    expect(fail.reason).toContain("changelog");
-  });
-
-  it("fails conservatively on an ambiguous or errored verdict", () => {
-    expect(parseVerdict("I could not tell if it worked.").pass).toBe(false);
-    expect(parseVerdict("It both passed and failed in parts.").pass).toBe(false); // mentions FAIL
-    expect(parseVerdict("").pass).toBe(false);
-  });
-
-  it("treats an unqualified pass mention as pass", () => {
-    expect(parseVerdict("Everything looks good, this is a PASS.").pass).toBe(true);
-  });
-});
-
-describe("verify/retry prompt builders (P1.4)", () => {
-  it("verifyPrompt names the outcome and asks for PASS/FAIL", () => {
-    const p = verifyPrompt("ship the release", "run the tests");
+describe("decomposePrompt (5.3)", () => {
+  it("asks for a numbered list and names the outcome", () => {
+    const p = decomposePrompt("ship the release");
+    expect(p).toContain("numbered list");
     expect(p).toContain("ship the release");
-    expect(p).toContain("run the tests");
-    expect(p).toMatch(/PASS or FAIL/);
+    expect(p).not.toContain("TOOLS:");
   });
 
-  it("retryPrompt folds in the failure reason", () => {
-    expect(retryPrompt("run the tests", "two tests errored")).toContain("two tests errored");
-    // No reason still produces a usable retry.
-    expect(retryPrompt("run the tests", "")).toContain("Try again");
+  it("asks for a TOOLS: line only when the user has capability servers (5.4)", () => {
+    const p = decomposePrompt("triage the bug", ["github", "files"]);
+    expect(p).toContain("TOOLS:");
+    expect(p).toContain("github, files");
   });
 });
 
-describe("relevantServers (19.2 composable toolsets)", () => {
-  const entries: McpServerEntry[] = [
-    { id: "github", label: "GitHub", enabled: true, offlineSafe: false, transport: { kind: "stdio", command: "x", args: [], env: {} } },
-    { id: "files", label: "Files", enabled: true, offlineSafe: true, transport: { kind: "stdio", command: "y", args: [], env: {} } },
-  ];
+describe("parseToolsets (5.4)", () => {
+  const known = ["github", "files", "search"];
 
-  it("keeps only the named servers", () => {
-    expect(relevantServers(entries, ["files"]).map((e) => e.id)).toEqual(["files"]);
+  it("keeps only the ids the user actually has, deduplicated", () => {
+    expect(parseToolsets("TOOLS: github, files, github, aliens\n1. do a", known)).toEqual(["github", "files"]);
   });
 
-  it("an empty toolset means no restriction (every enabled server)", () => {
-    expect(relevantServers(entries, [])).toEqual(entries);
+  it("reads 'all' / absence / garbage as no restriction", () => {
+    expect(parseToolsets("TOOLS: all\n1. do a", known)).toEqual([]);
+    expect(parseToolsets("1. do a\n2. do b", known)).toEqual([]);
+    expect(parseToolsets("TOOLS:\n1. do a", known)).toEqual([]);
+  });
+
+  it("is case-tolerant on the marker line", () => {
+    expect(parseToolsets("tools: Files\n1. x", known)).toEqual(["files"]);
+  });
+});
+
+describe("board views (activeTask / missionProgress)", () => {
+  const mission: Mission = {
+    id: "m",
+    outcome: "do it",
+    status: "active",
+    toolsetIds: [],
+    tasks: [
+      { id: "t0", title: "a", status: "done" },
+      { id: "t1", title: "b", status: "active" },
+      { id: "t2", title: "c", status: "failed" },
+      { id: "t3", title: "d", status: "pending" },
+    ],
+  };
+
+  it("finds the task being worked", () => {
+    expect(activeTask(mission)!.title).toBe("b");
+  });
+
+  it("counts the board for the compact readout", () => {
+    expect(missionProgress(mission)).toEqual({ done: 1, failed: 1, total: 4 });
   });
 });
 
@@ -183,6 +119,18 @@ describe("coerceMission", () => {
     expect(coerceMission({ outcome: "x" })).toBeNull(); // no tasks
     expect(coerceMission({ tasks: [{ title: "" }] })).toBeNull(); // no usable task
   });
+
+  it("accepts the Rust runner's board (extra fields like verify ignored)", () => {
+    const rust = {
+      id: "m",
+      outcome: "o",
+      status: "active",
+      toolsetIds: [],
+      verify: true,
+      tasks: [{ id: "t0", title: "a", status: "active" }],
+    };
+    expect(coerceMission(rust)!.tasks[0].status).toBe("active");
+  });
 });
 
 describe("19.3: zero saple-* dependency to run", () => {
@@ -190,10 +138,5 @@ describe("19.3: zero saple-* dependency to run", () => {
     // A fresh install has an empty server list - June works standalone with no
     // saple (or any) MCP server added. saple-bridge/saple-memory are opt-in.
     expect(DEFAULT_SETTINGS.mcpServers).toEqual([]);
-  });
-
-  it("a mission runs with no toolset (no saple server needed)", () => {
-    const m = newMission("summarize my notes", ["read the notes", "write a summary"])!;
-    expect(relevantServers([], m.toolsetIds)).toEqual([]);
   });
 });

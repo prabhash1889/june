@@ -183,6 +183,32 @@ settings.json with other keys preserved). Notes and deliberate deferrals:
 
 ## 5. P2 - missions grow up
 
+**Status: all 4 items implemented on 2026-07-20** (typecheck, lint, 201 TS + 30 Rust
+tests, clippy -D warnings, production build all pass). Notes:
+
+- **5.2 (the anchor)**: the runner moved to Rust (src-tauri/src/missions.rs) - a
+  background thread driving start_mission/stop_mission, with the board reducer,
+  PASS/FAIL parser, and verify -> retry loop (P1.4) ported and unit-tested there.
+  It survives webview closes/reloads, resumes an `active` board on app startup
+  (replacing P0.3's "mark it failed on mount" recovery), and waits for `is_busy`
+  to clear before each dispatch so it schedules around interactive turns (a turn
+  that still slips in mid-task preempts that one dispatch and rides the retry).
+  The webview runner (mission-runner.ts) is deleted; MissionBoard is a pure
+  viewer + plan surface. (This also unblocks P1.5's deferred start_mission-by-
+  voice, which stays unimplemented for now.)
+- **5.1**: each task's prompt now carries the goal plus a capped digest of prior
+  task replies (newest win when the cap bites) - `task_prompt`, ~600 chars per
+  reply / 2400 total.
+- **5.3**: "Plan mission" decomposes via a normal interactive turn; the task list
+  is shown as an editable one-line-per-task textarea with Start/Cancel before
+  anything runs.
+- **5.4**: the decompose prompt asks for a `TOOLS:` line naming the relevant
+  enabled generic servers (parseToolsets, tested); the session's new MCP filter
+  keeps only those in JUNE_MCP_SERVERS at spawn for the mission's duration
+  (per-mission respawn, not per-task - toolsetIds are mission-level), restored
+  when it ends. Built-ins are always attached; "all"/absent/garbled reads as no
+  restriction, so a murky reply can never break a mission.
+
 1. (S) Pass context between tasks. Each task's whole prompt is its bare title in a fresh
    conversation (MissionBoard.tsx:59) - task 3 never sees task 1's output. Capped digest of
    prior replies via a pure helper in missions.ts (~20 lines).
@@ -200,6 +226,14 @@ settings.json with other keys preserved). Notes and deliberate deferrals:
    JUNE_MCP_SERVERS.
 
 ## 6. P2 - product parity and voice UX
+
+**Status: item 1 implemented on 2026-07-20; the round was stopped here by
+request.** The Conversation view now has a textarea + Send footer wired to
+`run_agent` (Enter sends, Shift+Enter for a newline); it shares the widget's
+session via the existing agent://* events, and sending mid-turn preempts like a
+voice barge-in. Turn numbers come from one per-webview allocator (session.ts
+allocTurn) shared with mission planning so they can't collide. Items 2-12 remain
+open for a later round.
 
 1. (M) Text composer in the app Conversation view - input + send wired to existing
    `run_agent`. The only way to command June today is voice through the widget; Claude

@@ -2,6 +2,7 @@ mod agent_runner;
 mod dictation;
 mod diagnostics;
 mod keychain;
+mod missions;
 mod scheduler;
 mod settings;
 mod stt;
@@ -38,6 +39,7 @@ pub fn run() {
         // The live agent turn's approval channel, shared by the run loop and the
         // resolve/pending commands (Phase 6 approval round-trip).
         .manage(agent_runner::AgentSession::default())
+        .manage(missions::MissionRunner::default())
         .setup(|app| {
             // Autonomy (Phase 18): a background thread fires due scheduled runs and
             // file-triggers as unattended agent turns. The session is `.manage`d
@@ -45,7 +47,11 @@ pub fn run() {
             {
                 use tauri::Manager;
                 let session = app.state::<agent_runner::AgentSession>().inner().clone();
-                scheduler::start(app.handle().clone(), session);
+                scheduler::start(app.handle().clone(), session.clone());
+                // A mission left `active` by a previous app session resumes here
+                // (improvement-5 P2 5.2) - the runner outlives every webview now.
+                let runner = app.state::<missions::MissionRunner>().inner().clone();
+                missions::resume(app.handle().clone(), session, runner);
             }
             // Tray presence (Phase 0 exit criterion): an icon in the system tray for the
             // whole app lifetime, independent of any window being open. Left-click
@@ -109,6 +115,8 @@ pub fn run() {
             agent_runner::read_mission,
             agent_runner::write_mission,
             agent_runner::read_runs,
+            missions::start_mission,
+            missions::stop_mission,
             agent_runner::record_latency,
             agent_runner::latency_samples,
             show_app,

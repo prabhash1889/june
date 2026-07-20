@@ -78,7 +78,7 @@ const MAX_RUNS_BYTES: u64 = 2 * 1024 * 1024;
 
 /// Cap a string to `max` chars (adding an ellipsis), so a long prompt/reply can't
 /// bloat one ledger line. Char-based so it never splits a UTF-8 sequence.
-fn cap_chars(s: &str, max: usize) -> String {
+pub(crate) fn cap_chars(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         return s.to_string();
     }
@@ -193,9 +193,9 @@ fn backoff_delay(fails: u32) -> Duration {
 /// reply, while a mission run can count a brain-flagged task as failed (B3.4).
 #[derive(Clone, serde::Serialize)]
 pub struct TurnReply {
-    text: String,
+    pub(crate) text: String,
     #[serde(rename = "isError")]
-    is_error: bool,
+    pub(crate) is_error: bool,
 }
 
 /// One turn's outcome delivered to the awaiting caller: the reply, or a
@@ -252,6 +252,11 @@ pub struct AgentSession {
     /// collected by the reader thread so `run_unattended` can record what a headless
     /// run couldn't do in the run ledger. Drained per turn once the run finishes.
     blocked_actions: Arc<Mutex<HashMap<u64, Vec<String>>>>,
+    /// Mission toolset filter (improvement-5 P2 5.4): while a mission that named a
+    /// toolset runs, only these generic-server ids ride into JUNE_MCP_SERVERS at
+    /// spawn, so the session's tool surface stays lean. `None` = no restriction.
+    /// Set/cleared by the mission runner, paired with `request_respawn`.
+    mcp_filter: Arc<Mutex<Option<Vec<String>>>>,
 }
 
 /// ponytail: keep the last N latency samples for the P50/P95 readout; older ones
@@ -422,16 +427,33 @@ fn lessons_file(app: &AppHandle) -> Result<PathBuf, String> {
 }
 
 /// The user-added MCP capability servers (Phase 13) for the resident. Read from
-/// settings.json and passed verbatim as a JSON array in JUNE_MCP_SERVERS; serve.ts
+/// settings.json and passed as a JSON array in JUNE_MCP_SERVERS; serve.ts
 /// coerces the list, then filters it by enable + privacy mode and registers each
 /// as an MCP server - so adding a capability is a settings entry, not June code.
 /// A settings save shuts the resident down (settings.rs), so a new/edited server
-/// takes effect on the next turn.
-fn mcp_servers_env(app: &AppHandle) -> Vec<(String, String)> {
-    match crate::settings::read_settings(app).get("mcpServers") {
-        Some(v) if v.is_array() => vec![("JUNE_MCP_SERVERS".into(), v.to_string())],
-        _ => vec![],
-    }
+/// takes effect on the next turn. While a mission with a named toolset runs
+/// (improvement-5 P2 5.4), the session's filter keeps only those servers.
+fn mcp_servers_env(app: &AppHandle, session: &AgentSession) -> Vec<(String, String)> {
+    let Some(serde_json::Value::Array(entries)) =
+        crate::settings::read_settings(app).get("mcpServers").cloned()
+    else {
+        return vec![];
+    };
+    let filtered: Vec<serde_json::Value> = match session.mcp_filter.lock().unwrap().as_ref() {
+        Some(ids) => entries
+            .into_iter()
+            .filter(|e| {
+                e.get("id")
+                    .and_then(|x| x.as_str())
+                    .is_some_and(|id| ids.iter().any(|w| w == id))
+            })
+            .collect(),
+        None => entries,
+    };
+    vec![(
+        "JUNE_MCP_SERVERS".into(),
+        serde_json::Value::Array(filtered).to_string(),
+    )]
 }
 
 /// Long-term memory path for the resident (PLAN.md Phase 11.4). Always attached:
@@ -479,7 +501,10 @@ fn serve_script() -> PathBuf {
 /// Spawn the resident serve.ts, returning its stdin, stdout, and the child. On
 /// Windows `npx` is a `.cmd` shim that can't be exec'd directly, so go through
 /// the shell (the same fix openai-brain applies for its MCP clients).
-fn spawn_serve(app: &AppHandle) -> Result<(ChildStdin, std::process::ChildStdout, Child), String> {
+fn spawn_serve(
+    app: &AppHandle,
+    session: &AgentSession,
+) -> Result<(ChildStdin, std::process::ChildStdout, Child), String> {
     let script = serve_script();
     let cwd = script
         .parent()
@@ -492,7 +517,7 @@ fn spawn_serve(app: &AppHandle) -> Result<(ChildStdin, std::process::ChildStdout
     brain_vars.extend(memory_env(app));
     brain_vars.extend(lessons_env(app));
     brain_vars.extend(settings_env(app));
-    brain_vars.extend(mcp_servers_env(app));
+    brain_vars.extend(mcp_servers_env(app, session));
 
     let mut cmd = if cfg!(windows) {
         let mut c = Command::new("cmd");
@@ -554,7 +579,7 @@ fn ensure_resident(app: &AppHandle, session: &AgentSession) -> Result<(), String
     }
 
     let gen = session.generation.fetch_add(1, Ordering::Relaxed) + 1;
-    let (stdin, stdout, child) = spawn_serve(app)?;
+    let (stdin, stdout, child) = spawn_serve(app, session)?;
     spawn_reader(session.clone(), app.clone(), stdout, gen);
     *guard = Some(Resident { stdin, child, gen });
     Ok(())
@@ -749,6 +774,12 @@ impl AgentSession {
             self.shutdown();
         }
     }
+
+    /// Set/clear the mission toolset filter (improvement-5 P2 5.4). Takes effect at
+    /// the next resident spawn - callers pair this with `request_respawn`.
+    pub fn set_mcp_filter(&self, ids: Option<Vec<String>>) {
+        *self.mcp_filter.lock().unwrap() = ids;
+    }
 }
 
 /// Ping the awaiting caller that turn `turn` produced a reader event, resetting its
@@ -886,6 +917,80 @@ impl AgentSession {
     }
 }
 
+/// Run one ATTENDED turn from a Rust-side driver (the mission runner, improvement-5
+/// P2 5.2). Blocking - call from a dedicated thread, never the main thread. Unlike
+/// `run_unattended`, the normal approval gate applies: a gated call raises the
+/// shared approval card in both faces (a mission is not a bypass - and not a leash
+/// either). The caller owns busy-scheduling; a user turn that arrives mid-run
+/// preempts this one via serve.ts's barge-in, which lands here as an errored reply.
+pub(crate) fn run_attended(
+    app: &AppHandle,
+    session: &AgentSession,
+    prompt: String,
+    turn: u64,
+) -> Result<TurnReply, String> {
+    let transcript = prompt.trim().to_string();
+    if transcript.is_empty() {
+        return Err("Nothing to send: the transcript was empty.".to_string());
+    }
+    ensure_resident(app, session)?;
+    // Approvals raised by this turn must surface: the reader drops approvals from
+    // any turn that isn't the latest.
+    session.latest_turn.store(turn, Ordering::Relaxed);
+    *session.last_activity.lock().unwrap() = Some(Instant::now());
+
+    let (tx, rx): (Sender<TurnMsg>, Receiver<TurnMsg>) = std::sync::mpsc::channel();
+    session.turns.lock().unwrap().insert(turn, tx);
+    record(
+        session,
+        app,
+        "agent://user",
+        serde_json::json!({ "turn": turn, "text": transcript }),
+    );
+    if let Err(e) = write_request(
+        session,
+        &serde_json::json!({ "type": "run", "turn": turn, "transcript": transcript }),
+    ) {
+        session.turns.lock().unwrap().remove(&turn);
+        return Err(e);
+    }
+    match await_turn(&rx, WATCHDOG) {
+        Ok(outcome) => outcome,
+        Err(()) => {
+            session.turns.lock().unwrap().remove(&turn);
+            session.shutdown();
+            let msg = "The agent did not respond in time.".to_string();
+            record(
+                session,
+                app,
+                "agent://final",
+                serde_json::json!({ "turn": turn, "text": msg, "isError": true }),
+            );
+            Err(msg)
+        }
+    }
+}
+
+/// Abort turn `turn` from Rust (the mission runner's Stop). Best-effort, like the
+/// `cancel_agent` command it shares its body with.
+pub(crate) fn cancel_turn(session: &AgentSession, turn: u64) {
+    let _ = write_request(
+        session,
+        &serde_json::json!({ "type": "cancel", "turn": turn }),
+    );
+}
+
+/// Start a fresh conversation from Rust: drop the resident's memory, clear the
+/// shared transcript, reset the idle clock. The inner body of `new_conversation`,
+/// shared with the mission runner (one fresh session per task, Phase 19.1).
+pub(crate) fn reset_conversation(app: &AppHandle, session: &AgentSession) {
+    // Best-effort: with no resident yet there is nothing to drop, but the UI is
+    // still cleared so the reset always gives immediate, honest feedback.
+    let _ = write_request(session, &serde_json::json!({ "type": "reset" }));
+    clear_conversation(session, app);
+    *session.last_activity.lock().unwrap() = None;
+}
+
 /// Run one UNATTENDED turn to completion and return June's reply text (Phase 18).
 /// Blocking - called from the scheduler thread, which serializes these so they
 /// never preempt each other. Reuses the resident and the per-turn delivery channel;
@@ -1014,10 +1119,7 @@ pub fn resolve_approval(
 /// harmless no-op - hence best-effort.
 #[tauri::command]
 pub fn cancel_agent(session: State<'_, AgentSession>, turn: u64) -> Result<(), String> {
-    let _ = write_request(
-        session.inner(),
-        &serde_json::json!({ "type": "cancel", "turn": turn }),
-    );
+    cancel_turn(session.inner(), turn);
     Ok(())
 }
 
@@ -1067,12 +1169,7 @@ pub fn latency_samples(session: State<'_, AgentSession>) -> Vec<serde_json::Valu
 /// transcript, and resets the idle clock so both windows show an empty session.
 #[tauri::command]
 pub fn new_conversation(app: AppHandle, session: State<'_, AgentSession>) -> Result<(), String> {
-    let session = session.inner().clone();
-    // Best-effort: with no resident yet there is nothing to drop, but the UI is
-    // still cleared so the button always gives immediate, honest feedback.
-    let _ = write_request(&session, &serde_json::json!({ "type": "reset" }));
-    clear_conversation(&session, &app);
-    *session.last_activity.lock().unwrap() = None;
+    reset_conversation(&app, session.inner());
     Ok(())
 }
 
@@ -1163,7 +1260,7 @@ pub fn read_runs(app: AppHandle) -> Vec<serde_json::Value> {
 /// Absolute path to the current mission board (improvement-4 Phase 19.1),
 /// `<app_data_dir>/june-mission.json`, next to june-memory.md. One host-owned file
 /// holding at most one active mission (a voice agent works one mission at a time).
-fn mission_file(app: &AppHandle) -> Result<PathBuf, String> {
+pub(crate) fn mission_file(app: &AppHandle) -> Result<PathBuf, String> {
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     Ok(dir.join("june-mission.json"))
@@ -1182,21 +1279,27 @@ pub fn read_mission(app: AppHandle) -> Result<String, String> {
 }
 
 /// Persist the mission board and broadcast `mission://updated` so BOTH faces show
-/// the same board live (Phase 19.1: "both faces can show mission state"). The app
-/// window's runner writes it as tasks progress; the widget renders a compact chip.
-/// Written atomically (temp + rename). Clearing is an empty save (no active mission).
-/// Unlike memory/lessons this does NOT respawn the resident - the board is UI state,
-/// not part of the system prompt.
-#[tauri::command]
-pub fn write_mission(app: AppHandle, content: String) -> Result<(), String> {
-    let path = mission_file(&app)?;
+/// the same board live (Phase 19.1: "both faces can show mission state"). The
+/// Rust-side mission runner writes it as tasks progress; the widget renders a
+/// compact chip. Written atomically (temp + rename). Clearing is an empty save (no
+/// active mission). Unlike memory/lessons this does NOT respawn the resident - the
+/// board is UI state, not part of the system prompt.
+pub(crate) fn write_mission_inner(app: &AppHandle, content: &str) -> Result<(), String> {
+    let path = mission_file(app)?;
     let tmp = path.with_extension("json.tmp");
     std::fs::write(&tmp, content.as_bytes()).map_err(|e| e.to_string())?;
     std::fs::rename(&tmp, &path).map_err(|e| e.to_string())?;
     // Broadcast the new board (parsed, or null when cleared) to every window.
-    let payload = serde_json::from_str::<serde_json::Value>(&content).unwrap_or(serde_json::Value::Null);
+    let payload = serde_json::from_str::<serde_json::Value>(content).unwrap_or(serde_json::Value::Null);
     let _ = app.emit("mission://updated", payload);
     Ok(())
+}
+
+/// The webview's write path for the board - today only "Clear mission" (an empty
+/// save); the runner itself lives in Rust (improvement-5 P2 5.2).
+#[tauri::command]
+pub fn write_mission(app: AppHandle, content: String) -> Result<(), String> {
+    write_mission_inner(&app, &content)
 }
 
 #[cfg(test)]

@@ -53,15 +53,21 @@ export function openApp(): Promise<void> {
 // or the band if June is still counting turns then.
 const TURN_EPOCH = 1_577_836_800_000; // 2020-01-01 UTC
 
-/** Per-load base for the widget's interactive turns (below the 2^39 mission band). */
+/** Per-load base for the widget's interactive turns (below the 2^39 mission band,
+ *  which the Rust-side mission runner owns since improvement-5 P2 5.2). */
 export function interactiveTurnBase(): number {
   return Date.now() - TURN_EPOCH; // ~2e11, well under 2^39
 }
 
-/** Per-load base for mission turns: [2^39, 2^40), above interactive and below the
- *  Rust unattended space (2^40). */
-export function missionTurnBase(): number {
-  return 2 ** 39 + (Date.now() - TURN_EPOCH);
+// One shared allocator for THIS webview's non-widget interactive turns: the app
+// window's text composer and mission planning both dispatch turns, and a single
+// counter keeps them from ever reusing a number. The widget webview keeps its own
+// counter in VoicePanel (a different window, different base).
+let appTurn = interactiveTurnBase();
+
+/** Allocate the next interactive-band turn number for app-window dispatches. */
+export function allocTurn(): number {
+  return appTurn++;
 }
 
 /** Abort an in-flight turn (Phase 11.3). Barge-in and Cancel call this so the

@@ -676,6 +676,41 @@ button {
   font-size: 12px;
 }
 
+/* Text composer (improvement-5 P2 6.1): the keyboard path to the same agent
+   session the widget speaks to. */
+.app-composer {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 12px 20px;
+  border-top: 1px solid var(--line);
+}
+
+.app-composer textarea {
+  flex: 1;
+  resize: none;
+  min-height: 38px;
+  max-height: 120px;
+  padding: 9px 12px;
+  border-radius: var(--radius-s);
+  border: 1px solid var(--line);
+  background: var(--bg2);
+  color: var(--ink);
+  font: inherit;
+  font-size: 13.5px;
+  line-height: 1.45;
+  transition: border-color 0.15s ease;
+}
+
+.app-composer textarea:focus-visible {
+  outline: none;
+  border-color: var(--blue);
+}
+
+.app-composer textarea::placeholder {
+  color: var(--dim);
+}
+
 /* Transient error line under the app header (failed reset, expired approval). */
 .app-note {
   margin: 10px 20px 0;
@@ -1075,7 +1110,8 @@ kbd {
   color: var(--dim);
 }
 
-.mission-compose textarea {
+.mission-compose textarea,
+.mission-plan textarea {
   resize: vertical;
   min-height: 64px;
   padding: 10px 12px;
@@ -1088,9 +1124,26 @@ kbd {
   line-height: 1.5;
 }
 
-.mission-compose textarea:focus {
+.mission-compose textarea:focus,
+.mission-plan textarea:focus {
   outline: none;
   border-color: var(--blue);
+}
+
+/* The decomposed-but-unconfirmed plan (improvement-5 P2 5.3): an editable task
+   list, one line per task, between compose and the running board. */
+.mission-plan {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-m);
+  background: var(--bg1);
+}
+
+.mission-plan textarea {
+  width: 100%;
 }
 
 .mission-board {
