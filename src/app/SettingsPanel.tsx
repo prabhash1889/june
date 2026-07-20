@@ -1,6 +1,12 @@
 import { useEffect, useState } from "react";
 
-import { bridgeHealth, type BridgeHealth, type ProbeResult, testBrain } from "../lib/diagnostics.ts";
+import {
+  bridgeHealth,
+  type BridgeHealth,
+  buildDiagnosticsReport,
+  type ProbeResult,
+  testBrain,
+} from "../lib/diagnostics.ts";
 import { type LatencySample, latencySamples, percentile } from "../lib/latency.ts";
 import {
   MCP_CATALOG,
@@ -1002,6 +1008,20 @@ function DiagnosticsSection() {
     void refresh();
   }, []);
 
+  // Export a redacted diagnostics bundle for support (16.5). Everything shown here
+  // is already redacted (no endpoint/token/detail, no transcript); we just serialize
+  // it and hand the user a downloadable JSON via a blob URL.
+  const exportReport = () => {
+    const report = buildDiagnosticsReport(health, latency, new Date().toISOString());
+    const blob = new Blob([JSON.stringify(report, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `june-diagnostics-${report.generatedAt.replace(/[:.]/g, "-")}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   return (
     <section className="settings-section">
       <h2>Diagnostics</h2>
@@ -1018,6 +1038,10 @@ function DiagnosticsSection() {
         </button>
       </div>
       <LatencyReadout samples={latency} />
+      <div className="diag-row">
+        <button onClick={exportReport}>Export diagnostics</button>
+        <span className="settings-hint">Redacted JSON (versions + latency, no keys or transcript) for support.</span>
+      </div>
       <p className="settings-hint">Per-stage latency is shown by each Test button above.</p>
     </section>
   );
@@ -1034,15 +1058,17 @@ function LatencyReadout({ samples }: { samples: LatencySample[] }) {
   const p50 = percentile(totals, 50);
   const p95 = percentile(totals, 95);
   const stage = (pick: (s: LatencySample) => number) => percentile(samples.map(pick), 50);
+  // Acceptance targets (improvement-4 §6): P50 under 1s, P95 under 2s. P50 also
+  // tracks the tighter 800ms voice-to-voice line (11.5). Both percentiles are
+  // colored against their own target so the dashboard reads pass/fail at a glance.
   return (
     <div className="diag-latency">
       <div className="diag-row">
         <span className="stage-label">Voice-to-voice</span>
-        <span className={`test-result ${p50 <= 800 ? "ok" : "bad"}`}>
-          P50 {p50} ms · P95 {p95} ms
-        </span>
+        <span className={`test-result ${p50 <= 800 ? "ok" : "bad"}`}>P50 {p50} ms</span>
+        <span className={`test-result ${p95 <= 2000 ? "ok" : "bad"}`}>P95 {p95} ms</span>
         <span className="settings-hint">
-          {samples.length} turn{samples.length === 1 ? "" : "s"} · target 800 ms
+          {samples.length} turn{samples.length === 1 ? "" : "s"} · targets P50 ≤ 800 ms · P95 ≤ 2000 ms
         </span>
       </div>
       <p className="settings-hint">

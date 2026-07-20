@@ -4,7 +4,16 @@
 
 import { describe, expect, it } from "vitest";
 
-import { actionOf, classify, isGated, redactParams, serverOf, setServerDefaults, summarize } from "./policy.ts";
+import {
+  actionOf,
+  classify,
+  isGated,
+  redactParams,
+  serverOf,
+  setServerDefaults,
+  showPayload,
+  summarize,
+} from "./policy.ts";
 
 describe("gate policy", () => {
   it("recovers the bare action from an MCP tool name", () => {
@@ -32,6 +41,18 @@ describe("gate policy", () => {
   it("states the exact count and cost/network class in a spawn confirmation (§5, Phase 7)", () => {
     expect(summarize("spawn_agents", { provider: "codex", count: 4 })).toBe("Spawn 4 codex agents (paid, uses network)");
     expect(summarize("spawn_agents", { provider: "claude", count: 1 })).toBe("Spawn 1 claude agent (paid, uses network)");
+  });
+
+  it("shows the FULL dangerous payload before the act, with control chars visible (16.3)", () => {
+    // A `\n` in terminal data runs a shell command; the approver must see the
+    // whole payload with the newline exposed as `\n`, never just the pane id.
+    expect(summarize("send_to_terminal", { pane_id: "p1", data: "ls\nrm -rf /" })).toBe(
+      "Write to terminal p1: ls\\nrm -rf /",
+    );
+    // assign_task is spoken-approvable (14.2) - the task text is spoken/shown in full.
+    expect(summarize("assign_task", { agent_id: "a3", task: "deploy to prod" })).toBe("Assign to agent a3: deploy to prod");
+    // showPayload makes every control char visible so nothing hides off the line.
+    expect(showPayload("a\r\n\tb")).toBe("a\\r\\n\\tb");
   });
 
   it("gates a file write but not a file read (Phase 9 §5 external effect)", () => {

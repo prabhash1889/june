@@ -98,9 +98,21 @@ export function isGated(cls: SafetyClass): boolean {
   return GATED_CLASSES.includes(cls);
 }
 
+/** Render a payload string for the approval card with control characters made
+ *  VISIBLE (16.3): a `\n` in terminal `data` executes whatever follows as a shell
+ *  command, so the approver must see the newline as `\n`, not as an invisible line
+ *  break that hides the injected command. Long payloads keep their tail (where an
+ *  injection hides) rather than being truncated away. */
+export function showPayload(v: unknown): string {
+  if (typeof v !== "string") return String(v ?? "");
+  return v.replace(/\r/g, "\\r").replace(/\n/g, "\\n").replace(/\t/g, "\\t");
+}
+
 /** One-line human-readable statement of exactly what will happen - the text a
  *  user approves against. Numbers are exact (§5: "spoken confirmation with
- *  exact count"); unknown actions still render something truthful. */
+ *  exact count"); dangerous acts show their FULL parameters (16.3: the terminal
+ *  text / assigned task, not just the pane/agent id); unknown actions still render
+ *  something truthful. */
 export function summarize(action: string, input: Record<string, unknown>): string {
   const s = (k: string, d = ""): string => (typeof input[k] === "string" ? (input[k] as string) : d);
   switch (action) {
@@ -123,9 +135,13 @@ export function summarize(action: string, input: Record<string, unknown>): strin
     case "list_files":
       return `List files${input.subdir ? ` in ${s("subdir")}` : ""}`;
     case "assign_task":
-      return `Assign a task to agent ${s("agent_id") || "?"}`;
+      // Expensive + can be spoken-approved (14.2): show the full task text so the
+      // approver hears/sees exactly what work is handed to the agent (16.3).
+      return `Assign to agent ${s("agent_id") || "?"}: ${showPayload(s("task")) || "?"}`;
     case "send_to_terminal":
-      return `Write to terminal ${s("pane_id") || "?"}`;
+      // Destructive: a `\n` in `data` runs a shell command. Show the full payload
+      // with control chars visible so the injected command can't hide (16.3).
+      return `Write to terminal ${s("pane_id") || "?"}: ${showPayload(s("data")) || "?"}`;
     case "open_browser":
       return `Open browser at ${s("url") || "?"}`;
     case "get_swarm_status":
