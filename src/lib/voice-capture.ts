@@ -85,6 +85,12 @@ export function pickMimeType(): string {
 export interface CaptureHandle {
   /** Live 0..1 input level for a meter. */
   level: () => number;
+  /** Whether the VAD actually heard speech during this capture (B1.4). A spoken
+   *  approval refuses to transcribe a speechless clip - cloud Whisper hallucinates
+   *  words like "Okay." on pure silence, which would approve a paid action with no
+   *  human input. False until real speech is detected (Silero, or the RMS
+   *  fallback's `heardSpeech`). */
+  heardSpeech: () => boolean;
   /** Stop capture and resolve with the recorded clip (empty if nothing came). */
   stop: () => Promise<{ audio: Uint8Array; mime: string }>;
   /** Abort without producing a clip (cancellation). */
@@ -202,6 +208,7 @@ export async function startCapture(opts: CaptureOptions = {}): Promise<CaptureHa
 
   let lastLevel = 0;
   let ended = false;
+  let speechSeen = false; // B1.4: did the VAD ever hear real speech this capture?
   const started = performance.now();
   const overtime = () => opts.maxMs !== undefined && performance.now() - started >= opts.maxMs;
   const endpoint = () => {
@@ -220,7 +227,8 @@ export async function startCapture(opts: CaptureOptions = {}): Promise<CaptureHa
         stream,
         {
           onSpeechEnd: () => endpoint(),
-          onFrame: (_isSpeech, frame) => {
+          onFrame: (isSpeech, frame) => {
+            if (isSpeech) speechSeen = true;
             lastLevel = rms(frame);
             if (overtime()) endpoint(); // frames arrive during silence too, so the cap always fires
           },
@@ -244,7 +252,9 @@ export async function startCapture(opts: CaptureOptions = {}): Promise<CaptureHa
     const tick = window.setInterval(() => {
       analyser.getFloatTimeDomainData(buf);
       lastLevel = rms(buf);
-      if (detector.push(lastLevel, FRAME_MS) || overtime()) endpoint();
+      const ends = detector.push(lastLevel, FRAME_MS);
+      if (detector.heardSpeech) speechSeen = true;
+      if (ends || overtime()) endpoint();
     }, FRAME_MS);
     stopVad = () => {
       window.clearInterval(tick);
@@ -259,6 +269,7 @@ export async function startCapture(opts: CaptureOptions = {}): Promise<CaptureHa
 
   return {
     level: () => lastLevel,
+    heardSpeech: () => speechSeen,
     cancel: () => {
       if (recorder.state !== "inactive") recorder.stop();
       teardown();

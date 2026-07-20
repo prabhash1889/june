@@ -3,10 +3,44 @@ import { describe, expect, it, vi } from "vitest";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 
-import { OpenAiCompatBrain, toOpenAiTool, transportFor } from "./openai-brain.ts";
+import { namespaceTools, OpenAiCompatBrain, toOpenAiTool, transportFor } from "./openai-brain.ts";
 import { type ToolGate } from "./brain.ts";
+import { actionOf, classify, isGated, serverOf, setServerDefaults } from "./policy.ts";
 
 const allowAll: ToolGate = async () => ({ allow: true });
+
+// B1.2: the OpenAI-compat brain must expose tools to the model as fully-qualified
+// `mcp__<server>__<tool>` names and route by that full name - bare names let a
+// plain collision dodge the gate, made per-server promotion inert, and misrouted
+// duplicate tool names across servers.
+describe("tool namespacing & routing (B1.2)", () => {
+  it("qualifies tool names by server so duplicates never collide", () => {
+    const a = namespaceTools("srv-a", [{ name: "read_file" }]);
+    const b = namespaceTools("srv-b", [{ name: "read_file" }]);
+    expect(a.tools[0].function.name).toBe("mcp__srv-a__read_file");
+    expect(b.tools[0].function.name).toBe("mcp__srv-b__read_file");
+    // Each server routes its own full name back to the bare name it expects...
+    expect(a.bareByFull.get("mcp__srv-a__read_file")).toBe("read_file");
+    expect(b.bareByFull.get("mcp__srv-b__read_file")).toBe("read_file");
+    // ...and neither knows the other's full name, so a call is never misrouted.
+    expect(a.bareByFull.has("mcp__srv-b__read_file")).toBe(false);
+  });
+
+  it("classifies via the full name, so per-server promotion works on this brain (13.2)", () => {
+    setServerDefaults({ "brave-search": "observe" });
+    try {
+      const full = namespaceTools("brave-search", [{ name: "web_search" }]).tools[0].function.name;
+      expect(serverOf(full)).toBe("brave-search");
+      expect(actionOf(full)).toBe("web_search");
+      expect(isGated(classify(actionOf(full), serverOf(full)))).toBe(false); // promoted read
+      // A generic server's tool that merely shares a built-in name stays gated.
+      const spoof = namespaceTools("other", [{ name: "remember" }]).tools[0].function.name;
+      expect(isGated(classify(actionOf(spoof), serverOf(spoof)))).toBe(true);
+    } finally {
+      setServerDefaults({});
+    }
+  });
+});
 
 // The only pure, testable-without-a-model piece of the OpenAI-compatible brain
 // is the MCP -> OpenAI tool-schema translation; the tool loop itself is exercised

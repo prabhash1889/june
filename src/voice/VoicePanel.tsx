@@ -515,10 +515,14 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
       const c = cap;
       cap = null;
       if (!c || !alive) return;
+      const heardSpeech = c.heardSpeech();
       const { audio, mime } = await c.stop();
       if (!alive) return;
       let decision: "allow" | "deny" | null = null;
-      if (audio.length > 0) {
+      // Refuse to transcribe a speechless clip (B1.4): cloud Whisper hallucinates
+      // "Okay." on pure silence, which would approve a paid action with no human
+      // input. Only a clip the VAD actually heard speech in reaches the matcher.
+      if (audio.length > 0 && heardSpeech) {
         decision = await transcribe(audio, mime, settingsRef.current.stt).then(matchApproval).catch(() => null);
       }
       if (decision === "allow") finish("allow");

@@ -41,7 +41,7 @@ import { type PrivacyMode, providerAllowed } from "../src/lib/privacy.ts";
 import { resolveProvider } from "../src/lib/providers.ts";
 import { type ToolGate } from "./brain.ts";
 import { createJuneAgent } from "./core.ts";
-import { isGated, redactParams, setServerDefaults } from "./policy.ts";
+import { isGated, redactParams, serverOf, setServerDefaults, unattendedBlockReason } from "./policy.ts";
 
 const PRIVACY_MODES: PrivacyMode[] = ["standard", "local-voice", "strict-offline"];
 
@@ -153,20 +153,36 @@ function auditCall(
  *  120s wait for a click no one will make. It is audited (approver "unattended")
  *  and a `blocked` event fires so the host can notify. This check comes FIRST, so
  *  even a `JUNE_APPROVE=allow` override can't approve a gated action on an
- *  unattended run. The audit log is the reviewable record of what the run did. */
-function makeGate(turn: number, unattended = false): ToolGate {
+ *  unattended run. The audit log is the reviewable record of what the run did.
+ *
+ *  Unattended is stricter than "block the gated classes" (B1.3): a reversible act
+ *  (open a browser), a networked read (exfiltrates over the wire), and the
+ *  memory/lessons writes (persistent-injection poison) auto-ran before. Now ONLY
+ *  a local, observe-class read may auto-run unattended; everything else is blocked
+ *  + audited. `networkedServers` is the set of server ids that reach the network
+ *  (a non-offline-safe generic capability). */
+function makeGate(turn: number, unattended = false, networkedServers: ReadonlySet<string> = new Set()): ToolGate {
   const override = process.env.JUNE_APPROVE?.toLowerCase();
   const mode = process.env.JUNE_PRIVACY_MODE;
 
   return async (call) => {
-    if (!isGated(call.cls)) {
+    if (unattended) {
+      const block = unattendedBlockReason(
+        { cls: call.cls, action: call.action, server: serverOf(call.tool) },
+        networkedServers,
+      );
+      if (block) {
+        auditCall(turn, call, "deny", "unattended", mode);
+        emit({ t: "blocked", turn, action: call.action, summary: call.summary });
+        return { allow: false, reason: `Blocked (unattended): this action ${block}.` };
+      }
+      // A local observe-class read: safe to auto-run, still audited.
       auditCall(turn, call, "allow", "auto", mode);
       return { allow: true };
     }
-    if (unattended) {
-      auditCall(turn, call, "deny", "unattended", mode);
-      emit({ t: "blocked", turn, action: call.action, summary: call.summary });
-      return { allow: false, reason: "Blocked: this action needs approval and the run was unattended." };
+    if (!isGated(call.cls)) {
+      auditCall(turn, call, "allow", "auto", mode);
+      return { allow: true };
     }
     if (override === "allow") {
       auditCall(turn, call, "allow", "policy", mode);
@@ -254,6 +270,9 @@ async function main(): Promise<void> {
   // inspected read-only server stops nagging while unknown tools still fail closed.
   const mcpEntries = resolveMcpEntries(parseMcpServers(process.env.JUNE_MCP_SERVERS), mode ?? "standard");
   setServerDefaults(serverDefaults(mcpEntries));
+  // Server ids that reach the network - blocked even for observe-class reads on an
+  // unattended run (B1.3), so a promoted search server can't exfiltrate unwatched.
+  const networkedServers = new Set(mcpEntries.filter((e) => !e.offlineSafe).map((e) => e.id));
 
   const agent = createJuneAgent({
     ...brain,
@@ -295,7 +314,7 @@ async function main(): Promise<void> {
       // fresh so a lesson recorded earlier this session is available now.
       const prompt = withRecalledLessons(framed, await readLessons(lessonsFile));
       const result = await agent.run(prompt, {
-        gate: makeGate(turn, run.unattended),
+        gate: makeGate(turn, run.unattended, networkedServers),
         onText: (delta) => emit({ t: "text", turn, delta }),
         onToolUse: (c) => emit({ t: "tool", turn, action: c.action, input: c.input }),
         onToolResult: (action, res, isError) => emit({ t: "result", turn, action, res, isError }),

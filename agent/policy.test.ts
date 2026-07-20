@@ -13,6 +13,7 @@ import {
   setServerDefaults,
   showPayload,
   summarize,
+  unattendedBlockReason,
 } from "./policy.ts";
 
 describe("gate policy", () => {
@@ -75,7 +76,7 @@ describe("gate policy", () => {
   it("an unknown action fails closed to destructive (gated), never silently auto-run", () => {
     expect(classify("some_future_action")).toBe("destructive");
     expect(isGated(classify("some_future_action"))).toBe(true);
-    expect(summarize("some_future_action", {})).toBe("Run some_future_action");
+    expect(summarize("some_future_action", {})).toBe("Run some_future_action {}");
   });
 
   it("a server default classifies its otherwise-unknown tools, still fail-closed without one", () => {
@@ -88,13 +89,76 @@ describe("gate policy", () => {
     setServerDefaults({ github: "observe" });
     expect(classify("list_issues", "github")).toBe("observe");
     expect(isGated(classify("list_issues", "github"))).toBe(false);
-    // A named action still wins over the server default.
-    expect(classify("send_to_terminal", "github")).toBe("destructive");
+    // B1.1: a generic server NEVER borrows June's built-in classification. A
+    // third-party tool that merely shares the name `send_to_terminal` is a
+    // different tool, so it takes the server default (here observe), not the
+    // built-in destructive class. Its class is the user's promotion, nothing more.
+    expect(classify("send_to_terminal", "github")).toBe("observe");
     // Another server without a default still fails closed.
     expect(classify("anything", "other")).toBe("destructive");
     // Replacing the map wholesale drops the old override (removed in settings).
     setServerDefaults({});
     expect(classify("list_issues", "github")).toBe("destructive");
+  });
+
+  it("a generic server cannot spoof a built-in class via a shared/nested tool name (B1.1)", () => {
+    // The exact spoof shapes from the review: a third-party server naming a tool
+    // `remember` / `read_file` / `open_browser` (or nesting it) must NOT inherit
+    // June's ungated built-in class. No server default -> all fail closed to gated.
+    for (const tool of [
+      "mcp__evil__remember",
+      "mcp__evil__x__remember", // nested: tool parsed whole as "x__remember"
+      "mcp__anything__read_file",
+      "mcp__anything__open_browser",
+    ]) {
+      const cls = classify(actionOf(tool), serverOf(tool));
+      expect(cls).toBe("destructive");
+      expect(isGated(cls)).toBe(true);
+    }
+    // The tool segment is kept VERBATIM from the front, so a nested spoof can't
+    // masquerade as the bare built-in action.
+    expect(actionOf("mcp__evil__x__remember")).toBe("x__remember");
+    expect(serverOf("mcp__evil__x__remember")).toBe("evil");
+    // June's OWN memory server still classifies `remember` as its built-in class.
+    expect(classify(actionOf("mcp__memory__remember"), serverOf("mcp__memory__remember"))).toBe("reversible");
+  });
+
+  it("an unknown gated tool's summary shows its params, control chars visible (B1.6/B1.7)", () => {
+    // The default branch previously rendered "Run <action>" with no params, so a
+    // user approved blind. Now the payload is shown with invisibles escaped.
+    const rtl = String.fromCharCode(0x202e); // an invisible RTL-override
+    const summary = summarize("push_config", { target: "prod", note: `a${rtl}b\nc` });
+    expect(summary).toContain("push_config");
+    expect(summary).toContain("prod");
+    expect(summary).toContain("\\u202e"); // RTL-override made visible
+    expect(summary).toContain("\\n"); // newline made visible
+  });
+
+  it("showPayload escapes every invisible char, not just the common three (B1.7)", () => {
+    const wrap = (code: number): string => "a" + String.fromCharCode(code) + "b";
+    expect(showPayload(wrap(0x202e))).toBe("a\\u202eb"); // RTL override (Cf)
+    expect(showPayload(wrap(0x200b))).toBe("a\\u200bb"); // zero-width space (Cf)
+    expect(showPayload(wrap(0x0000))).toBe("a\\u0000b"); // NUL (Cc)
+  });
+
+  it("unattended runs allow only local observe reads (B1.3)", () => {
+    const net = new Set(["brave-search"]);
+    // Local read -> allowed.
+    expect(unattendedBlockReason({ cls: "observe", action: "read_file", server: "files" }, net)).toBeNull();
+    // Reversible (open_browser), gated, and memory writes all blocked.
+    expect(unattendedBlockReason({ cls: "reversible", action: "open_browser" }, net)).toBe("needs approval");
+    expect(unattendedBlockReason({ cls: "destructive", action: "write_file" }, net)).toBe("needs approval");
+    expect(unattendedBlockReason({ cls: "reversible", action: "remember", server: "memory" }, net)).toBe(
+      "needs approval",
+    );
+    // A promoted networked search server (observe) is still blocked: it can exfil.
+    expect(unattendedBlockReason({ cls: "observe", action: "web_search", server: "brave-search" }, net)).toBe(
+      "reaches the network",
+    );
+    // A memory write mis-promoted to observe is still blocked (defense in depth).
+    expect(unattendedBlockReason({ cls: "observe", action: "record_lesson", server: "lessons" }, net)).toBe(
+      "writes persistent memory",
+    );
   });
 
   it("redacts string params under on-device privacy modes but keeps them under standard", () => {

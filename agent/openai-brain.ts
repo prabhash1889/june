@@ -59,14 +59,33 @@ interface OpenAiTool {
   function: { name: string; description?: string; parameters: Record<string, unknown> };
 }
 
-/** One connected MCP capability server plus the bare tool names it owns (so a
- *  tool call can be routed back to the right client) and its tools already
- *  translated to OpenAI schema (so the loop never calls `listTools` twice). */
+/** One connected MCP capability server, its tools translated to OpenAI schema
+ *  under fully-qualified `mcp__<server>__<tool>` names (B1.2), and the map from
+ *  those full names back to the bare name the MCP server itself expects. The full
+ *  names are what the model sees and what the gate classifies, so a generic
+ *  server's `read_file` can't collide with June's built-in one, and two servers
+ *  sharing a bare tool name route to the right client. */
 interface Connected {
   client: Client;
   close: () => Promise<void>;
-  toolNames: Set<string>;
+  bareByFull: Map<string, string>;
   tools: OpenAiTool[];
+}
+
+/** Namespace a server's tools as `mcp__<server>__<tool>` and build the full->bare
+ *  routing map (B1.2). Pure, so the namespacing/routing is unit-tested without a
+ *  live MCP connection. */
+export function namespaceTools(
+  serverId: string,
+  tools: { name: string; description?: string; inputSchema?: unknown }[],
+): { tools: OpenAiTool[]; bareByFull: Map<string, string> } {
+  const bareByFull = new Map<string, string>();
+  const out = tools.map((t) => {
+    const full = `mcp__${serverId}__${t.name}`;
+    bareByFull.set(full, t.name);
+    return toOpenAiTool({ ...t, name: full });
+  });
+  return { tools: out, bareByFull };
 }
 
 export class OpenAiCompatBrain implements Brain {
@@ -111,8 +130,15 @@ export class OpenAiCompatBrain implements Brain {
 
     try {
       const tools = servers.flatMap((s) => s.tools);
-      const routeOf = (name: string): Client | undefined =>
-        servers.find((s) => s.toolNames.has(name))?.client;
+      // Route a full `mcp__<server>__<tool>` name to its owning client and the
+      // bare name that client expects (B1.2).
+      const routeOf = (name: string): { client: Client; bare: string } | undefined => {
+        for (const s of servers) {
+          const bare = s.bareByFull.get(name);
+          if (bare !== undefined) return { client: s.client, bare };
+        }
+        return undefined;
+      };
 
       let finalText = "";
       for (let step = 0; step < MAX_STEPS; step++) {
@@ -164,10 +190,11 @@ export class OpenAiCompatBrain implements Brain {
    *  as the tool result so the model can react without ever running the tool. */
   async #runToolCall(
     call: OpenAiToolCall,
-    routeOf: (name: string) => Client | undefined,
+    routeOf: (name: string) => { client: Client; bare: string } | undefined,
     hooks: TurnHooks,
   ): Promise<string> {
-    const action = actionOf(call.function.name);
+    const fullName = call.function.name;
+    const action = actionOf(fullName);
     let input: Record<string, unknown> = {};
     try {
       input = call.function.arguments ? (JSON.parse(call.function.arguments) as Record<string, unknown>) : {};
@@ -175,17 +202,19 @@ export class OpenAiCompatBrain implements Brain {
       return `Error: the tool arguments were not valid JSON.`;
     }
 
-    const cls = classify(action, serverOf(call.function.name));
-    const decision = await hooks.gate({ tool: call.function.name, action, cls, input, summary: summarize(action, input) });
+    const cls = classify(action, serverOf(fullName));
+    const decision = await hooks.gate({ tool: fullName, action, cls, input, summary: summarize(action, input) });
     if (!decision.allow) return `Not run: ${decision.reason}`;
     const finalInput = decision.input ?? input;
 
-    hooks.onToolUse?.({ tool: call.function.name, action, input: finalInput });
-    const client = routeOf(call.function.name);
-    if (!client) return `Error: no capability provides the tool "${call.function.name}".`;
+    hooks.onToolUse?.({ tool: fullName, action, input: finalInput });
+    const route = routeOf(fullName);
+    if (!route) return `Error: no capability provides the tool "${fullName}".`;
 
     try {
-      const res = (await client.callTool({ name: call.function.name, arguments: finalInput })) as {
+      // The MCP server knows its own BARE tool name; the `mcp__server__` prefix is
+      // June-side routing only (B1.2).
+      const res = (await route.client.callTool({ name: route.bare, arguments: finalInput })) as {
         content?: { type: string; text?: string }[];
         isError?: boolean;
       };
@@ -232,19 +261,22 @@ export class OpenAiCompatBrain implements Brain {
   async #ensureConnected(): Promise<Connected[]> {
     if (this.#servers) return this.#servers;
     const out: Connected[] = [];
-    for (const cfg of Object.values(this.#mcpServers)) {
+    for (const [serverId, cfg] of Object.entries(this.#mcpServers)) {
       const transport = transportFor(cfg);
       if (!transport) continue; // unsupported config shape - skip, never crash the turn
       const client = new Client({ name: `june-${this.id}`, version: "0.1.0" });
       await client.connect(transport);
       // One listTools per server: names for routing and schemas for the model
-      // both come from this single call (10.8 - was fetched twice).
+      // both come from this single call (10.8 - was fetched twice). Namespace the
+      // tools by server id so the gate classifies per-server and names never
+      // collide across servers (B1.2).
       const { tools } = await client.listTools();
+      const ns = namespaceTools(serverId, tools);
       out.push({
         client,
         close: () => client.close(),
-        toolNames: new Set(tools.map((t) => t.name)),
-        tools: tools.map(toOpenAiTool),
+        bareByFull: ns.bareByFull,
+        tools: ns.tools,
       });
     }
     this.#servers = out;

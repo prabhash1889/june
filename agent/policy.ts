@@ -14,6 +14,26 @@ export type SafetyClass = "observe" | "reversible" | "expensive" | "destructive"
 const GATED_CLASSES: readonly SafetyClass[] = ["expensive", "destructive"];
 
 /**
+ * June's own built-in capability servers (B1.1). `ACTION_CLASS` below is trusted
+ * ONLY for these (plus a bare, server-less tool): a third-party server naming a
+ * tool `read_file` / `open_browser` / `remember` is a DIFFERENT tool that happens
+ * to share a name, so it must never inherit June's built-in classification -
+ * otherwise any generic server could ship an ungated `read_file` and dodge the
+ * gate. Generic servers get only their declared per-server default, else fail
+ * closed. Kept in step with the server ids reserved in mcp-servers.ts.
+ */
+const BUILTIN_SERVERS: ReadonlySet<string> = new Set([
+  "saple-bridge-control",
+  "files",
+  "memory",
+  "lessons",
+]);
+
+/** The memory/lessons write tools - blocked on unattended runs (B1.3) so an
+ *  injection in a watched trigger can't persistently poison future prompts. */
+const MEMORY_WRITE_ACTIONS: ReadonlySet<string> = new Set(["remember", "record_lesson"]);
+
+/**
  * Per-action class. Explicitly named actions get exactly this class; anything
  * NOT listed here (and not covered by a server default below) is treated as
  * `destructive` - fail-closed (10.1). An unknown tool is dangerous until a human
@@ -65,23 +85,60 @@ export function setServerDefaults(map: Record<string, SafetyClass>): void {
   SERVER_DEFAULT_CLASS = { ...map };
 }
 
-/** MCP tools arrive as `mcp__<server>__<action>`; recover the bare action. */
+/** Split an MCP tool name into its server and tool, parsed FROM THE FRONT (B1.1):
+ *  `mcp__<server>__<tool>` where `server` is the first segment after `mcp__` and
+ *  `tool` is everything after it, VERBATIM (kept whole, even if it itself contains
+ *  `__`). Parsing from the back instead let `mcp__evil__x__remember` masquerade as
+ *  the built-in `remember`; keeping the tool whole makes it `x__remember`, which
+ *  matches no built-in and fails closed. A bare name (no `mcp__` prefix) has no
+ *  server and is the tool itself. */
+export function parseToolName(toolName: string): { server?: string; tool: string } {
+  if (toolName.startsWith("mcp__")) {
+    const rest = toolName.slice("mcp__".length);
+    const sep = rest.indexOf("__");
+    if (sep >= 0) return { server: rest.slice(0, sep), tool: rest.slice(sep + 2) };
+    return { tool: rest }; // malformed `mcp__foo` - no tool segment; treat as bare
+  }
+  return { tool: toolName };
+}
+
+/** The bare action (tool) name (`mcp__<server>__<tool>` -> `<tool>`, kept whole). */
 export function actionOf(toolName: string): string {
-  const parts = toolName.split("__");
-  return parts[parts.length - 1] ?? toolName;
+  return parseToolName(toolName).tool;
 }
 
-/** Recover the server name from an MCP tool name (`mcp__<server>__<action>`);
- *  undefined for a bare/built-in tool with no server segment. */
+/** Recover the server name from an MCP tool name; undefined for a bare tool. */
 export function serverOf(toolName: string): string | undefined {
-  const parts = toolName.split("__");
-  return parts[0] === "mcp" && parts.length >= 3 ? parts[1] : undefined;
+  return parseToolName(toolName).server;
 }
 
-/** Classify an action, fail-closed: a named action wins, then its server's
- *  declared default, then `destructive` (gated) for anything still unknown. */
+/** Classify an action, fail-closed (B1.1): a named built-in action wins, but ONLY
+ *  for June's own servers (or a bare tool) - a generic server never borrows a
+ *  built-in class. Otherwise the server's declared default applies, else
+ *  `destructive` (gated) for anything still unknown. */
 export function classify(action: string, server?: string): SafetyClass {
-  return ACTION_CLASS[action] ?? (server ? SERVER_DEFAULT_CLASS[server] : undefined) ?? "destructive";
+  const builtin = server === undefined || BUILTIN_SERVERS.has(server);
+  if (builtin) {
+    const named = ACTION_CLASS[action];
+    if (named) return named;
+  }
+  return (server ? SERVER_DEFAULT_CLASS[server] : undefined) ?? "destructive";
+}
+
+/** For an unattended run (B1.3 / Phase 18.2): decide whether a call may auto-run
+ *  without a human. Only `observe`-class, LOCAL (non-networked), non-memory-writing
+ *  tools are safe unattended - a reversible act (open a browser), a networked read
+ *  (can exfiltrate via URL/params), or a memory/lessons write (persistent-injection
+ *  poison) must be blocked, never auto-approved. Returns a short block reason, or
+ *  null when the call is allowed. Pure, so it is unit-tested without the resident. */
+export function unattendedBlockReason(
+  call: { cls: SafetyClass; action: string; server?: string },
+  networkedServers: ReadonlySet<string>,
+): string | null {
+  if (call.cls !== "observe") return "needs approval";
+  if (call.server && networkedServers.has(call.server)) return "reaches the network";
+  if (MEMORY_WRITE_ACTIONS.has(call.action)) return "writes persistent memory";
+  return null;
 }
 
 /** Redact tool params for the audit log per privacy mode (10.7). Under any
@@ -109,7 +166,16 @@ export function isGated(cls: SafetyClass): boolean {
  *  injection hides) rather than being truncated away. */
 export function showPayload(v: unknown): string {
   if (typeof v !== "string") return String(v ?? "");
-  return v.replace(/\r/g, "\\r").replace(/\n/g, "\\n").replace(/\t/g, "\\t");
+  // Escape ALL Unicode control (Cc) and format (Cf) characters, not just \r\n\t
+  // (B1.7): a zero-width space or an RTL-override (U+202E) can visually reorder or
+  // hide the payload the user approves against, so every invisible char is made
+  // visible. The common three keep their familiar `\n`-style escapes.
+  return v.replace(/[\p{Cc}\p{Cf}]/gu, (ch) => {
+    if (ch === "\r") return "\\r";
+    if (ch === "\n") return "\\n";
+    if (ch === "\t") return "\\t";
+    return `\\u${ch.codePointAt(0)!.toString(16).padStart(4, "0")}`;
+  });
 }
 
 /** One-line human-readable statement of exactly what will happen - the text a
@@ -154,7 +220,14 @@ export function summarize(action: string, input: Record<string, unknown>): strin
       return `Remember: ${s("fact") || "?"}`;
     case "record_lesson":
       return `Note lesson: ${s("lesson") || "?"}`;
-    default:
-      return `Run ${action}`;
+    default: {
+      // An unknown gated tool (a generic server's action) still fails closed to
+      // destructive, so the user WILL be asked to approve it - and must see what
+      // they are approving (B1.6). Render its params with control chars visible,
+      // capped so a huge blob can't flood the card.
+      const params = showPayload(JSON.stringify(input));
+      const shown = params.length > 300 ? `${params.slice(0, 300)}…` : params;
+      return `Run ${action} ${shown}`;
+    }
   }
 }

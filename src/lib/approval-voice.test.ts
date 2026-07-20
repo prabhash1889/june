@@ -29,4 +29,21 @@ describe("matchApproval", () => {
     expect(matchApproval("my eyes hurt")).toBeNull();
     expect(matchApproval("get me noodles")).toBeNull();
   });
+
+  it("never approves on a bare 'ok'/'okay' (B1.4: Whisper hallucinates it on silence)", () => {
+    // Cloud Whisper emits "Okay." for a silent clip, which used to approve a paid
+    // action. A bare ok/okay is no longer a sole affirmative -> fail closed.
+    expect(matchApproval("okay")).toBeNull();
+    expect(matchApproval("ok")).toBeNull();
+    // A real affirmative phrasing still works ("okay go ahead" hits "go ahead").
+    expect(matchApproval("okay go ahead")).toBe("allow");
+  });
+
+  it("reads a negated confirmation as a denial, not a yes (B1.4)", () => {
+    // "not"/"do not" now count as NO, so a yes+no phrasing is a contradiction ->
+    // null -> the caller fails closed and denies.
+    expect(matchApproval("sure do not do it")).toBeNull();
+    expect(matchApproval("yes not that one")).toBeNull();
+    expect(matchApproval("do not")).toBe("deny");
+  });
 });

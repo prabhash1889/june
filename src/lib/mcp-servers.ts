@@ -43,6 +43,12 @@ export interface McpServerEntry {
 
 const SLUG = /^[a-z0-9][a-z0-9-]*$/;
 
+/** Server ids June reserves for its own built-in capabilities (B1.5). A user-added
+ *  entry claiming one of these would SHADOW the trusted server (e.g. its arbitrary
+ *  `remember` inheriting the built-in ungated class), so such an entry is dropped.
+ *  Kept in step with agent/policy.ts's BUILTIN_SERVERS. */
+const RESERVED_IDS: ReadonlySet<string> = new Set(["memory", "lessons", "files", "saple-bridge-control"]);
+
 /** Turn a label into a safe server id/slug: lowercase, non-alphanumerics to `-`,
  *  trimmed. Used when the caller doesn't supply an id. */
 export function slugify(label: string): string {
@@ -77,6 +83,7 @@ function coerceEntry(raw: unknown): McpServerEntry | null {
   const idRaw = typeof r.id === "string" ? r.id : "";
   const id = SLUG.test(idRaw) ? idRaw : slugify(label || idRaw);
   if (!id) return null;
+  if (RESERVED_IDS.has(id)) return null; // can't shadow a built-in server (B1.5)
 
   const t = (typeof r.transport === "object" && r.transport !== null ? r.transport : {}) as Record<string, unknown>;
   let transport: McpTransport | null = null;

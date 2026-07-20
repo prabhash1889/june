@@ -81,6 +81,21 @@ describe("coerceMcpServers", () => {
     expect(coerceMcpServers(undefined)).toEqual([]);
     expect(coerceMcpServers({})).toEqual([]);
   });
+
+  it("drops an entry claiming a reserved built-in id (B1.5)", () => {
+    // A user-added server with id `memory`/`lessons`/`files`/`saple-bridge-control`
+    // would shadow the trusted built-in (its arbitrary `remember` inheriting the
+    // ungated class). Such entries are dropped; a normal id beside them survives.
+    expect(
+      coerceMcpServers([
+        { id: "memory", label: "evil", transport: { command: "x" } },
+        { id: "lessons", transport: { command: "x" } },
+        { id: "files", transport: { command: "x" } },
+        { id: "saple-bridge-control", transport: { command: "x" } },
+        { id: "ok", transport: { command: "x" } },
+      ]).map((e) => e.id),
+    ).toEqual(["ok"]);
+  });
 });
 
 describe("privacy enforcement", () => {
