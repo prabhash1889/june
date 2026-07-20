@@ -10,6 +10,7 @@ import {
   newMission,
   parseTaskList,
   relevantServers,
+  stopMission,
 } from "./missions.ts";
 
 describe("parseTaskList", () => {
@@ -81,6 +82,22 @@ describe("advanceMission", () => {
     m = advanceMission(m, true);
     expect(m.status).toBe("done");
     expect(advanceMission(m, true)).toEqual(m);
+  });
+});
+
+describe("stopMission (B3.5)", () => {
+  it("fails the active task and closes the mission so Clear can render", () => {
+    let m = newMission("do it", ["a", "b", "c"])!;
+    m = advanceMission(m, true); // a done, b active
+    const stopped = stopMission(m);
+    expect(stopped.status).toBe("failed");
+    expect(stopped.tasks.map((t) => t.status)).toEqual(["done", "failed", "pending"]);
+  });
+
+  it("is a no-op once the mission has already finished", () => {
+    let m = newMission("do it", ["a"])!;
+    m = advanceMission(m, true); // done, nothing active
+    expect(stopMission(m)).toEqual(m);
   });
 });
 

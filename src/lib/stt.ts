@@ -26,11 +26,12 @@ export async function transcribe(audio: Uint8Array, mime: string, choice?: Stage
   return invoke<string>("transcribe", { audio: Array.from(audio), mime });
 }
 
-/** Feed an accepted transcript to the agent core and return June's reply. Text
- *  deltas stream out as `agent://text` events tagged with `turn`, so a caller
+/** Feed an accepted transcript to the agent core and return June's reply plus the
+ *  brain's `isError` flag (B3.4: a mission run counts a flagged task as failed).
+ *  Text deltas stream out as `agent://text` events tagged with `turn`, so a caller
  *  that barges in can drop deltas from the interrupted turn. */
-export function runAgent(transcript: string, turn: number): Promise<string> {
-  return invoke<string>("run_agent", { transcript, turn });
+export function runAgent(transcript: string, turn: number): Promise<{ text: string; isError: boolean }> {
+  return invoke<{ text: string; isError: boolean }>("run_agent", { transcript, turn });
 }
 
 /** Dictation injection (Phase 15.4): type the cleaned transcript into the focused

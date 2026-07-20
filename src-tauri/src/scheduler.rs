@@ -134,13 +134,74 @@ fn read_triggers(settings: &serde_json::Value) -> Vec<Trigger> {
 
 /// Fire one unattended run and notify with the outcome. Blocking (runs the whole
 /// agent turn); called inline in the tick thread so unattended runs serialize.
-fn fire(app: &AppHandle, session: &AgentSession, source: String, prompt: String, untrusted: Option<String>) {
+/// Returns true if the run actually DISPATCHED (ran or errored), false if it was
+/// DEFERRED because a user turn arrived while the resident spawned (B3.3) - the
+/// caller then leaves its `fired`/baseline marker untouched so the run retries on
+/// the next tick rather than being lost.
+fn fire(app: &AppHandle, session: &AgentSession, source: String, prompt: String, untrusted: Option<String>) -> bool {
     match run_unattended(app, session, prompt, source.clone(), untrusted) {
-        Ok(reply) => {
+        Ok(Some(reply)) => {
             let body = if reply.trim().is_empty() { "Done.".to_string() } else { truncate(&reply, 240) };
             notify(app, &format!("June finished: {source}"), &body);
+            true
         }
-        Err(e) => notify(app, &format!("June couldn't finish: {source}"), &e),
+        Ok(None) => false, // deferred: a user turn slipped in during spawn; retry next tick
+        Err(e) => {
+            notify(app, &format!("June couldn't finish: {source}"), &e);
+            true
+        }
+    }
+}
+
+/// Bytes of a watched trigger file to read into an unattended run's prompt. The TS
+/// side caps the payload at 4000 chars (schedules.ts); 64 KiB here is comfortably
+/// above that even for multi-byte text, while stopping a multi-GB log from
+/// ballooning memory before that cap ever applies (B3.8).
+const TRIGGER_READ_LIMIT: u64 = 64 * 1024;
+
+/// Read only the head of a (possibly huge) trigger file (B3.8), lossily decoded. A
+/// missing/unreadable file reads as empty, like the prior `read_to_string`.
+fn read_trigger_head(path: &str) -> String {
+    use std::io::Read;
+    let Ok(file) = std::fs::File::open(path) else {
+        return String::new();
+    };
+    let mut buf = Vec::new();
+    let _ = file.take(TRIGGER_READ_LIMIT).read_to_end(&mut buf);
+    String::from_utf8_lossy(&buf).into_owned()
+}
+
+/// What to do with a file trigger this tick, given its previous baseline mtime, the
+/// current mtime, and whether the session is busy. Pure so the "defer WITHOUT
+/// advancing the baseline" rule (B3.1) is unit-tested without a clock or filesystem.
+#[derive(Debug, PartialEq)]
+enum TriggerAction {
+    /// Unchanged, or deferred while busy: leave the baseline untouched.
+    Ignore,
+    /// First sighting: record the baseline, but don't fire on an already-old file.
+    Baseline,
+    /// Changed and free: fire, then (only on real dispatch) advance the baseline.
+    Fire,
+}
+
+fn trigger_action(
+    prev: Option<std::time::SystemTime>,
+    modified: std::time::SystemTime,
+    busy: bool,
+) -> TriggerAction {
+    match prev {
+        None => TriggerAction::Baseline,
+        // A change while busy is deferred WITHOUT advancing the baseline (B3.1): the
+        // old code advanced it before the busy check, so a change during a user turn
+        // was silently swallowed and never fired.
+        Some(p) if modified > p => {
+            if busy {
+                TriggerAction::Ignore
+            } else {
+                TriggerAction::Fire
+            }
+        }
+        _ => TriggerAction::Ignore,
     }
 }
 
@@ -181,8 +242,11 @@ pub fn start(app: AppHandle, session: AgentSession) {
                 if session.is_busy() {
                     continue; // don't preempt an interactive turn; retry next tick
                 }
-                fired.insert(sc.id.clone(), now.date());
-                fire(&app, &session, format!("schedule: {}", sc.label), sc.prompt.clone(), None);
+                // Mark fired only once the run actually DISPATCHED (B3.3): a run
+                // deferred by the spawn-race must retry next tick, not be lost today.
+                if fire(&app, &session, format!("schedule: {}", sc.label), sc.prompt.clone(), None) {
+                    fired.insert(sc.id.clone(), now.date());
+                }
             }
 
             for tr in read_triggers(&settings) {
@@ -192,16 +256,21 @@ pub fn start(app: AppHandle, session: AgentSession) {
                 let Ok(modified) = std::fs::metadata(&tr.path).and_then(|m| m.modified()) else {
                     continue; // file missing/unreadable this tick
                 };
-                let prev = mtimes.insert(tr.id.clone(), modified);
-                // Fire only on a CHANGE we have seen before: the first sighting just
-                // records the baseline, so turning a trigger on doesn't fire on an
-                // already-stale file.
-                let changed = matches!(prev, Some(p) if modified > p);
-                if !changed || session.is_busy() {
-                    continue;
+                match trigger_action(mtimes.get(&tr.id).copied(), modified, session.is_busy()) {
+                    TriggerAction::Ignore => {}
+                    TriggerAction::Baseline => {
+                        mtimes.insert(tr.id.clone(), modified);
+                    }
+                    TriggerAction::Fire => {
+                        let payload = read_trigger_head(&tr.path);
+                        // Advance the baseline ONLY once the run actually dispatched:
+                        // a run deferred by the spawn-race (B3.3) must re-fire on the
+                        // next tick, so the change isn't lost (B3.1).
+                        if fire(&app, &session, format!("trigger: {}", tr.label), tr.prompt.clone(), Some(payload)) {
+                            mtimes.insert(tr.id.clone(), modified);
+                        }
+                    }
                 }
-                let payload = std::fs::read_to_string(&tr.path).unwrap_or_default();
-                fire(&app, &session, format!("trigger: {}", tr.label), tr.prompt.clone(), Some(payload));
             }
         }
     });
@@ -241,6 +310,21 @@ mod tests {
         assert!(!is_due(dt("2026-07-20 10:00"), "09:00", &[], None));
         // Before the scheduled time never fires.
         assert!(!is_due(dt("2026-07-20 08:59"), "09:00", &[], None));
+    }
+
+    #[test]
+    fn defers_a_change_while_busy_without_losing_it() {
+        use std::time::{Duration, SystemTime};
+        let t0 = SystemTime::UNIX_EPOCH;
+        let t1 = t0 + Duration::from_secs(1);
+        // First sighting records the baseline, never fires on an already-old file.
+        assert_eq!(trigger_action(None, t0, false), TriggerAction::Baseline);
+        // A change while BUSY is ignored WITHOUT advancing the baseline (B3.1)...
+        assert_eq!(trigger_action(Some(t0), t1, true), TriggerAction::Ignore);
+        // ...so the SAME change (baseline still t0) fires on a later idle tick.
+        assert_eq!(trigger_action(Some(t0), t1, false), TriggerAction::Fire);
+        // No change is ignored regardless of busy.
+        assert_eq!(trigger_action(Some(t1), t1, false), TriggerAction::Ignore);
     }
 
     #[test]

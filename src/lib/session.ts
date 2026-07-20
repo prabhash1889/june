@@ -30,6 +30,29 @@ export function openApp(): Promise<void> {
   return invoke("show_app");
 }
 
+// Turn-number spaces (B3.7). Each webview counts its OWN turns, but a webview
+// reload resets its counter - so a reused number would replace a still-registered
+// `Sender` in the shared Rust `turns` map, orphaning (and shutting down) the
+// resident. Seed each counter from a monotonic per-load base (ms since a fixed
+// epoch) instead of a constant, so a fresh load never reuses the prior load's
+// in-flight numbers. The three spaces stay ordered and below the Rust unattended
+// base (2^40): interactive < mission < unattended, each with room for a load's base
+// plus its turns.
+// ponytail: the epoch offset keeps the base under 2^39 until ~2037; widen the epoch
+// or the band if June is still counting turns then.
+const TURN_EPOCH = 1_577_836_800_000; // 2020-01-01 UTC
+
+/** Per-load base for the widget's interactive turns (below the 2^39 mission band). */
+export function interactiveTurnBase(): number {
+  return Date.now() - TURN_EPOCH; // ~2e11, well under 2^39
+}
+
+/** Per-load base for mission turns: [2^39, 2^40), above interactive and below the
+ *  Rust unattended space (2^40). */
+export function missionTurnBase(): number {
+  return 2 ** 39 + (Date.now() - TURN_EPOCH);
+}
+
 /** Abort an in-flight turn (Phase 11.3). Barge-in and Cancel call this so the
  *  resident interrupts the brain mid-generation - the turn stops spending tokens
  *  at once instead of running to completion unheard. Fire-and-forget: an already

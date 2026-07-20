@@ -30,8 +30,10 @@ use std::time::{Duration, Instant};
 
 use tauri::{AppHandle, Emitter, Manager, State};
 
-/// A turn that produces no `final` within this window is abandoned as wedged.
-/// Must exceed the 120s approval timeout so a slow-to-approve turn isn't killed.
+/// Idle watchdog (B3.2): a turn that emits NO reader event (text/tool/result/
+/// approval/final) for this long is abandoned as wedged. This is a SILENCE window,
+/// not a wall-clock cap - any activity resets it - so a genuinely long turn (real
+/// work, or a 120s approval) survives while a truly hung process still times out.
 const WATCHDOG: Duration = Duration::from_secs(180);
 
 /// Append one already-redacted, turn-stamped audit record (a `{"t":"audit",...}`
@@ -95,9 +97,27 @@ fn backoff_delay(fails: u32) -> Duration {
     Duration::from_millis(ms.min(8_000))
 }
 
-/// One turn's reply (or a crash/watchdog error), delivered from the reader
-/// thread back to the awaiting `run_agent`.
-type TurnResult = Result<String, String>;
+/// One turn's reply: the spoken text plus the brain's error flag. `is_error` rides
+/// ALONGSIDE the text (not as an `Err`) so the voice path still speaks an error
+/// reply, while a mission run can count a brain-flagged task as failed (B3.4).
+#[derive(Clone, serde::Serialize)]
+pub struct TurnReply {
+    text: String,
+    #[serde(rename = "isError")]
+    is_error: bool,
+}
+
+/// One turn's outcome delivered to the awaiting caller: the reply, or a
+/// crash/watchdog error message.
+type TurnOutcome = Result<TurnReply, String>;
+
+/// Reader-thread -> awaiting-caller messages for one turn. `Activity` is any
+/// streamed event (text/tool/result/approval) and resets the idle watchdog so a
+/// long-but-live turn isn't killed (B3.2); `Done` carries the final outcome.
+enum TurnMsg {
+    Activity,
+    Done(TurnOutcome),
+}
 
 /// The resident agent session. All state is shared `Arc`s so the async
 /// commands, the blocking spawn/write path, and the stdout reader thread touch
@@ -114,8 +134,9 @@ pub struct AgentSession {
     /// Stamps each recorded event's `payload.seq` for replay de-duplication.
     seq: Arc<AtomicU64>,
     /// Per-turn delivery channels: the reader thread hands each `final` (or a
-    /// crash error) back to the awaiting `run_agent` here.
-    turns: Arc<Mutex<HashMap<u64, Sender<TurnResult>>>>,
+    /// crash error) back to the awaiting `run_agent` here, plus `Activity` pings
+    /// that reset the idle watchdog (B3.2).
+    turns: Arc<Mutex<HashMap<u64, Sender<TurnMsg>>>>,
     /// The most recently dispatched turn - a preempted (barged-in-on) turn's
     /// late approval must not surface over the newer turn's prompt.
     latest_turn: Arc<AtomicU64>,
@@ -476,20 +497,31 @@ fn spawn_reader(session: AgentSession, app: AppHandle, stdout: std::process::Chi
                             serde_json::json!({ "turn": turn, "delta": delta }),
                         );
                     }
+                    bump_activity(&session, turn);
                 }
-                Some("tool") => record(
-                    &session,
-                    &app,
-                    "agent://tool",
-                    serde_json::json!({ "turn": turn, "action": v.get("action"), "input": v.get("input") }),
-                ),
-                Some("result") => record(
-                    &session,
-                    &app,
-                    "agent://result",
-                    serde_json::json!({ "turn": turn, "action": v.get("action"), "res": v.get("res"), "isError": v.get("isError") }),
-                ),
+                Some("tool") => {
+                    record(
+                        &session,
+                        &app,
+                        "agent://tool",
+                        serde_json::json!({ "turn": turn, "action": v.get("action"), "input": v.get("input") }),
+                    );
+                    bump_activity(&session, turn);
+                }
+                Some("result") => {
+                    record(
+                        &session,
+                        &app,
+                        "agent://result",
+                        serde_json::json!({ "turn": turn, "action": v.get("action"), "res": v.get("res"), "isError": v.get("isError") }),
+                    );
+                    bump_activity(&session, turn);
+                }
                 Some("approval") => {
+                    // An approval is progress: reset the idle watchdog while the user
+                    // decides (B3.2) even for a preempted turn (harmless - it will get
+                    // a `final` eventually and be removed).
+                    bump_activity(&session, turn);
                     // A preempted (barged-in-on) turn's approval must not surface
                     // over the newer turn: serve.ts self-denies it, so a decision
                     // could never be delivered anyway.
@@ -546,9 +578,10 @@ fn spawn_reader(session: AgentSession, app: AppHandle, stdout: std::process::Chi
                         }
                     }
                     if let Some(tx) = session.turns.lock().unwrap().remove(&turn) {
-                        // June speaks the text even on an error final, matching the
-                        // pre-11 behaviour; the recorded event carries isError for UI.
-                        let _ = tx.send(Ok(text));
+                        // The reply carries `is_error` alongside the text (B3.4): the
+                        // voice path still speaks it (pre-11 behaviour), but a mission
+                        // run can now count a brain-flagged task as failed.
+                        let _ = tx.send(TurnMsg::Done(Ok(TurnReply { text, is_error })));
                     }
                     // B2.1: a config change deferred mid-turn can land now the turn is done.
                     apply_pending_respawn(&session);
@@ -572,7 +605,7 @@ fn spawn_reader(session: AgentSession, app: AppHandle, stdout: std::process::Chi
             *session.pending.lock().unwrap() = None;
             let mut turns = session.turns.lock().unwrap();
             for (_, tx) in turns.drain() {
-                let _ = tx.send(Err("The agent stopped unexpectedly.".to_string()));
+                let _ = tx.send(TurnMsg::Done(Err("The agent stopped unexpectedly.".to_string())));
             }
         }
     });
@@ -603,16 +636,44 @@ impl AgentSession {
     }
 }
 
+/// Ping the awaiting caller that turn `turn` produced a reader event, resetting its
+/// idle watchdog (B3.2). Best-effort: a finished/unknown turn (or turn 0, which is
+/// the not-a-turn `ready` event) just no-ops.
+fn bump_activity(session: &AgentSession, turn: u64) {
+    if turn == 0 {
+        return;
+    }
+    if let Some(tx) = session.turns.lock().unwrap().get(&turn) {
+        let _ = tx.send(TurnMsg::Activity);
+    }
+}
+
+/// Block until this turn's `Done` arrives, resetting the `idle` silence window on
+/// every `Activity` (B3.2). `Err(())` means the watchdog fired - `idle` elapsed with
+/// no event, or the sender was dropped - so the caller tears the wedged resident
+/// down. Split out and parameterized on `idle` so the reset rule is unit-tested
+/// without a live turn.
+fn await_turn(rx: &Receiver<TurnMsg>, idle: Duration) -> Result<TurnOutcome, ()> {
+    loop {
+        match rx.recv_timeout(idle) {
+            Ok(TurnMsg::Activity) => continue,
+            Ok(TurnMsg::Done(outcome)) => return Ok(outcome),
+            Err(_) => return Err(()),
+        }
+    }
+}
+
 /// Run one agent turn from the given transcript and return June's spoken-style
-/// reply. Streams every step as an `agent://*` event tagged with `turn`. Errors
-/// come back as `Err` so the UI can surface them instead of pretending success.
+/// reply (with the brain's `isError` flag, B3.4). Streams every step as an
+/// `agent://*` event tagged with `turn`. A crash/watchdog comes back as `Err` so
+/// the UI can surface it instead of pretending success.
 #[tauri::command]
 pub async fn run_agent(
     app: AppHandle,
     session: State<'_, AgentSession>,
     transcript: String,
     turn: u64,
-) -> Result<String, String> {
+) -> Result<TurnReply, String> {
     let transcript = transcript.trim().to_string();
     if transcript.is_empty() {
         return Err("Nothing to send: the transcript was empty.".to_string());
@@ -636,7 +697,7 @@ pub async fn run_agent(
 
     // Register this turn's delivery channel BEFORE the run request, so the reader
     // can never deliver a `final` before we are listening.
-    let (tx, rx): (Sender<TurnResult>, Receiver<TurnResult>) = std::sync::mpsc::channel();
+    let (tx, rx): (Sender<TurnMsg>, Receiver<TurnMsg>) = std::sync::mpsc::channel();
     session.turns.lock().unwrap().insert(turn, tx);
 
     // Mirror the user's message to any open window before June starts working.
@@ -679,13 +740,13 @@ pub async fn run_agent(
     // Await this turn's `final` (or a crash error) with a watchdog: a wedged
     // resident must not hang the UI. On timeout, shut it down so the next run
     // gets a fresh process.
-    let outcome = tauri::async_runtime::spawn_blocking(move || rx.recv_timeout(WATCHDOG))
+    let outcome = tauri::async_runtime::spawn_blocking(move || await_turn(&rx, WATCHDOG))
         .await
         .map_err(|e| format!("Agent task failed: {e}"))?;
 
     match outcome {
         Ok(result) => result,
-        Err(_) => {
+        Err(()) => {
             session.turns.lock().unwrap().remove(&turn);
             session.shutdown();
             let msg = "The agent did not respond in time.".to_string();
@@ -726,11 +787,28 @@ pub fn run_unattended(
     prompt: String,
     source: String,
     untrusted: Option<String>,
-) -> Result<String, String> {
-    let turn = UNATTENDED_TURN.fetch_add(1, Ordering::Relaxed);
+) -> Result<Option<String>, String> {
+    // Bring the resident up FIRST - this can block for seconds (spawn + crash
+    // backoff). Only once it is live do we claim a turn slot, so a user turn that
+    // arrived DURING the spawn is caught by the busy re-check below (B3.3): the
+    // scheduler's earlier is_busy() check can go stale across that gap.
+    ensure_resident(app, session)?;
 
-    let (tx, rx): (Sender<TurnResult>, Receiver<TurnResult>) = std::sync::mpsc::channel();
-    session.turns.lock().unwrap().insert(turn, tx);
+    let turn = UNATTENDED_TURN.fetch_add(1, Ordering::Relaxed);
+    let (tx, rx): (Sender<TurnMsg>, Receiver<TurnMsg>) = std::sync::mpsc::channel();
+
+    // Re-check busy atomically with claiming the slot (B3.3): if an interactive or
+    // mission turn slipped in while the resident was spawning, DEFER rather than
+    // preempt the user (serve.ts would cancel their live turn). Unattended runs are
+    // serialized by the single scheduler thread, so an empty map here means no other
+    // turn is in flight. `Ok(None)` tells the caller to retry on the next tick.
+    {
+        let mut turns = session.turns.lock().unwrap();
+        if !turns.is_empty() || session.pending.lock().unwrap().is_some() {
+            return Ok(None);
+        }
+        turns.insert(turn, tx);
+    }
 
     // Show the run's origin (not the whole prompt) in the shared session log.
     record(session, app, "agent://user", serde_json::json!({ "turn": turn, "text": format!("[{source}]") }));
@@ -742,15 +820,15 @@ pub fn run_unattended(
         req["untrusted"] = serde_json::Value::String(u);
     }
 
-    let dispatch = ensure_resident(app, session).and_then(|_| write_request(session, &req));
-    if let Err(e) = dispatch {
+    if let Err(e) = write_request(session, &req) {
         session.turns.lock().unwrap().remove(&turn);
         return Err(e);
     }
 
-    match rx.recv_timeout(WATCHDOG) {
-        Ok(result) => result,
-        Err(_) => {
+    match await_turn(&rx, WATCHDOG) {
+        Ok(Ok(reply)) => Ok(Some(reply.text)),
+        Ok(Err(msg)) => Err(msg),
+        Err(()) => {
             session.turns.lock().unwrap().remove(&turn);
             session.shutdown();
             let msg = "The unattended run did not respond in time.".to_string();
@@ -1076,6 +1154,29 @@ mod tests {
         *session.resident.lock().unwrap() = Some(dummy_resident());
         session.request_respawn();
         assert!(session.resident.lock().unwrap().is_none(), "idle: respawn should be immediate");
+    }
+
+    #[test]
+    fn await_turn_extends_on_activity_but_times_out_on_silence() {
+        use std::sync::mpsc::channel;
+        // Activity pings keep the turn alive well past a single idle window (total
+        // span 240ms > 120ms idle), then `Done` delivers the reply (B3.2).
+        let (tx, rx) = channel::<TurnMsg>();
+        let idle = Duration::from_millis(120);
+        let h = std::thread::spawn(move || {
+            for _ in 0..4 {
+                std::thread::sleep(Duration::from_millis(60)); // each gap < idle
+                let _ = tx.send(TurnMsg::Activity);
+            }
+            let _ = tx.send(TurnMsg::Done(Ok(TurnReply { text: "hi".into(), is_error: false })));
+        });
+        let out = await_turn(&rx, idle).expect("activity should extend the deadline");
+        assert_eq!(out.unwrap().text, "hi");
+        h.join().unwrap();
+
+        // True silence past the idle window times out - the watchdog still fires.
+        let (_tx, rx2) = channel::<TurnMsg>();
+        assert!(await_turn(&rx2, Duration::from_millis(50)).is_err());
     }
 
     #[test]

@@ -133,18 +133,29 @@ export function coerceTriggers(v: unknown): FileTrigger[] {
 const MAX_PAYLOAD = 4000;
 const FENCE = "===== UNTRUSTED DATA =====";
 
-/** Quarantine an untrusted payload: cap its length and strip any line that forges
- *  our fence marker, so the payload can't fake the boundary that separates it from
- *  instructions. This is defense-in-depth ONLY - the real guarantee that a trigger
- *  payload can't act is 18.2's rule that an unattended run blocks every gated tool
- *  call (agent/serve.ts). Even a perfect injection can read, never do. */
-function quarantine(payload: string): string {
-  const capped = payload.length > MAX_PAYLOAD ? `${payload.slice(0, MAX_PAYLOAD)}\n…[truncated]` : payload;
-  const cleaned = capped
+/** Wrap `content` in the untrusted-data fence, stripping any line that forges the
+ *  marker so the content can't fake the boundary that separates it from
+ *  instructions. Shared (B3.9) by the trigger-payload path and the memory/lessons
+ *  injection: the model itself writes memory/lessons, but fencing them is
+ *  defense-in-depth against a poisoned entry escaping into instructions on a later
+ *  run. Does NOT cap length - callers that need a cap (like `quarantine`) do it
+ *  first, so a user's own long memory is never truncated. */
+export function fenceUntrusted(content: string): string {
+  const cleaned = content
     .split("\n")
     .filter((line) => line.trim() !== FENCE)
     .join("\n");
   return `${FENCE}\n${cleaned}\n${FENCE}`;
+}
+
+/** Quarantine an untrusted trigger payload: cap its length, then fence it. The cap
+ *  keeps a huge watched file from blowing up the context (and token bill) of an
+ *  unattended run. This is defense-in-depth ONLY - the real guarantee that a trigger
+ *  payload can't act is 18.2's rule that an unattended run blocks every gated tool
+ *  call (agent/serve.ts). Even a perfect injection can read, never do. */
+function quarantine(payload: string): string {
+  const capped = payload.length > MAX_PAYLOAD ? `${payload.slice(0, MAX_PAYLOAD)}\n…[truncated]` : payload;
+  return fenceUntrusted(capped);
 }
 
 /** Compose the prompt for an unattended run (18.2/18.3). The header tells June no

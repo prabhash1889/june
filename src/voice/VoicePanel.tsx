@@ -3,7 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 
 import { matchApproval } from "../lib/approval-voice.ts";
 import { hasOpenAiKey, injectText, runAgent, setOpenAiKey, transcribe } from "../lib/stt.ts";
-import { type Approval, cancelAgent, newConversation, openApp, useMission, usePendingApproval } from "../lib/session.ts";
+import { type Approval, cancelAgent, interactiveTurnBase, newConversation, openApp, useMission, usePendingApproval } from "../lib/session.ts";
 import { missionProgress } from "../lib/missions.ts";
 import { DEFAULT_SETTINGS, type HandsFreeConfig, type JuneSettings, loadSettings, saveSettings, voiceAllowed, voiceNeedsOpenAiKey, type WakeConfig } from "../lib/settings.ts";
 import { captureCorrections, cleanTranscript } from "../lib/transcript.ts";
@@ -78,8 +78,10 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
   const transcribeRef = useRef(0);
 
   // Streaming-speech state. `turn` tags each command so deltas/onIdle from a turn
-  // that was barged in on are dropped. `spoke` guards the silent-reply case.
-  const turnRef = useRef(0);
+  // that was barged in on are dropped. `spoke` guards the silent-reply case. Seeded
+  // from a monotonic per-load base (B3.7) so a webview reload never reuses a turn
+  // number still registered in the shared Rust map.
+  const turnRef = useRef(interactiveTurnBase());
   const queueRef = useRef<SpeechQueue | null>(null);
   const splitterRef = useRef(new SentenceBuffer());
   const streamTextRef = useRef("");
@@ -305,7 +307,7 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
     queueRef.current = queue;
     setPhase({ s: "thinking" });
     try {
-      const reply = await runAgent(transcript, turn);
+      const { text: reply } = await runAgent(transcript, turn);
       if (turnRef.current !== turn) return; // barged in while generating
       // Learn the review-gate correction only now the turn is dispatched and done
       // (B2.2): growing the dictionary persists settings, which respawns the

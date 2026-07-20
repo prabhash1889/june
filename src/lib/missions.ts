@@ -96,6 +96,16 @@ export function advanceMission(mission: Mission, ok: boolean): Mission {
   return { ...mission, tasks, status };
 }
 
+/** Stop a mission in flight (B3.5): mark the active task failed and finish the
+ *  mission `failed`, leaving pending tasks untouched. Pure. The board then shows a
+ *  terminal state so the Clear button renders instead of the board staying "active"
+ *  forever. A no-op if nothing is active (already finished). */
+export function stopMission(mission: Mission): Mission {
+  if (!mission.tasks.some((t) => t.status === "active")) return mission;
+  const tasks = mission.tasks.map((t) => (t.status === "active" ? { ...t, status: "failed" as TaskStatus } : t));
+  return { ...mission, tasks, status: "failed" };
+}
+
 export interface MissionProgress {
   done: number;
   failed: number;

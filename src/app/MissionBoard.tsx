@@ -1,8 +1,8 @@
 import { useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
-import { activeTask, advanceMission, type Mission, missionProgress, newMission, parseTaskList } from "../lib/missions.ts";
-import { newConversation, useMission, writeMission } from "../lib/session.ts";
+import { activeTask, advanceMission, type Mission, missionProgress, newMission, parseTaskList, stopMission } from "../lib/missions.ts";
+import { cancelAgent, missionTurnBase, newConversation, useMission, writeMission } from "../lib/session.ts";
 
 // Missions (improvement-4 Phase 19.1). A user states an OUTCOME; June decomposes it
 // into a task list and works the tasks one per session, updating a board this window
@@ -13,25 +13,41 @@ import { newConversation, useMission, writeMission } from "../lib/session.ts";
 // mission's actions are approved and audited exactly like any other (the reviewable
 // audit trail the exit criterion names, 10.7) - a mission is not a bypass.
 
-// Turn-number space for mission runs. Above the widget's small per-webview counter
-// and below the unattended space (1<<40), so a mission dispatch can never collide
-// with an interactive or scheduled turn in the shared Rust turns map.
-let missionTurn = 1_000_000;
+// Turn-number space for mission runs (B3.7). Seeded from a monotonic per-load base
+// (above the widget's interactive band, below the unattended space at 2^40), so a
+// webview reload never reuses a number still registered in the shared Rust turns
+// map - a reuse would replace a live Sender and orphan the resident.
+let missionTurn = missionTurnBase();
 
 const decomposePrompt = (outcome: string): string =>
   "Break this outcome into a short, ordered checklist of concrete tasks, each doable on its own. " +
   "Reply with ONLY a numbered list - one task per line, no preamble, no closing remarks.\n\n" +
   `Outcome: ${outcome}`;
 
+/** One turn's structured reply from the Rust `run_agent` command (B3.4). */
+type TurnReply = { text: string; isError: boolean };
+
 /** Run a mission end to end: decompose the outcome into tasks, then dispatch each as
  *  its own fresh session (Phase 19.1 "sequential sessions per task"), advancing the
  *  shared board after each. Each `run_agent` streams into the conversation view and
- *  goes through the normal gate + audit log. Stops early if `isCancelled` flips. */
-async function runMission(outcome: string, isCancelled: () => boolean): Promise<void> {
-  const listReply = await invoke<string>("run_agent", { transcript: decomposePrompt(outcome), turn: missionTurn++ });
-  let mission = newMission(outcome, parseTaskList(listReply));
+ *  goes through the normal gate + audit log. Stops early if `isCancelled` flips.
+ *  `activeTurnRef` tracks the in-flight turn so Stop can cancel it (B3.5); `persist`
+ *  saves + broadcasts the board. */
+async function runMission(
+  outcome: string,
+  isCancelled: () => boolean,
+  activeTurnRef: { current: number },
+  persist: (m: Mission | null) => Promise<void>,
+): Promise<void> {
+  // Decompose in a FRESH conversation (B3.6) so leftover context from a prior chat
+  // doesn't contaminate the plan (tasks already each get their own session below).
+  await newConversation();
+  const decomposeTurn = (activeTurnRef.current = missionTurn++);
+  const listReply = await invoke<TurnReply>("run_agent", { transcript: decomposePrompt(outcome), turn: decomposeTurn });
+  if (isCancelled()) return;
+  let mission = newMission(outcome, parseTaskList(listReply.text));
   if (!mission) throw new Error("I couldn't break that outcome into tasks. Try rephrasing it.");
-  await writeMission(mission);
+  await persist(mission);
 
   // Dispatch in list order; advanceMission walks the active pointer to match.
   for (let i = 0; i < mission.tasks.length; i++) {
@@ -39,12 +55,15 @@ async function runMission(outcome: string, isCancelled: () => boolean): Promise<
     await newConversation(); // a fresh session per task, so tasks don't bleed context
     let ok = true;
     try {
-      await invoke<string>("run_agent", { transcript: mission.tasks[i].title, turn: missionTurn++ });
+      const turn = (activeTurnRef.current = missionTurn++);
+      const result = await invoke<TurnReply>("run_agent", { transcript: mission.tasks[i].title, turn });
+      ok = !result.isError; // a brain-flagged error fails the task (B3.4)
     } catch {
       ok = false; // a failed task doesn't abort the mission - work the rest, finish "failed"
     }
+    if (isCancelled()) return; // stopped during the run: Stop already closed the board
     mission = advanceMission(mission, ok);
-    await writeMission(mission);
+    await persist(mission);
   }
 }
 
@@ -54,6 +73,15 @@ export function MissionBoard() {
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const cancelRef = useRef(false);
+  // The in-flight mission turn (so Stop can cancel it) and the latest persisted
+  // board (so Stop can close it without a stale-closure copy).
+  const activeTurnRef = useRef(0);
+  const workingRef = useRef<Mission | null>(null);
+
+  const persist = async (m: Mission | null) => {
+    workingRef.current = m;
+    await writeMission(m);
+  };
 
   const start = async () => {
     const o = outcome.trim();
@@ -62,13 +90,24 @@ export function MissionBoard() {
     setError(null);
     cancelRef.current = false;
     try {
-      await runMission(o, () => cancelRef.current);
+      await runMission(o, () => cancelRef.current, activeTurnRef, persist);
       setOutcome("");
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      // A user Stop is not an error to surface; a real failure is.
+      if (!cancelRef.current) setError(e instanceof Error ? e.message : String(e));
     } finally {
       setRunning(false);
     }
+  };
+
+  // Stop actually stops (B3.5): cancel the in-flight turn so it stops spending
+  // tokens (the 11.3 fix, previously reintroduced), and close the board to `failed`
+  // so it isn't stuck "active" forever and the Clear button renders.
+  const stop = () => {
+    cancelRef.current = true;
+    void cancelAgent(activeTurnRef.current);
+    const m = workingRef.current;
+    if (m && m.status === "active") void persist(stopMission(m));
   };
 
   return (
@@ -88,7 +127,7 @@ export function MissionBoard() {
             {running ? "Working the mission…" : "Start mission"}
           </button>
           {running && (
-            <button className="danger" onClick={() => (cancelRef.current = true)}>
+            <button className="danger" onClick={stop}>
               Stop
             </button>
           )}

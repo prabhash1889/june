@@ -56,7 +56,21 @@ Goal: normal interaction (typing in settings, correcting a transcript) never kil
 
 **Exit:** type a full schedule + dictionary entry by hand in Settings while a turn runs - the turn completes and the entry persists; correct a transcript and Send - the corrected command executes; a hands-free error self-recovers; dictation mode always shows its state.
 
-## Phase B3 - Autonomy & missions: unattended paths are correct, not just safe
+## Phase B3 - Autonomy & missions: unattended paths are correct, not just safe  ✅ DONE (2026-07-20)
+
+**Status:** all of B3.1-B3.9 landed. Suite green: 183/183 TS tests (was 179, +4 regression tests for B3.5/B3.9), 17/17 Rust (was 15, +2 for B3.1/B3.2), `npm run typecheck` (all 6 tsconfigs), `eslint .` (zero warnings), `cargo clippy --all-targets` (clean), production `vite build` (chunks stay code-split). The watchdog is now an idle-silence window reset by any reader event; `run_agent` returns a structured `{text, isError}` so a failed mission task fails; the trigger baseline no longer advances when a change is deferred; and memory/lessons ride the same forge-stripped fence as trigger payloads.
+
+- **B3.1 File-trigger events lost while busy** ✅ - the mtime baseline logic moved into a pure `trigger_action(prev, modified, busy)` reducer (`scheduler.rs`): a change while busy is `Ignore`d WITHOUT advancing the baseline, and the baseline advances only after a run actually dispatches, so a change during a user turn re-fires on the next idle tick. Rust test `defers_a_change_while_busy_without_losing_it`.
+- **B3.2 Watchdog kills healthy long turns** ✅ - `WATCHDOG` is now an idle-silence window, not a wall-clock cap. A new `TurnMsg::Activity` ping is sent on every `text`/`tool`/`result`/`approval` reader event; `await_turn(rx, idle)` resets the deadline on each, returning only on `Done` or true silence. Rust test `await_turn_extends_on_activity_but_times_out_on_silence` (activity over 240ms survives a 120ms idle window; real silence still times out).
+- **B3.3 Scheduler busy-check races the user** ✅ - `run_unattended` now calls `ensure_resident` FIRST (the multi-second spawn), THEN re-checks busy atomically with claiming the turn slot; if a user/mission turn slipped in it returns `Ok(None)` (deferred). `fire` returns whether it dispatched, and the scheduler advances `fired`/baseline only on a real dispatch, so a deferred run retries next tick.
+- **B3.4 Failed mission tasks count as done** ✅ - `run_agent` now returns a structured `TurnReply { text, isError }` (voice still speaks the text; the flag rides alongside). `runMission` passes `!isError` to `advanceMission`, so a brain-flagged task shows ✕ and the mission finishes `failed`.
+- **B3.5 Mission Stop neither cancels nor closes** ✅ - Stop now calls `cancelAgent(activeTurnRef.current)` to halt token spend and `stopMission(board)` (new pure reducer) to mark the active task failed + close the mission `failed`, so the Clear button renders. Regression tests for `stopMission`.
+- **B3.6 Mission decomposition runs in the existing conversation** ✅ - `runMission` calls `newConversation()` before the decomposition turn, so a prior chat can't contaminate the plan.
+- **B3.7 Turn-counter collision on webview reload** ✅ - counters seed from monotonic per-load bases (`interactiveTurnBase()` / `missionTurnBase()` in `session.ts`, ms since a fixed epoch), kept ordered below the Rust unattended space (2^40), so a reload never reuses a number still registered in the shared `turns` map.
+- **B3.8 Unbounded trigger-file read** ✅ - `read_trigger_head` reads only the first 64 KiB of a watched file (comfortably above the TS 4000-char cap), so a multi-GB log can't balloon memory.
+- **B3.9 Fence memory/lessons injection** ✅ - the fence-strip is extracted as `fenceUntrusted` in `schedules.ts` (uncapped; `quarantine` layers the cap on top for trigger payloads). `withMemory` and `withRecalledLessons` now wrap injected file content in it, so a poisoned entry is read as data, never obeyed. Regression tests for `fenceUntrusted`.
+
+<details><summary>Original findings</summary>
 
 - **B3.1 File-trigger events lost while busy** (`src-tauri/src/scheduler.rs:195-201`). The mtime baseline updates *before* the busy-check `continue`, so a change during a user turn never fires. Fix: don't advance the baseline when deferring. Rust test: change-while-busy fires next tick.
 - **B3.2 Watchdog kills healthy long turns** (`agent_runner.rs:35, 642-660, 711-725`). Fixed 180s wall-clock per turn; one 120s approval plus real work can't fit, and the timeout path `shutdown()`s the resident, destroying conversation memory. Fix: event-driven deadline - any reader event for the turn (`text`/`tool`/`approval`) resets it. Rust test: events extend the deadline; true silence still times out.
@@ -67,6 +81,8 @@ Goal: normal interaction (typing in settings, correcting a transcript) never kil
 - **B3.7 Turn-counter collision on webview reload** (`MissionBoard.tsx:19`, `VoicePanel.tsx:66`). Counters reset on reload; a reused number replaces the live `Sender` in the shared `turns` map and the orphan path `shutdown()`s the resident. Fix: seed counters from a monotonic source (e.g. ms-since-epoch base per window load).
 - **B3.8 Unbounded trigger-file read** (`scheduler.rs:203`). `read_to_string` of a multi-GB log balloons memory before the TS 4000-char cap. Fix: read only the first N KB in Rust.
 - **B3.9 Fence memory/lessons injection** (`agent/prompt.ts:25-33`, `serve.ts:83-88`). File contents (which the model itself wrote) are injected into prompts unfenced - persistent-injection defense-in-depth is one reuse of `frameUnattended`'s fence-strip away. Fix: wrap `withMemory`/`withRecalledLessons` content in the same forge-stripped fence.
+
+</details>
 
 **Exit:** a file change during a user turn fires on the next tick; a 4-minute turn with one approval completes; a failed mission task shows ✕ and the mission finishes `failed`; Stop provably stops token spend.
 
