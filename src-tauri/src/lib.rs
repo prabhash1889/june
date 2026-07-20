@@ -2,6 +2,7 @@ mod agent_runner;
 mod dictation;
 mod diagnostics;
 mod keychain;
+mod scheduler;
 mod settings;
 mod stt;
 mod tts;
@@ -31,10 +32,21 @@ pub fn run() {
     }
 
     builder
+        // OS notifications for unattended runs (Phase 18.1/18.2). Called from Rust
+        // only (the scheduler), so no JS capability is needed.
+        .plugin(tauri_plugin_notification::init())
         // The live agent turn's approval channel, shared by the run loop and the
         // resolve/pending commands (Phase 6 approval round-trip).
         .manage(agent_runner::AgentSession::default())
         .setup(|app| {
+            // Autonomy (Phase 18): a background thread fires due scheduled runs and
+            // file-triggers as unattended agent turns. The session is `.manage`d
+            // above, so the state is available here.
+            {
+                use tauri::Manager;
+                let session = app.state::<agent_runner::AgentSession>().inner().clone();
+                scheduler::start(app.handle().clone(), session);
+            }
             // Tray presence (Phase 0 exit criterion): an icon in the system tray for the
             // whole app lifetime, independent of any window being open. Left-click
             // brings the widget to front; right-click offers the full window and quit.

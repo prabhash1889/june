@@ -36,6 +36,7 @@ import { stdin, stdout } from "node:process";
 
 import { recallLessons } from "../mcp/lessons/store.ts";
 import { coerceMcpServers, resolveMcpEntries, serverDefaults } from "../src/lib/mcp-servers.ts";
+import { frameUnattended } from "../src/lib/schedules.ts";
 import { type PrivacyMode, providerAllowed } from "../src/lib/privacy.ts";
 import { resolveProvider } from "../src/lib/providers.ts";
 import { type ToolGate } from "./brain.ts";
@@ -100,6 +101,18 @@ function brainConfig(): { provider: string; model?: string; baseUrl?: string; ap
   };
 }
 
+/** One `{"type":"run",...}` request. `unattended`/`source`/`untrusted` are set only
+ *  by the host's scheduler/trigger path (Phase 18); an interactive turn omits them. */
+interface RunRequest {
+  turn: number;
+  transcript?: string;
+  unattended?: boolean;
+  /** Where an unattended run came from, e.g. "schedule: Briefing" / "trigger: Errors". */
+  source?: string;
+  /** A trigger's watched-file contents - UNTRUSTED external data (18.3). */
+  untrusted?: string;
+}
+
 /** A gated tool call awaiting a decision, keyed by approval id and tagged with
  *  the turn that raised it (so cancelling a turn self-denies only its own). */
 interface Waiter {
@@ -133,8 +146,15 @@ function auditCall(
 
 /** The execution-layer gate for one turn. Ungated actions auto-run (still
  *  audited); gated ones emit an `approval` and block on a `{approve}` decision,
- *  failing closed on timeout. `JUNE_APPROVE` still forces a headless policy. */
-function makeGate(turn: number): ToolGate {
+ *  failing closed on timeout. `JUNE_APPROVE` still forces a headless policy.
+ *
+ *  `unattended` (Phase 18.2) is the leash for scheduled/triggered runs: a gated
+ *  action is BLOCKED immediately - never auto-approved, no blanket approvals, no
+ *  120s wait for a click no one will make. It is audited (approver "unattended")
+ *  and a `blocked` event fires so the host can notify. This check comes FIRST, so
+ *  even a `JUNE_APPROVE=allow` override can't approve a gated action on an
+ *  unattended run. The audit log is the reviewable record of what the run did. */
+function makeGate(turn: number, unattended = false): ToolGate {
   const override = process.env.JUNE_APPROVE?.toLowerCase();
   const mode = process.env.JUNE_PRIVACY_MODE;
 
@@ -142,6 +162,11 @@ function makeGate(turn: number): ToolGate {
     if (!isGated(call.cls)) {
       auditCall(turn, call, "allow", "auto", mode);
       return { allow: true };
+    }
+    if (unattended) {
+      auditCall(turn, call, "deny", "unattended", mode);
+      emit({ t: "blocked", turn, action: call.action, summary: call.summary });
+      return { allow: false, reason: "Blocked: this action needs approval and the run was unattended." };
     }
     if (override === "allow") {
       auditCall(turn, call, "allow", "policy", mode);
@@ -248,7 +273,7 @@ async function main(): Promise<void> {
   let activeTurn: number | null = null;
   let chain: Promise<void> = Promise.resolve();
 
-  async function runTurn(turn: number, transcript: string): Promise<void> {
+  async function runTurn(turn: number, transcript: string, run: RunRequest): Promise<void> {
     activeTurn = turn;
     try {
       if (brainBlocked) {
@@ -260,11 +285,17 @@ async function main(): Promise<void> {
         emit({ t: "final", turn, text: "I did not catch a command.", isError: true });
         return;
       }
+      // Unattended runs (18.2/18.3) are framed: the task is wrapped with a "no one
+      // is watching" header, and a trigger's untrusted payload is fenced off as
+      // data-to-investigate, never instructions (the gate is the real leash).
+      const framed = run.unattended
+        ? frameUnattended(text, run.source ?? "unattended", run.untrusted)
+        : text;
       // Pre-run recall (17.2): inject the top-k lessons relevant to this task. Read
       // fresh so a lesson recorded earlier this session is available now.
-      const prompt = withRecalledLessons(text, await readLessons(lessonsFile));
+      const prompt = withRecalledLessons(framed, await readLessons(lessonsFile));
       const result = await agent.run(prompt, {
-        gate: makeGate(turn),
+        gate: makeGate(turn, run.unattended),
         onText: (delta) => emit({ t: "text", turn, delta }),
         onToolUse: (c) => emit({ t: "tool", turn, action: c.action, input: c.input }),
         onToolResult: (action, res, isError) => emit({ t: "result", turn, action, res, isError }),
@@ -283,7 +314,8 @@ async function main(): Promise<void> {
     }
   }
 
-  function handleRun(turn: number, transcript: string): void {
+  function handleRun(run: RunRequest): void {
+    const turn = run.turn;
     // Preempt an active turn (barge-in) so the new command never queues behind an
     // abandoned one: cancel the brain and self-deny the old turn's pending gate,
     // then chain this turn after the old one unwinds.
@@ -291,12 +323,12 @@ async function main(): Promise<void> {
       agent.cancel();
       denyWaitersFor(activeTurn);
     }
-    chain = chain.then(() => runTurn(turn, transcript));
+    chain = chain.then(() => runTurn(turn, run.transcript ?? "", run));
   }
 
   const reader: Interface = createInterface({ input: stdin });
   reader.on("line", (line) => {
-    let req: { type?: string; turn?: number; transcript?: string; approvalId?: number; decision?: string };
+    let req: RunRequest & { type?: string; approvalId?: number; decision?: string };
     try {
       req = JSON.parse(line);
     } catch {
@@ -304,7 +336,7 @@ async function main(): Promise<void> {
     }
     switch (req.type) {
       case "run":
-        if (typeof req.turn === "number") handleRun(req.turn, req.transcript ?? "");
+        if (typeof req.turn === "number") handleRun(req);
         break;
       case "approve": {
         if (typeof req.approvalId !== "number") break;

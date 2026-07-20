@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 
 import { coerceMcpServers, type McpServerEntry } from "./mcp-servers.ts";
 import { type PrivacyMode, providerAllowed } from "./privacy.ts";
+import { coerceSchedules, coerceTriggers, type FileTrigger, type Schedule } from "./schedules.ts";
 import { PROVIDERS, resolveProvider, type Stage } from "./providers.ts";
 import type { TermMap } from "./transcript.ts";
 
@@ -84,6 +85,10 @@ export interface JuneSettings {
   /** User-added MCP capability servers (Phase 13). Empty by default: June ships
    *  with only its built-in capabilities; the user adds any others here. */
   mcpServers: McpServerEntry[];
+  /** Scheduled unattended runs (Phase 18.1). Empty by default; each is opt-in. */
+  schedules: Schedule[];
+  /** File-watch triggers (Phase 18.3). Empty by default; each is opt-in. */
+  triggers: FileTrigger[];
 }
 
 export const DEFAULT_SETTINGS: JuneSettings = {
@@ -98,6 +103,8 @@ export const DEFAULT_SETTINGS: JuneSettings = {
   transcript: { autoEdit: false, dictionary: {}, snippets: {} },
   files: { enabled: false, root: "" },
   mcpServers: [],
+  schedules: [],
+  triggers: [],
 };
 
 /** Raw bag persisted by Rust. Kept alongside the typed view so a save can merge
@@ -185,6 +192,8 @@ function coerce(raw: RawSettings): JuneSettings {
       root: str(files.root, d.files.root),
     },
     mcpServers: coerceMcpServers(raw.mcpServers),
+    schedules: coerceSchedules(raw.schedules),
+    triggers: coerceTriggers(raw.triggers),
   };
 }
 

@@ -16,6 +16,7 @@ import {
   slugify,
 } from "../lib/mcp-servers.ts";
 import { PRIVACY_MODES, type PrivacyMode } from "../lib/privacy.ts";
+import { type FileTrigger, type Schedule } from "../lib/schedules.ts";
 import {
   defaultVoiceFor,
   keyedProviders,
@@ -107,6 +108,7 @@ export function SettingsPanel() {
       <MemorySection />
       <LessonsSection />
       <CapabilitiesSection settings={settings} update={update} />
+      <AutomationSection settings={settings} update={update} />
       <DiagnosticsSection />
     </div>
   );
@@ -1044,6 +1046,145 @@ function McpServerCard({
         </select>
       </div>
     </div>
+  );
+}
+
+// --- Automation (Phase 18) ------------------------------------------------
+// Scheduled runs and file-watch triggers. Both fire UNATTENDED: any action that
+// needs approval is blocked automatically (18.2), never auto-approved, and the
+// audit log records everything the run did. All opt-in, off by default.
+
+const DAY_LABELS = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
+
+function AutomationSection({ settings, update }: { settings: JuneSettings; update: (s: JuneSettings) => void }) {
+  const { schedules, triggers } = settings;
+
+  const setSchedules = (next: Schedule[]) => update({ ...settings, schedules: next });
+  const setTriggers = (next: FileTrigger[]) => update({ ...settings, triggers: next });
+
+  const freshId = (base: string, taken: { id: string }[]): string => {
+    if (!taken.some((t) => t.id === base)) return base;
+    for (let n = 2; ; n++) if (!taken.some((t) => t.id === `${base}-${n}`)) return `${base}-${n}`;
+  };
+
+  const addSchedule = () =>
+    setSchedules([
+      ...schedules,
+      { id: freshId("schedule", schedules), label: "New schedule", prompt: "", time: "09:00", days: [], enabled: false },
+    ]);
+  const addTrigger = () =>
+    setTriggers([
+      ...triggers,
+      { id: freshId("trigger", triggers), label: "New trigger", path: "", prompt: "", enabled: false },
+    ]);
+
+  const patchSchedule = (id: string, p: Partial<Schedule>) =>
+    setSchedules(schedules.map((s) => (s.id === id ? { ...s, ...p } : s)));
+  const patchTrigger = (id: string, p: Partial<FileTrigger>) =>
+    setTriggers(triggers.map((t) => (t.id === id ? { ...t, ...p } : t)));
+
+  return (
+    <section className="settings-section">
+      <h2>Automation</h2>
+      <p className="settings-hint">
+        June can run on a schedule or when a file changes - <strong>unattended</strong>. Any action that needs approval is
+        blocked automatically and you're notified; June never approves its own actions. Every run is in the audit log.
+      </p>
+
+      <h3 className="settings-subhead">Scheduled runs</h3>
+      {schedules.map((s) => (
+        <div key={s.id} className="stage-card">
+          <div className="stage-row">
+            <input
+              className="wide"
+              value={s.label}
+              onChange={(e) => patchSchedule(s.id, { label: e.target.value })}
+              placeholder="Morning briefing"
+            />
+            <label className="wake-toggle">
+              <input type="checkbox" checked={s.enabled} onChange={(e) => patchSchedule(s.id, { enabled: e.target.checked })} />
+              <span>Enabled</span>
+            </label>
+            <button onClick={() => setSchedules(schedules.filter((x) => x.id !== s.id))}>Remove</button>
+          </div>
+          <div className="stage-row">
+            <span className="stage-label">At</span>
+            <input type="time" value={s.time} onChange={(e) => patchSchedule(s.id, { time: e.target.value || "09:00" })} />
+            <span className="settings-hint">
+              {DAY_LABELS.map((lbl, d) => {
+                const on = s.days.includes(d);
+                return (
+                  <button
+                    key={d}
+                    className={on ? "day-on" : "day-off"}
+                    onClick={() =>
+                      patchSchedule(s.id, {
+                        days: on ? s.days.filter((x) => x !== d) : [...s.days, d].sort((a, b) => a - b),
+                      })
+                    }
+                  >
+                    {lbl}
+                  </button>
+                );
+              })}
+              {s.days.length === 0 ? " every day" : ""}
+            </span>
+          </div>
+          <textarea
+            className="memory-text"
+            value={s.prompt}
+            onChange={(e) => patchSchedule(s.id, { prompt: e.target.value })}
+            placeholder="Give me a short briefing of today's calendar and any unread priority mail."
+            rows={2}
+          />
+        </div>
+      ))}
+      <div className="settings-test">
+        <button onClick={addSchedule}>Add schedule</button>
+      </div>
+
+      <h3 className="settings-subhead">File triggers</h3>
+      <p className="settings-hint">
+        When the watched file changes, June opens an investigation with the file's new contents as context. That content is
+        treated as <strong>untrusted</strong> - information only, never instructions - and can never authorize an action.
+      </p>
+      {triggers.map((t) => (
+        <div key={t.id} className="stage-card">
+          <div className="stage-row">
+            <input
+              className="wide"
+              value={t.label}
+              onChange={(e) => patchTrigger(t.id, { label: e.target.value })}
+              placeholder="Error log watch"
+            />
+            <label className="wake-toggle">
+              <input type="checkbox" checked={t.enabled} onChange={(e) => patchTrigger(t.id, { enabled: e.target.checked })} />
+              <span>Enabled</span>
+            </label>
+            <button onClick={() => setTriggers(triggers.filter((x) => x.id !== t.id))}>Remove</button>
+          </div>
+          <div className="stage-row">
+            <span className="stage-label">Watch file</span>
+            <input
+              className="wide"
+              value={t.path}
+              onChange={(e) => patchTrigger(t.id, { path: e.target.value })}
+              placeholder="C:\logs\app\error.log"
+            />
+          </div>
+          <textarea
+            className="memory-text"
+            value={t.prompt}
+            onChange={(e) => patchTrigger(t.id, { prompt: e.target.value })}
+            placeholder="Summarize the newest error and suggest a likely cause."
+            rows={2}
+          />
+        </div>
+      ))}
+      <div className="settings-test">
+        <button onClick={addTrigger}>Add trigger</button>
+      </div>
+    </section>
   );
 }
 

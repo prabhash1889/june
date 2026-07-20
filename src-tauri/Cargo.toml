@@ -27,6 +27,11 @@ tauri-plugin-global-shortcut = "2"
 # app via the OS input path (SendInput on Windows). User-initiated PTT only - the
 # agent never drives this, so it stays on the right side of PLAN §8.
 enigo = "0.2"
+# Scheduler (Phase 18.1): local wall-clock (HH:MM / weekday) for "is this run due
+# now?". Already in the tree transitively; named here for the Local clock.
+chrono = "0.4"
+# OS notification when an unattended run finishes or pauses (Phase 18.1/18.2).
+tauri-plugin-notification = "2"
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 # Opening the app again focuses the existing window instead of starting a second process.

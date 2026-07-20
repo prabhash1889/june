@@ -140,6 +140,11 @@ const MAX_LATENCY: usize = 100;
 /// the oldest events fall off first. Bump if long sessions truncate too soon.
 const MAX_EVENTS: usize = 500;
 
+/// Turn-number space for unattended (scheduled/triggered) runs (Phase 18). Kept far
+/// above the widget's small per-webview turn counter so a scheduled run can never
+/// collide with an interactive turn in the shared `turns`/`pending` maps.
+static UNATTENDED_TURN: AtomicU64 = AtomicU64::new(1 << 40);
+
 /// Stamp `payload.seq`, append the event to the session log (capped), and
 /// return the stamped payload for broadcasting.
 fn record_event(
@@ -490,6 +495,17 @@ fn spawn_reader(session: AgentSession, app: AppHandle, stdout: std::process::Chi
                     }
                 }
                 Some("audit") => append_audit(&app, &v),
+                Some("blocked") => {
+                    // Phase 18.2: an unattended run hit a gated action and blocked it
+                    // (never auto-approved). Notify so the user knows a scheduled run
+                    // needs their attention; the audit log holds the full record.
+                    let summary = str_at("summary");
+                    crate::scheduler::notify(
+                        &app,
+                        "June paused an unattended action",
+                        if summary.is_empty() { "An action needs your approval." } else { &summary },
+                    );
+                }
                 Some("final") => {
                     let text = str_at("text");
                     let is_error = v.get("isError").and_then(|b| b.as_bool()).unwrap_or(false);
@@ -636,6 +652,71 @@ pub async fn run_agent(
             record(
                 &session,
                 &app,
+                "agent://final",
+                serde_json::json!({ "turn": turn, "text": msg, "isError": true }),
+            );
+            Err(msg)
+        }
+    }
+}
+
+impl AgentSession {
+    /// True if a turn is in flight or an approval is pending. The scheduler (Phase
+    /// 18) checks this before firing so an unattended run never preempts (barges in
+    /// on) an interactive turn the user is in the middle of - it just waits for the
+    /// next tick. Also serializes unattended runs against each other.
+    pub fn is_busy(&self) -> bool {
+        !self.turns.lock().unwrap().is_empty() || self.pending.lock().unwrap().is_some()
+    }
+}
+
+/// Run one UNATTENDED turn to completion and return June's reply text (Phase 18).
+/// Blocking - called from the scheduler thread, which serializes these so they
+/// never preempt each other. Reuses the resident and the per-turn delivery channel;
+/// the run request carries `unattended:true` so serve.ts blocks every gated action
+/// (18.2). `source` labels the origin ("schedule: X" / "trigger: Y"); `untrusted`
+/// is a trigger's watched-file contents, fenced off in the prompt as data (18.3).
+/// The user message and final reply land in the shared session log ("results land
+/// in the session log", 18.1). ponytail: the unattended turn shares the resident's
+/// one conversation; a scheduled run fires when idle, so pollution is rare - an
+/// isolated second resident is the upgrade if it ever bites.
+pub fn run_unattended(
+    app: &AppHandle,
+    session: &AgentSession,
+    prompt: String,
+    source: String,
+    untrusted: Option<String>,
+) -> Result<String, String> {
+    let turn = UNATTENDED_TURN.fetch_add(1, Ordering::Relaxed);
+
+    let (tx, rx): (Sender<TurnResult>, Receiver<TurnResult>) = std::sync::mpsc::channel();
+    session.turns.lock().unwrap().insert(turn, tx);
+
+    // Show the run's origin (not the whole prompt) in the shared session log.
+    record(session, app, "agent://user", serde_json::json!({ "turn": turn, "text": format!("[{source}]") }));
+
+    let mut req = serde_json::json!({
+        "type": "run", "turn": turn, "transcript": prompt, "unattended": true, "source": source,
+    });
+    if let Some(u) = untrusted {
+        req["untrusted"] = serde_json::Value::String(u);
+    }
+
+    let dispatch = ensure_resident(app, session).and_then(|_| write_request(session, &req));
+    if let Err(e) = dispatch {
+        session.turns.lock().unwrap().remove(&turn);
+        return Err(e);
+    }
+
+    match rx.recv_timeout(WATCHDOG) {
+        Ok(result) => result,
+        Err(_) => {
+            session.turns.lock().unwrap().remove(&turn);
+            session.shutdown();
+            let msg = "The unattended run did not respond in time.".to_string();
+            record(
+                session,
+                app,
                 "agent://final",
                 serde_json::json!({ "turn": turn, "text": msg, "isError": true }),
             );
