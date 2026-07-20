@@ -146,7 +146,8 @@ export async function createWakeRunners(
   classifierFile = "hey_jarvis_v0.1.onnx",
 ): Promise<WakeRunners> {
   const ort = await import("onnxruntime-web/wasm");
-  ort.env.wasm.wasmPaths = "/models/ort/";
+  const { ORT_WASM_PATHS } = await import("./ort-assets.ts");
+  ort.env.wasm.wasmPaths = ORT_WASM_PATHS; // Vite-served assets, not /public (dev-safe)
   ort.env.wasm.numThreads = 1; // the webview has no cross-origin isolation (no SharedArrayBuffer)
 
   const base = "/models/wake/";

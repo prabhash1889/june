@@ -19,16 +19,27 @@
 
 import { env } from "@huggingface/transformers";
 
+// transformers.js bundles its own jsep onnxruntime and defaults its wasm to
+// jsdelivr; point it at the copies staged in /public (fetch-models) as FULL-ORIGIN
+// URLs instead, so inference is offline and the `.mjs` glue is served without
+// tripping Vite dev's /public import guard (same reasoning as ort-assets.ts).
+const XF_BASE = "/models/xformers/";
+const xfUrl = (file: string): string =>
+  typeof location !== "undefined" ? new URL(XF_BASE + file, location.origin).href : XF_BASE + file;
+
 let configured = false;
 
-/** Point transformers.js at the locally-staged ORT wasm and pin one thread.
+/** Point transformers.js at the staged ORT wasm and pin one thread.
  *  Idempotent; called lazily the first time a local model is loaded. */
 export function configureXformers(): void {
   if (configured) return;
   configured = true;
   const wasm = env.backends?.onnx?.wasm;
   if (wasm) {
-    wasm.wasmPaths = "/models/xformers/";
+    wasm.wasmPaths = {
+      wasm: xfUrl("ort-wasm-simd-threaded.jsep.wasm"),
+      mjs: xfUrl("ort-wasm-simd-threaded.jsep.mjs"),
+    };
     wasm.numThreads = 1;
   }
   // Weights come from the HF hub (cached in the browser), not a local dir.

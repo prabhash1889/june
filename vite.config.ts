@@ -7,9 +7,11 @@ export default defineConfig({
   plugins: [react()],
   clearScreen: false,
   // Phase 12: use onnxruntime-web's external-wasm build so Vite doesn't inline the
-  // ~13MB ORT wasm into the bundle. The wasm is served from public/models/ort/
-  // (staged by scripts/fetch-models.mjs) via ort.env.wasm.wasmPaths, so it stays a
-  // single offline copy instead of being duplicated in dist.
+  // ~13MB ORT wasm into the bundle. The wasm/mjs are served from public/models/
+  // (staged by scripts/fetch-models.mjs) via ort.env.wasm.wasmPaths as FULL-origin
+  // URLs (ort-assets.ts / xformers.ts) - a full http URL is external to Vite, so its
+  // dev server serves the /public files directly instead of tripping the "don't
+  // import /public from source" guard that a root-relative path would.
   // (defaults kept explicitly - `conditions` replaces Vite's default list, and
   // dropping `browser`/`module` would mis-resolve other deps at runtime.)
   resolve: { conditions: ["module", "browser", "development|production", "onnxruntime-web-use-extern-wasm"] },

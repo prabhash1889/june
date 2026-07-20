@@ -24,26 +24,24 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const out = join(root, "public", "models");
 const nm = join(root, "node_modules");
 
-// Silero VAD v5 (12.1) + the onnxruntime-web CPU wasm ship inside our own
-// dependencies - copy, don't download. Only the wasm backend that MicVAD and the
-// wake models actually use (simd-threaded, forced to 1 thread since the webview
-// has no cross-origin isolation) is staged; the jsep/webgpu variant is skipped.
+// The Silero model + audio worklet (12.1) are FETCHed at runtime by vad-web, so
+// they belong in /public. The onnxruntime wasm loaders (for our 1.27 ORT and the
+// one transformers.js bundles) are NOT staged here: they are imported as Vite
+// `?url` assets (src/lib/ort-assets.ts, src/lib/xformers.ts) so Vite serves the
+// `.mjs` loader through the module graph in both dev and prod - a /public copy
+// fails Vite dev's "don't import public files from source" guard.
 const copies = [
   ["@ricky0123/vad-web/dist/silero_vad_v5.onnx", "vad/silero_vad_v5.onnx"],
   ["@ricky0123/vad-web/dist/vad.worklet.bundle.min.js", "vad/vad.worklet.bundle.min.js"],
+  // onnxruntime-web wasm loader (1.27) for VAD + wake. Both the .wasm binary and the
+  // .mjs glue are staged; ort-assets.ts points ORT at them as full-origin URLs so
+  // the .mjs `import()` is served without tripping Vite dev's /public guard.
   ["onnxruntime-web/dist/ort-wasm-simd-threaded.wasm", "ort/ort-wasm-simd-threaded.wasm"],
   ["onnxruntime-web/dist/ort-wasm-simd-threaded.mjs", "ort/ort-wasm-simd-threaded.mjs"],
-  // Phase 12.3/12.4: transformers.js (local STT/TTS) bundles its own onnxruntime
-  // build and defaults its wasm to jsdelivr; stage that wasm locally instead so
-  // inference is offline (xformers.ts points env.backends.onnx.wasm.wasmPaths here).
-  [
-    "@huggingface/transformers/dist/ort-wasm-simd-threaded.jsep.wasm",
-    "xformers/ort-wasm-simd-threaded.jsep.wasm",
-  ],
-  [
-    "@huggingface/transformers/dist/ort-wasm-simd-threaded.jsep.mjs",
-    "xformers/ort-wasm-simd-threaded.jsep.mjs",
-  ],
+  // transformers.js (local STT/TTS) bundles its own jsep onnxruntime; stage its wasm
+  // + mjs loader too (xformers.ts points env.backends.onnx.wasm.wasmPaths here).
+  ["@huggingface/transformers/dist/ort-wasm-simd-threaded.jsep.wasm", "xformers/ort-wasm-simd-threaded.jsep.wasm"],
+  ["@huggingface/transformers/dist/ort-wasm-simd-threaded.jsep.mjs", "xformers/ort-wasm-simd-threaded.jsep.mjs"],
 ];
 
 // openWakeWord (12.2): the shared melspectrogram + speech-embedding models and

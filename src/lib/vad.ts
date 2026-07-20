@@ -14,8 +14,9 @@
 
 import { MicVAD, type RealTimeVADOptions } from "@ricky0123/vad-web";
 
-const VAD_ASSET_PATH = "/models/vad/"; // silero_vad_v5.onnx + the audio worklet
-const ORT_WASM_PATH = "/models/ort/"; // onnxruntime-web wasm
+import { ORT_WASM_PATHS } from "./ort-assets.ts";
+
+const VAD_ASSET_PATH = "/models/vad/"; // silero_vad_v5.onnx + the audio worklet (fetched, /public is fine)
 
 export interface SileroCallbacks {
   /** Speech onset confirmed (survived `minSpeechMs`) - the barge-in / wake-arm signal. */
@@ -70,8 +71,10 @@ export async function startSilero(
     startOnLoad: true,
     model: "v5",
     baseAssetPath: VAD_ASSET_PATH,
-    onnxWASMBasePath: ORT_WASM_PATH,
     ortConfig: (ort) => {
+      // vad-web sets wasmPaths from onnxWASMBasePath first, then calls this, so
+      // pointing ORT at the Vite-served wasm assets here wins over any /public path.
+      ort.env.wasm.wasmPaths = ORT_WASM_PATHS;
       ort.env.wasm.numThreads = 1; // no cross-origin isolation in the webview
     },
     // Fire onset only once the segment survives `minSpeechMs` (SpeechRealStart),
