@@ -15,6 +15,7 @@
 
 import { pipeline, type AutomaticSpeechRecognitionPipeline } from "@huggingface/transformers";
 
+import { clearModelProgress, reportModelProgress, type XformersProgress } from "./model-progress.ts";
 import { configureXformers } from "./xformers.ts";
 
 /** Moonshine base: the doc's primary. The registry offers tiny as the faster
@@ -34,8 +35,19 @@ function getPipe(model: string): Promise<AutomaticSpeechRecognitionPipeline> {
     configureXformers();
     // The pipeline() overloads produce a union too large for tsc to represent;
     // this call site is the one place it's constructed, so narrow it here.
-    p = pipeline("automatic-speech-recognition", id, { device: "wasm" }) as unknown as Promise<AutomaticSpeechRecognitionPipeline>;
-    p.catch(() => pipes.delete(id));
+    p = pipeline("automatic-speech-recognition", id, {
+      device: "wasm",
+      // First run downloads ~190MB of weights; the widget shows the progress
+      // (improvement-5 P0.5) instead of hanging in "Transcribing…".
+      progress_callback: (info: XformersProgress) => reportModelProgress("speech-to-text model", info),
+    }) as unknown as Promise<AutomaticSpeechRecognitionPipeline>;
+    void p.then(
+      () => clearModelProgress(),
+      () => {
+        pipes.delete(id);
+        clearModelProgress();
+      },
+    );
     pipes.set(id, p);
   }
   return p;

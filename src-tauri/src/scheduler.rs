@@ -132,24 +132,55 @@ fn read_triggers(settings: &serde_json::Value) -> Vec<Trigger> {
         .unwrap_or_default()
 }
 
-/// Fire one unattended run and notify with the outcome. Blocking (runs the whole
-/// agent turn); called inline in the tick thread so unattended runs serialize.
-/// Returns true if the run actually DISPATCHED (ran or errored), false if it was
-/// DEFERRED because a user turn arrived while the resident spawned (B3.3) - the
-/// caller then leaves its `fired`/baseline marker untouched so the run retries on
-/// the next tick rather than being lost.
-fn fire(app: &AppHandle, session: &AgentSession, source: String, prompt: String, untrusted: Option<String>) -> bool {
+/// What one attempted unattended run did (improvement-5 P0.4): the caller decides
+/// what to record - a deferred run must retry next tick, an errored SCHEDULE gets
+/// a few retries before the day is given up, an errored TRIGGER is consumed.
+enum FireOutcome {
+    Ran,
+    /// A user turn slipped in during spawn (B3.3); retry next tick.
+    Deferred,
+    Errored(String),
+}
+
+/// How many failed attempts a schedule gets (one per 30s tick) before its day is
+/// given up. A transient brain/network failure must not cost the day's run.
+const MAX_ATTEMPTS: u32 = 3;
+
+/// Fold one schedule attempt into the per-id retry counter. Returns true when the
+/// schedule is DONE for today (ran, or errored out of attempts) - the caller then
+/// marks it fired. Pure so the retry rule is unit-tested without a clock.
+fn settle_attempt(attempts: &mut HashMap<String, u32>, id: &str, outcome: &FireOutcome) -> bool {
+    match outcome {
+        FireOutcome::Deferred => false,
+        FireOutcome::Ran => {
+            attempts.remove(id);
+            true
+        }
+        FireOutcome::Errored(_) => {
+            let n = attempts.entry(id.to_string()).or_insert(0);
+            *n += 1;
+            if *n >= MAX_ATTEMPTS {
+                attempts.remove(id);
+                true
+            } else {
+                false
+            }
+        }
+    }
+}
+
+/// Fire one unattended run. Blocking (runs the whole agent turn); called inline in
+/// the tick thread so unattended runs serialize. Success notifies here; a failure
+/// is returned so the caller can retry silently and notify only on giving up.
+fn fire(app: &AppHandle, session: &AgentSession, source: String, prompt: String, untrusted: Option<String>) -> FireOutcome {
     match run_unattended(app, session, prompt, source.clone(), untrusted) {
         Ok(Some(reply)) => {
             let body = if reply.trim().is_empty() { "Done.".to_string() } else { truncate(&reply, 240) };
             notify(app, &format!("June finished: {source}"), &body);
-            true
+            FireOutcome::Ran
         }
-        Ok(None) => false, // deferred: a user turn slipped in during spawn; retry next tick
-        Err(e) => {
-            notify(app, &format!("June couldn't finish: {source}"), &e);
-            true
-        }
+        Ok(None) => FireOutcome::Deferred,
+        Err(e) => FireOutcome::Errored(e),
     }
 }
 
@@ -214,17 +245,62 @@ fn truncate(s: &str, max: usize) -> String {
     out
 }
 
+/// Render the fired-today map for `june-scheduler.json` (sorted for determinism).
+/// Pure, so the roundtrip is unit-tested. Persisting this map (improvement-5 P0.4)
+/// stops a restart inside the 30-minute catch-up window from re-firing a schedule
+/// that already ran today.
+fn render_fired(fired: &HashMap<String, NaiveDate>) -> String {
+    let map: std::collections::BTreeMap<&String, String> = fired.iter().map(|(k, v)| (k, v.to_string())).collect();
+    serde_json::to_string(&map).unwrap_or_else(|_| "{}".to_string())
+}
+
+/// Parse a persisted fired-today map; garbage (missing file contents, bad JSON,
+/// malformed dates) reads as empty, which only risks the pre-persistence behaviour.
+fn parse_fired(s: &str) -> HashMap<String, NaiveDate> {
+    serde_json::from_str::<HashMap<String, String>>(s)
+        .map(|m| m.into_iter().filter_map(|(k, v)| v.parse().ok().map(|d| (k, d))).collect())
+        .unwrap_or_default()
+}
+
+/// `<app_data_dir>/june-scheduler.json` - NOT settings.json: a settings write
+/// respawns the resident, which a bookkeeping update must never do.
+fn state_file(app: &AppHandle) -> Option<std::path::PathBuf> {
+    use tauri::Manager;
+    let dir = app.path().app_data_dir().ok()?;
+    std::fs::create_dir_all(&dir).ok()?;
+    Some(dir.join("june-scheduler.json"))
+}
+
+fn load_fired(app: &AppHandle) -> HashMap<String, NaiveDate> {
+    state_file(app)
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .map(|s| parse_fired(&s))
+        .unwrap_or_default()
+}
+
+/// Best-effort atomic write (temp + rename, the same pattern as memory/lessons).
+/// A failed write only means restart-double-fire protection lapses until the next.
+fn save_fired(app: &AppHandle, fired: &HashMap<String, NaiveDate>) {
+    let Some(path) = state_file(app) else { return };
+    let tmp = path.with_extension("json.tmp");
+    let write = std::fs::write(&tmp, render_fired(fired).as_bytes()).and_then(|()| std::fs::rename(&tmp, &path));
+    if let Err(e) = write {
+        eprintln!("[scheduler] couldn't persist fired state: {e}");
+    }
+}
+
 /// Start the scheduler's background thread (Phase 18). Reads settings each tick, so
 /// added/edited schedules and triggers take effect on the next tick with no restart.
 /// A busy session (an interactive turn or a pending approval) defers this tick's
 /// fires so an unattended run never barges in on the user.
 pub fn start(app: AppHandle, session: AgentSession) {
     std::thread::spawn(move || {
-        // In-memory only (never settings.json - a settings write would respawn the
-        // resident mid-run). Lost on restart, which is fine: the catch-up window
-        // still fires a same-day schedule, and a first-seen file mtime is recorded
-        // without firing so enabling a trigger doesn't act on an already-old file.
-        let mut fired: HashMap<String, NaiveDate> = HashMap::new();
+        // Fired-today is persisted (june-scheduler.json, improvement-5 P0.4) so a
+        // restart inside the catch-up window can't re-fire a schedule that already
+        // ran. Trigger mtimes stay in-memory: a restart re-baselines them without
+        // firing, so enabling/relaunching never acts on an already-old file.
+        let mut fired: HashMap<String, NaiveDate> = load_fired(&app);
+        let mut attempts: HashMap<String, u32> = HashMap::new();
         let mut mtimes: HashMap<String, std::time::SystemTime> = HashMap::new();
 
         loop {
@@ -237,15 +313,24 @@ pub fn start(app: AppHandle, session: AgentSession) {
                     continue;
                 }
                 if !is_due(now, &sc.time, &sc.days, fired.get(&sc.id).copied()) {
+                    // Any half-spent retry budget is void once the window closes
+                    // (or the day turns), so it can't bleed into the next fire.
+                    attempts.remove(&sc.id);
                     continue;
                 }
                 if session.is_busy() {
                     continue; // don't preempt an interactive turn; retry next tick
                 }
-                // Mark fired only once the run actually DISPATCHED (B3.3): a run
-                // deferred by the spawn-race must retry next tick, not be lost today.
-                if fire(&app, &session, format!("schedule: {}", sc.label), sc.prompt.clone(), None) {
+                // Mark fired only once the schedule is DONE for today (B3.3 +
+                // improvement-5 P0.4): a spawn-race deferral retries next tick, and
+                // an error retries up to MAX_ATTEMPTS before the day is given up.
+                let outcome = fire(&app, &session, format!("schedule: {}", sc.label), sc.prompt.clone(), None);
+                if settle_attempt(&mut attempts, &sc.id, &outcome) {
+                    if let FireOutcome::Errored(e) = &outcome {
+                        notify(&app, &format!("June couldn't finish: schedule: {}", sc.label), e);
+                    }
                     fired.insert(sc.id.clone(), now.date());
+                    save_fired(&app, &fired);
                 }
             }
 
@@ -265,9 +350,17 @@ pub fn start(app: AppHandle, session: AgentSession) {
                         let payload = read_trigger_head(&tr.path);
                         // Advance the baseline ONLY once the run actually dispatched:
                         // a run deferred by the spawn-race (B3.3) must re-fire on the
-                        // next tick, so the change isn't lost (B3.1).
-                        if fire(&app, &session, format!("trigger: {}", tr.label), tr.prompt.clone(), Some(payload)) {
-                            mtimes.insert(tr.id.clone(), modified);
+                        // next tick, so the change isn't lost (B3.1). An errored run
+                        // consumes the change (retrying the same payload would loop).
+                        match fire(&app, &session, format!("trigger: {}", tr.label), tr.prompt.clone(), Some(payload)) {
+                            FireOutcome::Deferred => {}
+                            FireOutcome::Ran => {
+                                mtimes.insert(tr.id.clone(), modified);
+                            }
+                            FireOutcome::Errored(e) => {
+                                notify(&app, &format!("June couldn't finish: trigger: {}", tr.label), &e);
+                                mtimes.insert(tr.id.clone(), modified);
+                            }
                         }
                     }
                 }
@@ -325,6 +418,39 @@ mod tests {
         assert_eq!(trigger_action(Some(t0), t1, false), TriggerAction::Fire);
         // No change is ignored regardless of busy.
         assert_eq!(trigger_action(Some(t1), t1, false), TriggerAction::Ignore);
+    }
+
+    #[test]
+    fn retries_a_failed_fire_then_gives_up_for_the_day() {
+        let mut attempts = HashMap::new();
+        let err = FireOutcome::Errored("boom".into());
+        // Two failures leave the day open (retry on later ticks)...
+        assert!(!settle_attempt(&mut attempts, "s1", &err));
+        assert!(!settle_attempt(&mut attempts, "s1", &err));
+        // ...the third gives up (marks fired) and clears the counter.
+        assert!(settle_attempt(&mut attempts, "s1", &err));
+        assert!(attempts.is_empty());
+        // A success is done immediately and clears any counter.
+        assert!(!settle_attempt(&mut attempts, "s2", &err));
+        assert!(settle_attempt(&mut attempts, "s2", &FireOutcome::Ran));
+        assert!(attempts.is_empty());
+        // A deferral records nothing.
+        assert!(!settle_attempt(&mut attempts, "s3", &FireOutcome::Deferred));
+        assert!(attempts.is_empty());
+    }
+
+    #[test]
+    fn fired_state_roundtrips_and_tolerates_garbage() {
+        let mut fired = HashMap::new();
+        fired.insert("morning".to_string(), dt("2026-07-20 09:00").date());
+        fired.insert("evening".to_string(), dt("2026-07-20 21:00").date());
+        assert_eq!(parse_fired(&render_fired(&fired)), fired);
+        assert!(parse_fired("").is_empty());
+        assert!(parse_fired("not json").is_empty());
+        // A malformed date drops that entry, not the whole map.
+        let partial = parse_fired(r#"{"ok":"2026-07-20","bad":"yesterday"}"#);
+        assert_eq!(partial.len(), 1);
+        assert!(partial.contains_key("ok"));
     }
 
     #[test]

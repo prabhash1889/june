@@ -94,9 +94,11 @@ export class SpeechQueue {
   #playing = false;
   #stopped = false;
   #spoke = false;
+  #erred = false;
   #audio: HTMLAudioElement | null = null;
   readonly #onIdle: () => void;
   readonly #onFirstAudio: () => void;
+  readonly #onError: (e: unknown) => void;
   readonly #tts?: TtsChoice;
 
   /** @param onIdle fired whenever the queue drains. The queue can drain
@@ -105,11 +107,27 @@ export class SpeechQueue {
    *  @param tts the user's TTS stack (§4); passed to each synthesis so a local
    *  provider speaks on-device.
    *  @param onFirstAudio fired once, when the first sentence begins playing -
-   *  the voice-to-voice latency mark (Phase 11.5). */
-  constructor(onIdle: () => void = () => {}, tts?: TtsChoice, onFirstAudio: () => void = () => {}) {
+   *  the voice-to-voice latency mark (Phase 11.5).
+   *  @param onError fired at most once, on the first sentence that fails to
+   *  synthesize or play (improvement-5 P0.7): the reply keeps going as text, but
+   *  a dead TTS stack must not be a silent no-audio mystery. */
+  constructor(
+    onIdle: () => void = () => {},
+    tts?: TtsChoice,
+    onFirstAudio: () => void = () => {},
+    onError: (e: unknown) => void = () => {},
+  ) {
     this.#onIdle = onIdle;
     this.#onFirstAudio = onFirstAudio;
+    this.#onError = onError;
     this.#tts = tts;
+  }
+
+  /** Report the first failure once; later ones repeat the same story. */
+  #fail(e: unknown): void {
+    if (this.#erred || this.#stopped) return;
+    this.#erred = true;
+    this.#onError(e);
   }
 
   /** True when nothing is playing and nothing is queued. */
@@ -142,8 +160,10 @@ export class SpeechQueue {
       if (bytes.length > 0) {
         await this.#play(bytes, mime);
       }
-    } catch {
-      // A single sentence failing to synthesize/play shouldn't abort the reply.
+    } catch (e) {
+      // A single sentence failing to synthesize/play shouldn't abort the reply -
+      // but the first failure is surfaced via onError so it isn't silent.
+      this.#fail(e);
     } finally {
       this.#playing = false;
       if (!this.#stopped) void this.#pump();
@@ -165,8 +185,14 @@ export class SpeechQueue {
         resolve();
       };
       el.onended = done;
-      el.onerror = done;
-      void el.play().catch(done);
+      el.onerror = () => {
+        this.#fail(new Error("audio playback failed"));
+        done();
+      };
+      void el.play().catch((e) => {
+        this.#fail(e);
+        done();
+      });
     });
   }
 

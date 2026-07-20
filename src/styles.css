@@ -404,6 +404,12 @@ button {
   align-self: stretch;
 }
 
+/* Wide enough for both "Send to June" and "Sending in N…" so the auto-accept
+   countdown doesn't reflow the button every second. */
+.review button.primary {
+  min-width: 118px;
+}
+
 .review textarea,
 .keygate input {
   width: 100%;
@@ -445,7 +451,7 @@ button {
 
 /* ---- Buttons (one vocabulary across both faces) --------------------------- */
 
-.voice button:not(.orb):not(.open-app):not(.new-convo-orb),
+.voice button:not(.orb):not(.open-app):not(.new-convo-orb):not(.dictation-toggle),
 .app-window button {
   border: 1px solid var(--line-strong);
   background: transparent;
@@ -461,13 +467,13 @@ button {
     transform 0.1s ease;
 }
 
-.voice button:not(.orb):not(.open-app):not(.new-convo-orb):hover:enabled,
+.voice button:not(.orb):not(.open-app):not(.new-convo-orb):not(.dictation-toggle):hover:enabled,
 .app-window button:hover:enabled {
   background: var(--blue-tint);
   border-color: var(--blue);
 }
 
-.voice button:not(.orb):not(.open-app):not(.new-convo-orb):active:enabled,
+.voice button:not(.orb):not(.open-app):not(.new-convo-orb):not(.dictation-toggle):active:enabled,
 .app-window button:active:enabled {
   transform: translateY(1px);
 }
@@ -497,7 +503,7 @@ button {
   border-color: var(--warm);
 }
 
-.voice button:not(.orb):disabled,
+.voice button:not(.orb):not(.dictation-toggle):disabled,
 .app-window button:disabled {
   opacity: 0.45;
   cursor: default;
@@ -521,6 +527,31 @@ button {
   font-size: 13.5px;
   line-height: 1.45;
   text-wrap: balance;
+}
+
+/* Danger-class chip + expiry countdown, shared by both approval surfaces. */
+.approval-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.approval-cls {
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 139, 122, 0.5);
+  color: var(--warm);
+}
+
+.approval-timer {
+  margin-left: auto;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--dim);
 }
 
 /* ---- Full application window ---------------------------------------------- */
@@ -645,6 +676,11 @@ button {
   font-size: 12px;
 }
 
+/* Transient error line under the app header (failed reset, expired approval). */
+.app-note {
+  margin: 10px 20px 0;
+}
+
 .app-approval {
   display: flex;
   align-items: center;
@@ -747,6 +783,7 @@ button {
   display: flex;
   flex-direction: column;
   gap: 22px;
+  scrollbar-width: thin;
   scrollbar-color: var(--bg2) transparent;
 }
 
@@ -777,7 +814,7 @@ button {
   margin: 4px 0 0;
   font-size: 12px;
   font-weight: 600;
-  color: var(--fg);
+  color: var(--ink);
 }
 
 /* Compact env/headers editor inside an MCP server card - the shared .memory-text
@@ -806,10 +843,10 @@ button {
   padding: 3px 6px;
   margin-right: 3px;
   font-size: 11px;
-  border-radius: var(--radius-s, 6px);
+  border-radius: var(--radius-s);
 }
 .settings-view button.day-on {
-  background: var(--accent, #4f7cff);
+  background: var(--accent);
   color: #fff;
   border-color: transparent;
 }
@@ -945,6 +982,12 @@ button {
   cursor: pointer;
 }
 
+/* The chosen mode reads as chosen from the card itself, not just the radio dot. */
+.privacy-mode:has(input:checked) {
+  border-color: var(--blue);
+  background: var(--blue-tint);
+}
+
 .privacy-mode > span {
   display: flex;
   flex-direction: column;
@@ -1016,6 +1059,7 @@ kbd {
   display: flex;
   flex-direction: column;
   gap: 18px;
+  scrollbar-width: thin;
   scrollbar-color: var(--bg2) transparent;
 }
 

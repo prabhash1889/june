@@ -2,9 +2,14 @@ import { type CSSProperties, useCallback, useEffect, useRef, useState } from "re
 import { listen } from "@tauri-apps/api/event";
 
 import { matchApproval } from "../lib/approval-voice.ts";
+import { useApprovalKeys } from "../lib/approval-hooks.ts";
+import { ApprovalMeta } from "../lib/approval-ui.tsx";
 import { hasOpenAiKey, injectText, runAgent, setOpenAiKey, transcribe } from "../lib/stt.ts";
 import { type Approval, cancelAgent, interactiveTurnBase, newConversation, openApp, useMission, usePendingApproval } from "../lib/session.ts";
 import { missionProgress } from "../lib/missions.ts";
+import { MODEL_PROGRESS_EVENT, type ModelProgress } from "../lib/model-progress.ts";
+import { resolveProvider } from "../lib/providers.ts";
+import { followBottom } from "../lib/scroll.ts";
 import { DEFAULT_SETTINGS, type HandsFreeConfig, type JuneSettings, loadSettings, saveSettings, voiceAllowed, voiceNeedsOpenAiKey, type WakeConfig } from "../lib/settings.ts";
 import { captureCorrections, cleanTranscript } from "../lib/transcript.ts";
 import { recordLatency, TurnTimer } from "../lib/latency.ts";
@@ -42,6 +47,9 @@ const FOLLOWUP_WINDOW_MS = 6_000; // 14.3: how long the mic stays armed after a 
 const SPOKEN_APPROVAL_MS = 8_000; // 14.2: how long to listen for a spoken yes/no
 const DICTATED_CONFIRM_MS = 2_500; // 15.4: how long the "sent to your app" note lingers
 const ERROR_EXPIRE_MS = 4_000; // B2.5: how long an error lingers before returning to idle
+// improvement-5 P0.2: how long a reply lingers before returning to idle. Must be
+// longer than FOLLOWUP_WINDOW_MS so follow-up mode gets its full window first.
+const REPLY_EXPIRE_MS = 12_000;
 
 // Compare the effects-driving voice configs by value (B2.3): a settings save that
 // didn't touch these must not hand the wake/hands-free effects a new object, or
@@ -64,12 +72,22 @@ function sameHandsFree(a: HandsFreeConfig, b: HandsFreeConfig): boolean {
 export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boolean) => void }) {
   const [phase, setPhase] = useState<Phase>({ s: "idle" });
   const [levels, setLevels] = useState<number[]>([]);
-  const { approval, decide } = usePendingApproval();
+  const { approval, decide, expired } = usePendingApproval();
+  // A local model download in flight (first run of Moonshine/Kokoro), shown as a
+  // status line so the pipeline doesn't look hung (improvement-5 P0.5).
+  const [modelDownload, setModelDownload] = useState<ModelProgress>(null);
+  // One-shot "June couldn't speak" note (improvement-5 P0.7): the reply continues
+  // as text, but a dead TTS stack must not be silent. Cleared on the next turn.
+  const [ttsIssue, setTtsIssue] = useState<string | null>(null);
   // Mission state (Phase 19.1), shared with the full app. The widget shows a compact
   // chip while a mission is active so both faces reflect the same board.
   const mission = useMission();
   const missionActive = mission?.status === "active";
   const capture = useRef<CaptureHandle | null>(null);
+  // Guard the async open path (improvement-5 P0.6): two overlapping startCapture
+  // calls both open getUserMedia, and the second overwrites `capture.current` -
+  // the first stream is then never stopped, leaking a hot mic.
+  const openingMic = useRef(false);
   // Guard the async stop path so a hotkey-up and a VAD endpoint can't both fire it.
   const stopping = useRef(false);
   // A PTT release that arrived WHILE startCapture was still opening the mic (B4.8):
@@ -187,16 +205,23 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
         return;
       }
       // Belt-and-braces over the backend's own timeout: if the invoke never
-      // settles, the UI must not sit in "Transcribing…" forever.
-      const text = await Promise.race([
-        transcribe(audio, mime, settingsRef.current.stt),
-        new Promise<string>((_, reject) =>
-          window.setTimeout(
-            () => reject(new Error("Transcription took too long. Check your connection and try again.")),
-            20_000,
-          ),
-        ),
-      ]);
+      // settles, the UI must not sit in "Transcribing…" forever. Local models are
+      // exempt (improvement-5 P0.5): their first run downloads ~190MB of weights,
+      // which the cap would misreport as "check your connection" - the model
+      // download progress line covers that wait instead.
+      const stt = settingsRef.current.stt;
+      const text =
+        resolveProvider("stt", stt.provider)?.kind === "local"
+          ? await transcribe(audio, mime, stt)
+          : await Promise.race([
+              transcribe(audio, mime, stt),
+              new Promise<string>((_, reject) =>
+                window.setTimeout(
+                  () => reject(new Error("Transcription took too long. Check your connection and try again.")),
+                  20_000,
+                ),
+              ),
+            ]);
       if (transcribeRef.current !== tid) return; // cancelled while transcribing
       // Phase 15.1-15.3: clean the raw transcript (snippets -> dictionary -> filler
       // pass) before it reaches the review gate or the injector. Pure and local.
@@ -245,6 +270,10 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
       });
       return;
     }
+    // One capture at a time (improvement-5 P0.6): a second press/wake while the
+    // mic is still opening (or already open) must not open a second stream.
+    if (openingMic.current || capture.current) return;
+    openingMic.current = true;
     stopping.current = false;
     releaseDuringSetup.current = false;
     try {
@@ -259,6 +288,8 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
     } catch (e) {
       const err = e as CaptureError;
       setPhase({ s: "error", message: err?.message ?? "Could not start the microphone." });
+    } finally {
+      openingMic.current = false;
     }
   }, [stopListening]);
 
@@ -306,6 +337,7 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
     // queue has drained - either can finish first. A drain alone means speech
     // merely caught up with the token stream (e.g. during a slow tool call).
     let agentDone = false;
+    setTtsIssue(null); // a fresh turn gets a fresh chance to speak
     const queue = new SpeechQueue(
       () => {
         if (turnRef.current === turn && agentDone) setPhase({ s: "reply", text: replyRef.current });
@@ -318,6 +350,10 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
         ackRef.current = null;
         const sample = timer?.firstAudio();
         if (sample) void recordLatency(sample).catch(() => {});
+      },
+      () => {
+        if (turnRef.current === turn)
+          setTtsIssue("June couldn't speak that reply - check the text-to-speech settings. The text is below.");
       },
     );
     queueRef.current = queue;
@@ -446,6 +482,26 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
     const id = window.setTimeout(() => setPhase({ s: "idle" }), ERROR_EXPIRE_MS);
     return () => window.clearTimeout(id);
   }, [phase.s]);
+
+  // Expire a finished reply back to rest (improvement-5 P0.2, the same bug class
+  // as B2.5): the wake listener only arms while idle and the card only collapses
+  // at rest, so a reply that never expires kills hands-free after the first
+  // answer and pins the widget open. Long enough for follow-up mode (14.3) to get
+  // its full window first; the reply itself stays in the app window's transcript.
+  useEffect(() => {
+    if (phase.s !== "reply") return;
+    const id = window.setTimeout(() => setPhase({ s: "idle" }), REPLY_EXPIRE_MS);
+    return () => window.clearTimeout(id);
+  }, [phase.s]);
+
+  // Show a local model download in progress (improvement-5 P0.5): the loaders
+  // broadcast transformers.js progress; without this line a first run of
+  // Moonshine/Kokoro looks like a hang.
+  useEffect(() => {
+    const onProgress = (e: Event) => setModelDownload((e as CustomEvent<ModelProgress>).detail);
+    window.addEventListener(MODEL_PROGRESS_EVENT, onProgress);
+    return () => window.removeEventListener(MODEL_PROGRESS_EVENT, onProgress);
+  }, []);
 
   // A press (orb or push-to-talk down) either starts a command or barges in on
   // one in progress; a release ends the capture. Keep the current phase in a ref
@@ -640,6 +696,7 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
     turnRef.current += 1;
     transcribeRef.current += 1; // drop any in-flight transcription result
     decide("deny"); // cancelling also rejects any approval left pending
+    setTtsIssue(null);
     setPhase({ s: "idle" });
   }, [decide]);
 
@@ -648,7 +705,9 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
   // backend to reset the resident and clear the shared transcript in both faces.
   const startNewConversation = useCallback(() => {
     cancel();
-    void newConversation();
+    void newConversation().catch(() =>
+      setPhase({ s: "error", message: "Couldn't reset the conversation. Try again." }),
+    );
   }, [cancel]);
 
   // React to a "New conversation" started from the OTHER face (B2.7). The app
@@ -667,6 +726,13 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
     };
   }, [cancel]);
 
+  // Follow a streaming reply down the card (improvement-5 P0.8): without this a
+  // long answer scrolls its newest sentences out of view while June reads them.
+  const cardRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (phase.s === "speaking") followBottom(cardRef.current);
+  }, [phase]);
+
   const speakingText = phase.s === "speaking" ? phase.text : phase.s === "reply" ? phase.text : "";
   const orbState =
     phase.s === "listening"
@@ -679,7 +745,7 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
 
   return (
     <div className="voice" data-tauri-drag-region>
-      <div className="voice-card">
+      <div className="voice-card" ref={cardRef}>
         {mission && <MissionChip mission={mission} />}
         <header className="voice-head" data-tauri-drag-region>
           <span className="voice-logo" aria-hidden="true">
@@ -730,7 +796,9 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
             className="open-app"
             title="Open the full June window"
             aria-label="Open the full June window"
-            onClick={() => void openApp()}
+            onClick={() =>
+              void openApp().catch(() => setPhase({ s: "error", message: "Couldn't open the June window." }))
+            }
           >
             <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
               <path
@@ -749,9 +817,18 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
         ) : (
           <>
             <Status phase={phase} approval={approval} dictation={dictation} />
+            {modelDownload && (
+              <p className="status">
+                <span className="status-dot busy" aria-hidden="true" />
+                Downloading the {modelDownload.label}
+                {modelDownload.pct != null ? ` - ${modelDownload.pct}%` : "…"} (one time)
+              </p>
+            )}
             {voiceBlocked && (
               <p className="err">Voice is off in your privacy mode. Change it in the full app settings.</p>
             )}
+            {expired && <p className="err">That approval timed out, so June didn't act.</p>}
+            {ttsIssue && <p className="err">{ttsIssue}</p>}
             {approval && <ApprovalCard approval={approval} onDecide={decide} />}
             {phase.s === "review" && (
               <ReviewCard
@@ -858,7 +935,7 @@ function Status({ phase, approval, dictation }: { phase: Phase; approval: Approv
       ? "Dictation on - hold Ctrl + Shift + Space and speak; text goes to your focused app."
       : "Hold Ctrl + Shift + Space, or click the orb, and speak.",
     listening: dictation ? "Dictating…" : "Listening…",
-    transcribing: dictation ? "Writing it out…" : "Transcribing… press the orb to cancel.",
+    transcribing: dictation ? "Writing it out…" : "Transcribing… press the orb to start over.",
     review: "Is this right?",
     thinking: "Working on it…",
     speaking: "Speaking… talk or press to interrupt.",
@@ -880,14 +957,20 @@ function Status({ phase, approval, dictation }: { phase: Phase; approval: Approv
 // about to take, with an explicit yes/no. Rendered in the widget and the full
 // app alike - either can approve, because the pending approval is shared state.
 function ApprovalCard({ approval, onDecide }: { approval: Approval; onDecide: (d: "allow" | "deny") => void }) {
+  // Keyboard path (improvement-5 P0.9): focus lands on the safe Reject button,
+  // Esc rejects from anywhere in the window.
+  const rejectRef = useApprovalKeys(approval.id, onDecide);
   return (
     <div className="approval">
+      <div className="approval-head">
+        <ApprovalMeta approval={approval} />
+      </div>
       <p className="approval-what">{approval.summary}?</p>
       <div className="row">
         <button className="primary" onClick={() => onDecide("allow")}>
           Approve
         </button>
-        <button className="danger" onClick={() => onDecide("deny")}>
+        <button className="danger" ref={rejectRef} onClick={() => onDecide("deny")}>
           Reject
         </button>
       </div>

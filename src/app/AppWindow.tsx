@@ -2,6 +2,10 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
+import { useApprovalKeys } from "../lib/approval-hooks.ts";
+import { ApprovalMeta } from "../lib/approval-ui.tsx";
+import { recoverInterruptedMission } from "../lib/mission-runner.ts";
+import { followBottom } from "../lib/scroll.ts";
 import { type Approval, newConversation, usePendingApproval } from "../lib/session.ts";
 import { MissionBoard } from "./MissionBoard.tsx";
 import { SettingsPanel } from "./SettingsPanel.tsx";
@@ -178,16 +182,30 @@ type View = "chat" | "missions" | "settings";
 
 export function AppWindow() {
   const { entries, working } = useConversation();
-  const { approval, decide } = usePendingApproval();
+  const { approval, decide, expired } = usePendingApproval();
   const scroller = useRef<HTMLDivElement>(null);
   const [view, setView] = useState<View>("chat");
+  // Transient failure note (improvement-5 P0.7): a failed invoke must not look
+  // like a button that did nothing.
+  const [note, setNote] = useState<string | null>(null);
+
+  // Sticky-bottom, not forced (improvement-5 P0.8): a reader who scrolled up
+  // stays put; a reader at the bottom follows the stream, instantly.
+  useEffect(() => {
+    followBottom(scroller.current);
+  }, [entries, approval]);
+
+  // A mission whose runner died with this window (closed/reloaded mid-run) left
+  // the board stuck "active" - close it out on mount (improvement-5 P0.3).
+  useEffect(() => {
+    void recoverInterruptedMission();
+  }, []);
 
   useEffect(() => {
-    const el = scroller.current;
-    // Optional call: a crash in a passive effect unmounts the whole tree in
-    // React 19 (blank window), and test environments lack scrollTo.
-    el?.scrollTo?.({ top: el.scrollHeight, behavior: "smooth" });
-  }, [entries, approval]);
+    if (!note) return;
+    const id = window.setTimeout(() => setNote(null), 5000);
+    return () => window.clearTimeout(id);
+  }, [note]);
 
   return (
     <div className="app-window">
@@ -207,7 +225,9 @@ export function AppWindow() {
             className="new-convo"
             title="Start a new conversation - June forgets the current one"
             disabled={entries.length === 0 && !working}
-            onClick={() => void newConversation()}
+            onClick={() =>
+              void newConversation().catch(() => setNote("Couldn't reset the conversation. Try again."))
+            }
           >
             New conversation
           </button>
@@ -221,6 +241,8 @@ export function AppWindow() {
       {/* Approvals stay visible in both views, so a gated command can be granted
           from the settings screen too. */}
       {approval && <ApprovalBanner approval={approval} onDecide={decide} />}
+      {expired && <p className="err app-note">That approval timed out, so June didn't act.</p>}
+      {note && <p className="err app-note">{note}</p>}
 
       {view === "settings" ? (
         <SettingsPanel />
@@ -258,17 +280,23 @@ function ConversationEntry({ entry }: { entry: Entry }) {
 }
 
 function ApprovalBanner({ approval, onDecide }: { approval: Approval; onDecide: (d: "allow" | "deny") => void }) {
+  // Keyboard path (improvement-5 P0.9): focus lands on the safe Reject button,
+  // Esc rejects from anywhere in the window.
+  const rejectRef = useApprovalKeys(approval.id, onDecide);
   return (
     <div className="app-approval">
       <div className="app-approval-text">
-        <span className="app-approval-label">Approval needed</span>
+        <span className="approval-head">
+          <span className="app-approval-label">Approval needed</span>
+          <ApprovalMeta approval={approval} />
+        </span>
         <span className="app-approval-what">{approval.summary}?</span>
       </div>
       <div className="row">
         <button className="primary" onClick={() => onDecide("allow")}>
           Approve
         </button>
-        <button className="danger" onClick={() => onDecide("deny")}>
+        <button className="danger" ref={rejectRef} onClick={() => onDecide("deny")}>
           Reject
         </button>
       </div>

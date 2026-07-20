@@ -560,7 +560,7 @@ fn spawn_reader(session: AgentSession, app: AppHandle, stdout: std::process::Chi
                         drop(guard);
                         let _ = app.emit(
                             "agent://approval-resolved",
-                            serde_json::json!({ "turn": turn, "id": id, "decision": "deny" }),
+                            serde_json::json!({ "turn": turn, "id": id, "decision": "deny", "reason": "expired" }),
                         );
                     }
                 }

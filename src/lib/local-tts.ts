@@ -12,6 +12,7 @@
 
 import { KokoroTTS } from "kokoro-js";
 
+import { clearModelProgress, reportModelProgress, type XformersProgress } from "./model-progress.ts";
 import { configureXformers } from "./xformers.ts";
 
 export const DEFAULT_TTS_MODEL = "onnx-community/Kokoro-82M-v1.0-ONNX";
@@ -26,8 +27,20 @@ function getModel(model: string): Promise<KokoroTTS> {
   if (!p) {
     configureXformers();
     // q8: ~86MB, the quality/latency sweet spot for CPU wasm (fp32 is ~330MB).
-    p = KokoroTTS.from_pretrained(id, { dtype: "q8", device: "wasm" });
-    p.catch(() => models.delete(id));
+    // First run downloads the weights mid-SpeechQueue; the widget shows the
+    // progress (improvement-5 P0.5) instead of sitting mute in "Speaking…".
+    p = KokoroTTS.from_pretrained(id, {
+      dtype: "q8",
+      device: "wasm",
+      progress_callback: (info: XformersProgress) => reportModelProgress("voice model", info),
+    });
+    void p.then(
+      () => clearModelProgress(),
+      () => {
+        models.delete(id);
+        clearModelProgress();
+      },
+    );
     models.set(id, p);
   }
   return p;

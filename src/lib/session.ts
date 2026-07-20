@@ -16,7 +16,17 @@ export type Approval = {
   action: string;
   summary: string;
   cls: string;
+  /** When the backend will expire (deny) the gate, in epoch ms. Stamped locally
+   *  when the live `agent://approval` event arrives; absent on an approval seeded
+   *  from `pending_approval` (its start time is unknown - show no countdown). */
+  deadline?: number;
 };
+
+/** Mirrors agent/serve.ts APPROVAL_TIMEOUT_MS: the gate denies itself after this. */
+const APPROVAL_TIMEOUT_MS = 120_000;
+
+/** How long the "that approval timed out" note lingers before clearing. */
+const EXPIRED_NOTE_MS = 6_000;
 
 /** Approve or reject the pending gated action. The decision is written to the
  *  running agent's stdin by the backend; the gate lives in the execution layer,
@@ -77,8 +87,12 @@ export function newConversation(): Promise<void> {
 export function usePendingApproval(): {
   approval: Approval | null;
   decide: (decision: "allow" | "deny") => void;
+  expired: boolean;
 } {
   const [approval, setApproval] = useState<Approval | null>(null);
+  // True briefly after a pending gate timed out on the backend (improvement-5
+  // P0.9): the card must not just silently vanish - the surfaces show a note.
+  const [expired, setExpired] = useState(false);
   const ref = useRef<Approval | null>(null);
   ref.current = approval;
 
@@ -88,9 +102,17 @@ export function usePendingApproval(): {
       if (alive && a && !ref.current) setApproval(a);
     });
     const unlisten = [
-      listen<Approval>("agent://approval", (e) => setApproval(e.payload)),
-      listen<{ id: number }>("agent://approval-resolved", (e) => {
-        if (ref.current && ref.current.id === e.payload.id) setApproval(null);
+      listen<Approval>("agent://approval", (e) => {
+        setExpired(false);
+        // Stamp the deadline locally: the event marks the gate's start, and the
+        // backend denies it APPROVAL_TIMEOUT_MS later (serve.ts).
+        setApproval({ ...e.payload, deadline: Date.now() + APPROVAL_TIMEOUT_MS });
+      }),
+      listen<{ id: number; reason?: string }>("agent://approval-resolved", (e) => {
+        if (ref.current && ref.current.id === e.payload.id) {
+          setApproval(null);
+          if (e.payload.reason === "expired") setExpired(true);
+        }
       }),
       listen<{ turn: number }>("agent://final", (e) => {
         if (ref.current && ref.current.turn === e.payload.turn) setApproval(null);
@@ -101,6 +123,12 @@ export function usePendingApproval(): {
       unlisten.forEach((p) => void p.then((f) => f()));
     };
   }, []);
+
+  useEffect(() => {
+    if (!expired) return;
+    const id = window.setTimeout(() => setExpired(false), EXPIRED_NOTE_MS);
+    return () => window.clearTimeout(id);
+  }, [expired]);
 
   // Stable identity so callers (e.g. barge-in / cancel) can deny a pending
   // approval from inside their own memoized callbacks without dep churn.
@@ -116,7 +144,7 @@ export function usePendingApproval(): {
     });
   }, []);
 
-  return { approval, decide };
+  return { approval, decide, expired };
 }
 
 // --- Missions (Phase 19.1) ---

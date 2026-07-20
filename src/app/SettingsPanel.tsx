@@ -83,6 +83,9 @@ async function playBytes(bytes: Uint8Array, mime: string): Promise<void> {
 
 export function SettingsPanel() {
   const [settings, setSettings] = useState<JuneSettings | null>(null);
+  // A failed debounced save must not be silent (improvement-5 P0.7): the user's
+  // edits would quietly not persist. Cleared by the next successful save.
+  const [saveFailed, setSaveFailed] = useState(false);
 
   useEffect(() => {
     loadSettings()
@@ -131,12 +134,18 @@ export function SettingsPanel() {
     saveTimer.current = window.setTimeout(() => {
       saveTimer.current = null;
       pendingSave.current = null;
-      void saveSettings(next).catch(() => {});
+      void saveSettings(next).then(
+        () => setSaveFailed(false),
+        () => setSaveFailed(true),
+      );
     }, SAVE_DEBOUNCE_MS);
   };
 
   return (
     <div className="settings-view">
+      {saveFailed && (
+        <p className="err">Couldn't save your settings - recent changes may not persist. They'll retry on your next edit.</p>
+      )}
       <ModelsSection settings={settings} update={update} />
       <KeysSection />
       <PrivacySection settings={settings} update={update} />
@@ -638,7 +647,7 @@ function TranscriptSection({ settings, update }: { settings: JuneSettings; updat
           <code>june = June</code>). Edits you make at the review card are added here automatically.
         </p>
         <MapTextarea
-          className="memory-text wide"
+          className="memory-text"
           rows={4}
           map={t.dictionary}
           onCommit={(m) => setT({ dictionary: m })}
@@ -655,7 +664,7 @@ function TranscriptSection({ settings, update }: { settings: JuneSettings; updat
           <code>insert my intro = Hi, I'm …</code>). Saying the cue inserts the saved text.
         </p>
         <MapTextarea
-          className="memory-text wide"
+          className="memory-text"
           rows={4}
           map={t.snippets}
           onCommit={(m) => setT({ snippets: m })}
@@ -1015,7 +1024,7 @@ function McpServerCard({
           <div className="stage-row">
             <span className="stage-label">Env</span>
             <MapTextarea
-              className="memory-text mcp-env wide"
+              className="memory-text mcp-env"
               rows={2}
               map={t.env}
               onCommit={(m) => setTransport({ ...t, env: m })}
@@ -1037,7 +1046,7 @@ function McpServerCard({
           <div className="stage-row">
             <span className="stage-label">Headers</span>
             <MapTextarea
-              className="memory-text mcp-env wide"
+              className="memory-text mcp-env"
               rows={2}
               map={t.headers}
               onCommit={(m) => setTransport({ ...t, headers: m })}
