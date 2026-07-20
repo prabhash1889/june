@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { OpenAiCompatBrain, toOpenAiTool } from "./openai-brain.ts";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+
+import { OpenAiCompatBrain, toOpenAiTool, transportFor } from "./openai-brain.ts";
 import { type ToolGate } from "./brain.ts";
 
 const allowAll: ToolGate = async () => ({ allow: true });
@@ -21,6 +24,24 @@ describe("toOpenAiTool", () => {
   it("falls back to an empty object schema when the tool declares none", () => {
     const t = toOpenAiTool({ name: "get_swarm_status" });
     expect(t.function.parameters).toEqual({ type: "object", properties: {} });
+  });
+});
+
+// Phase 13: a generic server may be stdio or a remote HTTP endpoint. The OpenAI
+// brain must build the right client transport for each (the Claude brain gets the
+// same configs straight from the SDK). Constructing a transport doesn't connect,
+// so this is safe headlessly.
+describe("transportFor", () => {
+  it("builds a stdio transport for a command config", () => {
+    expect(transportFor({ command: "npx", args: ["-y", "s"] })).toBeInstanceOf(StdioClientTransport);
+  });
+
+  it("builds an HTTP transport for a url config", () => {
+    expect(transportFor({ type: "http", url: "https://x/mcp" })).toBeInstanceOf(StreamableHTTPClientTransport);
+  });
+
+  it("returns undefined for an unrunnable shape", () => {
+    expect(transportFor({ type: "sdk", name: "x", instance: {} } as never)).toBeUndefined();
   });
 });
 

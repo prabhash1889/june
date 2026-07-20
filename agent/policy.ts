@@ -45,9 +45,21 @@ const ACTION_CLASS: Record<string, SafetyClass> = {
  * Per-server default class for actions not named in `ACTION_CLASS` (10.1). Lets
  * a capability declare a whole server's default (e.g. a read-only server as
  * `observe`) without a core edit per tool. Phase 13's add-any-server surface
- * writes here; an unmapped server falls through to the fail-closed default.
+ * writes here (via `setServerDefaults`); an unmapped server falls through to the
+ * fail-closed default.
  */
-const SERVER_DEFAULT_CLASS: Record<string, SafetyClass> = {};
+let SERVER_DEFAULT_CLASS: Record<string, SafetyClass> = {};
+
+/**
+ * Register per-server default classes from user settings (Phase 13.2). A user who
+ * has inspected a server's tools once can promote the whole server to a lower
+ * class (e.g. a read-only search server -> `observe`), so its reads stop nagging
+ * for approval - while any server left undeclared still fails closed to gated.
+ * Replaces the map wholesale so a removed override actually takes effect.
+ */
+export function setServerDefaults(map: Record<string, SafetyClass>): void {
+  SERVER_DEFAULT_CLASS = { ...map };
+}
 
 /** MCP tools arrive as `mcp__<server>__<action>`; recover the bare action. */
 export function actionOf(toolName: string): string {

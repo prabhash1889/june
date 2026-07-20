@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 
 import { type McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 
+import { genericMcpServers, type McpServerEntry } from "../src/lib/mcp-servers.ts";
 import { type Brain, type TurnHooks, type TurnResult } from "./brain.ts";
 import { ClaudeBrain } from "./claude-brain.ts";
 import { OpenAiCompatBrain } from "./openai-brain.ts";
@@ -96,6 +97,10 @@ export interface JuneAgentOptions {
   memory?: string;
   /** Extra MCP capabilities merged over the default (e.g. saple-memory). */
   extraMcpServers?: Record<string, McpServerConfig>;
+  /** User-added capability servers (Phase 13). Each becomes an MCP server with
+   *  zero core edits - the whole point of the generic client. Already filtered
+   *  for enable + privacy by the caller (agent/serve.ts). */
+  mcpEntries?: McpServerEntry[];
   /** When false, the Claude brain keeps no session history on disk (Phase 11.2:
    *  strict privacy modes). Defaults to true. */
   persistSession?: boolean;
@@ -117,6 +122,10 @@ export function createJuneAgent(opts: JuneAgentOptions = {}): JuneAgent {
     ...defaultMcpServers(opts.workspaceId),
     ...(opts.filesRoot ? filesMcpServer(opts.filesRoot) : {}),
     ...(opts.memoryFile ? memoryMcpServer(opts.memoryFile) : {}),
+    // User-added capabilities (Phase 13): merged like any other server. Adding a
+    // capability is data here, not new code. Cast: the shared builder types the
+    // config loosely (SDK-free) but the shape matches McpServerConfig exactly.
+    ...(genericMcpServers(opts.mcpEntries ?? []) as Record<string, McpServerConfig>),
     ...opts.extraMcpServers,
   };
   const systemPrompt = withMemory(SYSTEM_PROMPT, opts.memory);

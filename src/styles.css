@@ -759,6 +759,23 @@ button {
   color: var(--dim);
 }
 
+/* Sub-heading inside a section (e.g. "Custom MCP servers" under Capabilities). */
+.settings-subhead {
+  margin: 4px 0 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg);
+}
+
+/* Compact env/headers editor inside an MCP server card - the shared .memory-text
+   is a tall notes box; here we want a short 2-line key=value pad. */
+.settings-view textarea.memory-text.mcp-env {
+  min-height: 44px;
+  font-family:
+    ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+
 .stage-card {
   display: flex;
   flex-direction: column;

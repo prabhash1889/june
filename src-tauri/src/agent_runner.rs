@@ -272,6 +272,19 @@ fn memory_file(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(dir.join("june-memory.md"))
 }
 
+/// The user-added MCP capability servers (Phase 13) for the resident. Read from
+/// settings.json and passed verbatim as a JSON array in JUNE_MCP_SERVERS; serve.ts
+/// coerces the list, then filters it by enable + privacy mode and registers each
+/// as an MCP server - so adding a capability is a settings entry, not June code.
+/// A settings save shuts the resident down (settings.rs), so a new/edited server
+/// takes effect on the next turn.
+fn mcp_servers_env(app: &AppHandle) -> Vec<(String, String)> {
+    match crate::settings::read_settings(app).get("mcpServers") {
+        Some(v) if v.is_array() => vec![("JUNE_MCP_SERVERS".into(), v.to_string())],
+        _ => vec![],
+    }
+}
+
 /// Long-term memory path for the resident (PLAN.md Phase 11.4). Always attached:
 /// memory is local and user-visible (editable/clearable in settings), so it stays
 /// on in every privacy mode, like the audit log. serve.ts reads the file at spawn
@@ -307,6 +320,7 @@ fn spawn_serve(app: &AppHandle) -> Result<(ChildStdin, std::process::ChildStdout
     let mut brain_vars = brain_env(app);
     brain_vars.extend(files_env(app));
     brain_vars.extend(memory_env(app));
+    brain_vars.extend(mcp_servers_env(app));
 
     let mut cmd = if cfg!(windows) {
         let mut c = Command::new("cmd");

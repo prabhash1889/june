@@ -34,11 +34,12 @@ import { promises as fs } from "node:fs";
 import { type Interface, createInterface } from "node:readline";
 import { stdin, stdout } from "node:process";
 
+import { coerceMcpServers, resolveMcpEntries, serverDefaults } from "../src/lib/mcp-servers.ts";
 import { type PrivacyMode, providerAllowed } from "../src/lib/privacy.ts";
 import { resolveProvider } from "../src/lib/providers.ts";
 import { type ToolGate } from "./brain.ts";
 import { createJuneAgent } from "./core.ts";
-import { isGated, redactParams } from "./policy.ts";
+import { isGated, redactParams, setServerDefaults } from "./policy.ts";
 
 const PRIVACY_MODES: PrivacyMode[] = ["standard", "local-voice", "strict-offline"];
 
@@ -49,6 +50,18 @@ const DENY_REASON = "The user did not approve this action.";
 
 function emit(obj: Record<string, unknown>): void {
   stdout.write(JSON.stringify(obj) + "\n");
+}
+
+/** Parse the JUNE_MCP_SERVERS env (a JSON array of user-added servers, Phase 13)
+ *  into raw objects for coercion. A missing/garbled value yields no servers - the
+ *  built-in capabilities still work, so a bad list never breaks a turn. */
+function parseMcpServers(raw: string | undefined): ReturnType<typeof coerceMcpServers> {
+  if (!raw?.trim()) return [];
+  try {
+    return coerceMcpServers(JSON.parse(raw));
+  } catch {
+    return [];
+  }
 }
 
 /** Resolve the brain the host selected via env into createJuneAgent options,
@@ -179,12 +192,21 @@ async function main(): Promise<void> {
   const memoryFile = process.env.JUNE_MEMORY_FILE?.trim() || undefined;
   const memory = memoryFile ? await fs.readFile(memoryFile, "utf-8").catch(() => undefined) : undefined;
 
+  // Generic MCP capabilities (Phase 13). The host serializes the user's server
+  // list into JUNE_MCP_SERVERS; we coerce it (defensively), then keep only the
+  // enabled servers the privacy mode allows (a networked capability is dropped
+  // under strict-offline). Per-server class overrides feed the policy gate so an
+  // inspected read-only server stops nagging while unknown tools still fail closed.
+  const mcpEntries = resolveMcpEntries(parseMcpServers(process.env.JUNE_MCP_SERVERS), mode ?? "standard");
+  setServerDefaults(serverDefaults(mcpEntries));
+
   const agent = createJuneAgent({
     ...brain,
     workspaceId: process.env.JUNE_WORKSPACE_ID ?? "june",
     filesRoot,
     memoryFile,
     memory,
+    mcpEntries,
     persistSession,
   });
 

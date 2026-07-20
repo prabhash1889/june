@@ -24,6 +24,8 @@
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { type Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { type McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 
 import { type Brain, type TurnHooks, type TurnResult } from "./brain.ts";
@@ -231,9 +233,9 @@ export class OpenAiCompatBrain implements Brain {
     if (this.#servers) return this.#servers;
     const out: Connected[] = [];
     for (const cfg of Object.values(this.#mcpServers)) {
-      if (!isStdio(cfg)) continue; // June only ships stdio MCP servers today
+      const transport = transportFor(cfg);
+      if (!transport) continue; // unsupported config shape - skip, never crash the turn
       const client = new Client({ name: `june-${this.id}`, version: "0.1.0" });
-      const transport = new StdioClientTransport(stdioParams(cfg));
       await client.connect(transport);
       // One listTools per server: names for routing and schemas for the model
       // both come from this single call (10.8 - was fetched twice).
@@ -251,9 +253,27 @@ export class OpenAiCompatBrain implements Brain {
 }
 
 type StdioConfig = { command: string; args?: string[]; env?: Record<string, string> };
+type HttpConfig = { type?: string; url: string; headers?: Record<string, string> };
 
 function isStdio(cfg: McpServerConfig): cfg is StdioConfig & McpServerConfig {
   return typeof (cfg as { command?: unknown }).command === "string";
+}
+
+function isHttp(cfg: McpServerConfig): cfg is HttpConfig & McpServerConfig {
+  const c = cfg as { type?: unknown; url?: unknown };
+  return (c.type === "http" || c.type === "sse") && typeof c.url === "string";
+}
+
+/** Build the MCP client transport for one server config, or undefined for a
+ *  shape this brain can't run (Phase 13: generic servers may be stdio OR a remote
+ *  HTTP endpoint). The Claude brain gets the same servers straight from the SDK. */
+export function transportFor(cfg: McpServerConfig): Transport | undefined {
+  if (isStdio(cfg)) return new StdioClientTransport(stdioParams(cfg));
+  if (isHttp(cfg)) {
+    const headers = cfg.headers;
+    return new StreamableHTTPClientTransport(new URL(cfg.url), headers ? { requestInit: { headers } } : undefined);
+  }
+  return undefined;
 }
 
 /** Build StdioClientTransport params, wrapping `npx` through the shell on Windows

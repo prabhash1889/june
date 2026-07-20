@@ -2,6 +2,13 @@ import { useEffect, useState } from "react";
 
 import { bridgeHealth, type BridgeHealth, type ProbeResult, testBrain } from "../lib/diagnostics.ts";
 import { type LatencySample, latencySamples, percentile } from "../lib/latency.ts";
+import {
+  MCP_CATALOG,
+  type McpClass,
+  type McpServerEntry,
+  type McpTransport,
+  slugify,
+} from "../lib/mcp-servers.ts";
 import { PRIVACY_MODES, type PrivacyMode } from "../lib/privacy.ts";
 import {
   defaultVoiceFor,
@@ -612,7 +619,221 @@ function CapabilitiesSection({ settings, update }: { settings: JuneSettings; upd
           <p className="settings-hint err">Choose a folder - June needs one allowed folder before it can touch files.</p>
         )}
       </div>
+
+      <McpServersSubsection settings={settings} update={update} />
     </section>
+  );
+}
+
+// --- Custom MCP servers (Phase 13) ----------------------------------------
+// Add any MCP server - a stdio command or a remote URL - and June runs it, no
+// June code changes. Tools from an unknown server are approval-required by
+// default (10.1's fail-closed classify); promote a whole server to a safer class
+// once you have seen its tools. Networked servers are dropped under Strict
+// offline via the per-server offline-safe flag.
+
+const CLASS_OPTIONS: { value: "" | McpClass; label: string }[] = [
+  { value: "", label: "Default (gated until inspected)" },
+  { value: "observe", label: "Observe (read-only, auto-run)" },
+  { value: "reversible", label: "Reversible (auto-run)" },
+  { value: "expensive", label: "Expensive (always ask)" },
+  { value: "destructive", label: "Destructive (always ask)" },
+];
+
+/** env / headers edited as `KEY=value` lines - the same shape Claude Desktop's
+ *  mcp.json uses. Not for long-lived secrets in a shared file, but it is how the
+ *  MCP ecosystem passes tokens today; a keychain-per-server surface is a follow-up. */
+function mapToText(map: Record<string, string>): string {
+  return Object.entries(map)
+    .map(([k, v]) => `${k}=${v}`)
+    .join("\n");
+}
+function textToMap(text: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const line of text.split("\n")) {
+    const i = line.indexOf("=");
+    if (i <= 0) continue;
+    const k = line.slice(0, i).trim();
+    if (k) out[k] = line.slice(i + 1).trim();
+  }
+  return out;
+}
+
+function McpServersSubsection({ settings, update }: { settings: JuneSettings; update: (s: JuneSettings) => void }) {
+  const servers = settings.mcpServers;
+  const setServers = (next: McpServerEntry[]) => update({ ...settings, mcpServers: next });
+
+  const upsert = (entry: McpServerEntry) => {
+    const i = servers.findIndex((s) => s.id === entry.id);
+    setServers(i >= 0 ? servers.map((s, j) => (j === i ? entry : s)) : [...servers, entry]);
+  };
+  const remove = (id: string) => setServers(servers.filter((s) => s.id !== id));
+
+  // A unique id for a fresh blank server (base "server", "server-2", ...).
+  const freshId = (): string => {
+    const base = "server";
+    if (!servers.some((s) => s.id === base)) return base;
+    for (let n = 2; ; n++) if (!servers.some((s) => s.id === `${base}-${n}`)) return `${base}-${n}`;
+  };
+  const addBlank = () => {
+    const id = freshId();
+    upsert({ id, label: "New server", enabled: false, offlineSafe: false, transport: { kind: "stdio", command: "npx", args: [], env: {} } });
+  };
+  const addPreset = (id: string) => {
+    const preset = MCP_CATALOG.find((c) => c.entry.id === id);
+    if (preset) upsert(preset.entry);
+  };
+
+  return (
+    <>
+      <h3 className="settings-subhead">Custom MCP servers</h3>
+      <p className="settings-hint">
+        Add any MCP server and June can use it - no June update needed. Tools from a new server always ask for approval
+        until you promote the server to a safer class. Networked servers are turned off under Strict offline.
+      </p>
+
+      {servers.map((s) => (
+        <McpServerCard key={s.id} entry={s} onChange={upsert} onRemove={() => remove(s.id)} />
+      ))}
+
+      <div className="settings-test">
+        <button onClick={addBlank}>+ Add server</button>
+        <select
+          value=""
+          onChange={(e) => {
+            if (e.target.value) addPreset(e.target.value);
+          }}
+          title="Add a vetted server from the catalog"
+        >
+          <option value="">Add from catalog…</option>
+          {MCP_CATALOG.map((c) => (
+            <option key={c.entry.id} value={c.entry.id}>
+              {c.entry.label} - {c.note}
+            </option>
+          ))}
+        </select>
+      </div>
+    </>
+  );
+}
+
+function McpServerCard({
+  entry,
+  onChange,
+  onRemove,
+}: {
+  entry: McpServerEntry;
+  onChange: (e: McpServerEntry) => void;
+  onRemove: () => void;
+}) {
+  const t = entry.transport;
+  const setTransport = (transport: McpTransport) => onChange({ ...entry, transport });
+
+  return (
+    <div className="stage-card">
+      <div className="stage-row">
+        <label className="wake-toggle" style={{ flex: 1 }}>
+          <input type="checkbox" checked={entry.enabled} onChange={(e) => onChange({ ...entry, enabled: e.target.checked })} />
+          <input
+            value={entry.label}
+            onChange={(e) => onChange({ ...entry, label: e.target.value, id: entry.id || slugify(e.target.value) })}
+            placeholder="Server name"
+          />
+        </label>
+        <button onClick={onRemove} title="Remove this server">
+          Remove
+        </button>
+      </div>
+
+      <div className="stage-row">
+        <span className="stage-label">Transport</span>
+        <select
+          value={t.kind}
+          onChange={(e) =>
+            setTransport(
+              e.target.value === "http"
+                ? { kind: "http", url: "", headers: {} }
+                : { kind: "stdio", command: "npx", args: [], env: {} },
+            )
+          }
+        >
+          <option value="stdio">stdio (local command)</option>
+          <option value="http">http (remote URL)</option>
+        </select>
+      </div>
+
+      {t.kind === "stdio" ? (
+        <>
+          <div className="stage-row">
+            <span className="stage-label">Command</span>
+            <input value={t.command} onChange={(e) => setTransport({ ...t, command: e.target.value })} placeholder="npx" />
+            <input
+              className="wide"
+              value={t.args.join(" ")}
+              onChange={(e) => setTransport({ ...t, args: e.target.value.split(/\s+/).filter(Boolean) })}
+              placeholder="-y @modelcontextprotocol/server-github@2025.4.8"
+            />
+          </div>
+          <div className="stage-row">
+            <span className="stage-label">Env</span>
+            <textarea
+              className="memory-text mcp-env wide"
+              rows={2}
+              value={mapToText(t.env)}
+              onChange={(e) => setTransport({ ...t, env: textToMap(e.target.value) })}
+              placeholder="GITHUB_PERSONAL_ACCESS_TOKEN=ghp_…"
+            />
+          </div>
+        </>
+      ) : (
+        <>
+          <div className="stage-row">
+            <span className="stage-label">URL</span>
+            <input
+              className="wide"
+              value={t.url}
+              onChange={(e) => setTransport({ ...t, url: e.target.value })}
+              placeholder="https://api.githubcopilot.com/mcp/"
+            />
+          </div>
+          <div className="stage-row">
+            <span className="stage-label">Headers</span>
+            <textarea
+              className="memory-text mcp-env wide"
+              rows={2}
+              value={mapToText(t.headers)}
+              onChange={(e) => setTransport({ ...t, headers: textToMap(e.target.value) })}
+              placeholder="Authorization=Bearer …"
+            />
+          </div>
+        </>
+      )}
+
+      <div className="stage-row">
+        <label className="wake-toggle">
+          <input type="checkbox" checked={entry.offlineSafe} onChange={(e) => onChange({ ...entry, offlineSafe: e.target.checked })} />
+          <span className="privacy-name">Offline-safe (runs fully on-device)</span>
+        </label>
+      </div>
+
+      <div className="stage-row">
+        <span className="stage-label">Tool class</span>
+        <select
+          value={entry.defaultClass ?? ""}
+          onChange={(e) => {
+            const v = e.target.value as "" | McpClass;
+            onChange({ ...entry, defaultClass: v || undefined });
+          }}
+          title="Default safety class for this server's tools"
+        >
+          {CLASS_OPTIONS.map((o) => (
+            <option key={o.value} value={o.value}>
+              {o.label}
+            </option>
+          ))}
+        </select>
+      </div>
+    </div>
   );
 }
 

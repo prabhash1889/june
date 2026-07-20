@@ -4,7 +4,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { actionOf, classify, isGated, redactParams, serverOf, summarize } from "./policy.ts";
+import { actionOf, classify, isGated, redactParams, serverOf, setServerDefaults, summarize } from "./policy.ts";
 
 describe("gate policy", () => {
   it("recovers the bare action from an MCP tool name", () => {
@@ -55,6 +55,20 @@ describe("gate policy", () => {
   it("a server default classifies its otherwise-unknown tools, still fail-closed without one", () => {
     // No server default registered -> unknown tool on a known server is still gated.
     expect(classify("some_new_tool", "saple-bridge-control")).toBe("destructive");
+  });
+
+  it("setServerDefaults promotes a server's unknown tools, and clears when reset (Phase 13.2)", () => {
+    // A user who inspected a read-only server promotes it to observe.
+    setServerDefaults({ github: "observe" });
+    expect(classify("list_issues", "github")).toBe("observe");
+    expect(isGated(classify("list_issues", "github"))).toBe(false);
+    // A named action still wins over the server default.
+    expect(classify("send_to_terminal", "github")).toBe("destructive");
+    // Another server without a default still fails closed.
+    expect(classify("anything", "other")).toBe("destructive");
+    // Replacing the map wholesale drops the old override (removed in settings).
+    setServerDefaults({});
+    expect(classify("list_issues", "github")).toBe("destructive");
   });
 
   it("redacts string params under on-device privacy modes but keeps them under standard", () => {

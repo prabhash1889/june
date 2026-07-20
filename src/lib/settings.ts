@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 
+import { coerceMcpServers, type McpServerEntry } from "./mcp-servers.ts";
 import { type PrivacyMode, providerAllowed } from "./privacy.ts";
 import { PROVIDERS, resolveProvider, type Stage } from "./providers.ts";
 
@@ -47,6 +48,9 @@ export interface JuneSettings {
   privacyMode: PrivacyMode;
   wake: WakeConfig;
   files: FilesConfig;
+  /** User-added MCP capability servers (Phase 13). Empty by default: June ships
+   *  with only its built-in capabilities; the user adds any others here. */
+  mcpServers: McpServerEntry[];
 }
 
 export const DEFAULT_SETTINGS: JuneSettings = {
@@ -58,6 +62,7 @@ export const DEFAULT_SETTINGS: JuneSettings = {
   privacyMode: "standard",
   wake: { enabled: false, phrase: "hey june", sensitivity: 0.5 },
   files: { enabled: false, root: "" },
+  mcpServers: [],
 };
 
 /** Raw bag persisted by Rust. Kept alongside the typed view so a save can merge
@@ -114,6 +119,7 @@ function coerce(raw: RawSettings): JuneSettings {
       enabled: typeof files.enabled === "boolean" ? files.enabled : d.files.enabled,
       root: str(files.root, d.files.root),
     },
+    mcpServers: coerceMcpServers(raw.mcpServers),
   };
 }
 
