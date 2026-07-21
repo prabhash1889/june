@@ -24,8 +24,8 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, State};
 
 use crate::agent_runner::{
-    cancel_turn, cap_chars, read_mission, reset_conversation, run_attended, write_mission_inner,
-    AgentSession, TurnReply,
+    append_run, cancel_turn, cap_chars, read_mission, reset_conversation, run_attended,
+    write_mission_inner, AgentSession, TurnReply,
 };
 
 /// Turn-number space for mission runs: the [2^39, 2^40) band between the widget's
@@ -243,6 +243,12 @@ fn slug(outcome: &str) -> String {
 
 // --- The runner --------------------------------------------------------------
 
+/// Local timestamp in the run ledger's format ("YYYY-MM-DDTHH:MM:SS"), matching
+/// agent_runner's unattended-run stamps (2.3).
+fn now_stamp() -> String {
+    chrono::Local::now().naive_local().format("%Y-%m-%dT%H:%M:%S").to_string()
+}
+
 fn persist(app: &AppHandle, mission: &Mission) {
     let content = serde_json::to_string(mission).unwrap_or_default();
     if let Err(e) = write_mission_inner(app, &content) {
@@ -370,11 +376,30 @@ fn run_board(app: &AppHandle, session: &AgentSession, runner: &MissionRunner, mu
             break;
         }
         let title = mission.tasks[i].title.clone();
+        let started = now_stamp();
         let (ok, note, reply) =
             run_task(app, session, runner, &mission.outcome, &title, mission.verify, &prior);
         if runner.cancelled.load(Ordering::SeqCst) {
             break;
         }
+        // Record this task in the run ledger (2.3): missions used to bypass
+        // append_run entirely, so "Clear mission" destroyed the only record a
+        // mission ever ran - including failure notes. Each task lands as its own
+        // ledger entry with the verify verdict (the failure note) as the reply, so
+        // the Runs tab keeps a durable history. `active_turn` is the last turn this
+        // task dispatched - monotonic in the mission band, so a stable unique id.
+        let ledger_reply = if ok { reply.clone().unwrap_or_default() } else { note.clone().unwrap_or_default() };
+        let run_id = runner.active_turn.load(Ordering::Relaxed);
+        append_run(
+            app,
+            run_id,
+            &format!("mission: {}", mission.outcome),
+            &title,
+            &started,
+            &ledger_reply,
+            !ok,
+            &[],
+        );
         if ok {
             if let Some(r) = reply {
                 prior.push((title, r));

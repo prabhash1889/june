@@ -102,10 +102,14 @@ round-trip + legacy migration (1.9).
     (`reportError` -> `log_message`, `installGlobalErrorHooks` for
     error/unhandledrejection). Wired into `main.tsx`; `.error-fallback` styling added.
 
-2.3 **Missions write to the run ledger** (x2: missions + frontend) | P1 | M
+2.3 **Missions write to the run ledger** (x2: missions + frontend) | P1 | M - DONE
     Missions bypass `append_run` entirely and "Clear mission" destroys the only record a
     mission ever existed, including failure notes. Append per-mission (or per-task) ledger
     records with verify verdicts from `run_board`. `src-tauri/src/missions.rs`.
+    `append_run` is now `pub(crate)`; `run_board` appends one ledger record per task
+    (`source: "mission: <outcome>"`, prompt = task title, reply = the reply on success or
+    the verify note on failure, `isError = !ok`), keyed by the task's `active_turn`. A
+    cleared mission now leaves durable history in the Runs tab.
 
 2.4 **Live Runs tab** (x2: missions + frontend) | P1 | S
     The trust surface is manual-refresh only, never shows the run's prompt, and has no

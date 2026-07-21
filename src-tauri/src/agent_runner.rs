@@ -95,7 +95,7 @@ pub(crate) fn cap_chars(s: &str, max: usize) -> String {
 /// a failed ledger write must never break the run. Rotates one generation like the
 /// audit log so a long-lived resident can't grow it without bound.
 #[allow(clippy::too_many_arguments)]
-fn append_run(
+pub(crate) fn append_run(
     app: &AppHandle,
     id: u64,
     source: &str,
