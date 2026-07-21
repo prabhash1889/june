@@ -525,10 +525,23 @@ round-trip + legacy migration (1.9).
     custom schemes, empty/control-char). Full suite 273 vitest green, typecheck +
     eslint + clippy clean.
 
-4.7 **Clipboard capability** (x2) | P2 | S
+4.7 **Clipboard capability** (x2) | P2 | S - DONE
     "What's on my clipboard?" via `Get-Clipboard`/`Set-Clipboard` in `mcp/system` - zero
     new deps. Read is observe-class but hard-blocked for unattended runs (clipboards hold
     passwords); write is reversible. `mcp/system/server.ts`, `agent/policy.ts`.
+    `read_clipboard` (`Get-Clipboard -Raw`) and `write_clipboard` (`Set-Clipboard`)
+    added to the system server. Read is classified `observe` (auto-runs with the user
+    present) but a new `UNATTENDED_BLOCKED_OBSERVE` set in policy hard-blocks it on an
+    unattended run with "may expose secrets" - so an injected trigger can never slurp a
+    password/2FA code off the clipboard, even though the class is observe. Write is
+    `reversible` (auto-run present, blocked unattended like open_path). The write text
+    rides into PowerShell via `$env:JUNE_CLIP_VALUE` (a new `env` arg on `runPwsh`),
+    NEVER interpolated into the script body, so a copied string can't inject PowerShell.
+    Pure `formatClipboard` trims the trailing newline and caps at 10k chars so a giant
+    paste can't flood the pipe/voice reply. Windows-only (clear error elsewhere).
+    Pinned: parse.test (trim + cap), policy.test (read observe + unattended-blocked,
+    write reversible + summaries). Full system + policy suites green, typecheck +
+    eslint clean.
 
 4.8 **Catalog presets: calendar, Google Workspace, `fetch_url`** | P1-P3 | S
     Pure catalog data, zero core code: a read-only calendar entry (the 9am briefing
