@@ -24,9 +24,9 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 
 use crate::agent_runner::{
-    append_run, cancel_turn, cap_chars, read_mission, reset_conversation, run_attended,
-    write_mission_inner, AgentSession, TurnReply,
+    cancel_turn, read_mission, reset_conversation, run_attended, write_mission_inner, AgentSession, TurnReply,
 };
+use crate::ledger::{append_run, cap_chars};
 
 /// Turn-number space for mission runs: the [2^39, 2^40) band between the widget's
 /// interactive turns and the unattended space (B3.7). Owned by this Rust-side

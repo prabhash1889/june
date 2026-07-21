@@ -4,6 +4,7 @@ mod diagnostics;
 mod fsutil;
 mod http;
 mod keychain;
+mod ledger;
 mod logf;
 mod missions;
 mod scheduler;
