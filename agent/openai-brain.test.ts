@@ -55,7 +55,11 @@ describe("tool namespacing & routing (B1.2)", () => {
 describe("toOpenAiTool", () => {
   it("wraps an MCP tool's schema as an OpenAI function tool", () => {
     const params = { type: "object", properties: { count: { type: "number" } } };
-    const t = toOpenAiTool({ name: "spawn_agents", description: "spawn some", inputSchema: params });
+    const t = toOpenAiTool({
+      name: "spawn_agents",
+      description: "spawn some",
+      inputSchema: params,
+    });
     expect(t.type).toBe("function");
     expect(t.function.name).toBe("spawn_agents");
     expect(t.function.description).toBe("spawn some");
@@ -74,11 +78,15 @@ describe("toOpenAiTool", () => {
 // so this is safe headlessly.
 describe("transportFor", () => {
   it("builds a stdio transport for a command config", () => {
-    expect(transportFor({ command: "npx", args: ["-y", "s"] })).toBeInstanceOf(StdioClientTransport);
+    expect(transportFor({ command: "npx", args: ["-y", "s"] })).toBeInstanceOf(
+      StdioClientTransport,
+    );
   });
 
   it("builds an HTTP transport for a url config", () => {
-    expect(transportFor({ type: "http", url: "https://x/mcp" })).toBeInstanceOf(StreamableHTTPClientTransport);
+    expect(transportFor({ type: "http", url: "https://x/mcp" })).toBeInstanceOf(
+      StreamableHTTPClientTransport,
+    );
   });
 
   it("returns undefined for an unrunnable shape", () => {
@@ -151,7 +159,9 @@ describe("transient-error retry (3.7)", () => {
   const errResp = (status: number, retryAfter?: string) => ({
     ok: false,
     status,
-    headers: { get: (h: string) => (h.toLowerCase() === "retry-after" ? (retryAfter ?? null) : null) },
+    headers: {
+      get: (h: string) => (h.toLowerCase() === "retry-after" ? (retryAfter ?? null) : null),
+    },
     text: async () => `{"error":"boom"}`,
   });
 
@@ -216,15 +226,30 @@ describe("foldStreamChunk (3.1)", () => {
   it("reassembles a fragmented tool call across chunks by index", () => {
     const acc: Parameters<typeof foldStreamChunk>[0] = { content: "", toolCalls: [] };
     foldStreamChunk(acc, {
-      choices: [{ delta: { tool_calls: [{ index: 0, id: "call_1", function: { name: "spawn_agents", arguments: '{"co' } }] } }],
+      choices: [
+        {
+          delta: {
+            tool_calls: [
+              { index: 0, id: "call_1", function: { name: "spawn_agents", arguments: '{"co' } },
+            ],
+          },
+        },
+      ],
     });
-    foldStreamChunk(acc, { choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: 'unt":2}' } }] } }] });
-    expect(acc.toolCalls[0]).toMatchObject({ id: "call_1", function: { name: "spawn_agents", arguments: '{"count":2}' } });
+    foldStreamChunk(acc, {
+      choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: 'unt":2}' } }] } }],
+    });
+    expect(acc.toolCalls[0]).toMatchObject({
+      id: "call_1",
+      function: { name: "spawn_agents", arguments: '{"count":2}' },
+    });
   });
 
   it("captures usage from the terminal chunk and emits nothing for it", () => {
     const acc: Parameters<typeof foldStreamChunk>[0] = { content: "", toolCalls: [] };
-    expect(foldStreamChunk(acc, { choices: [], usage: { prompt_tokens: 7, completion_tokens: 3 } })).toBe("");
+    expect(
+      foldStreamChunk(acc, { choices: [], usage: { prompt_tokens: 7, completion_tokens: 3 } }),
+    ).toBe("");
     expect(acc.usage).toEqual({ inputTokens: 7, outputTokens: 3 });
   });
 });
@@ -244,7 +269,9 @@ describe("streaming completion (3.1)", () => {
   const sse = (...frames: string[]) => ({
     ok: true,
     status: 200,
-    headers: { get: (h: string) => (h.toLowerCase() === "content-type" ? "text/event-stream" : null) },
+    headers: {
+      get: (h: string) => (h.toLowerCase() === "content-type" ? "text/event-stream" : null),
+    },
     body: new ReadableStream<Uint8Array>({
       start(c) {
         const enc = new TextEncoder();
@@ -267,7 +294,11 @@ describe("streaming completion (3.1)", () => {
       const said: string[] = [];
       const result = await brain().run("hi", { gate: allowAll, onText: (t) => said.push(t) });
       expect(said).toEqual(["Hello ", "there."]); // per-delta, and not re-emitted whole
-      expect(result).toMatchObject({ text: "Hello there.", isError: false, usage: { inputTokens: 5, outputTokens: 2 } });
+      expect(result).toMatchObject({
+        text: "Hello there.",
+        isError: false,
+        usage: { inputTokens: 5, outputTokens: 2 },
+      });
     } finally {
       vi.unstubAllGlobals();
     }

@@ -33,7 +33,10 @@ export function applyTheme(mode: ThemeMode): void {
 
   // System: resolve now and follow OS changes. matchMedia is absent in some test
   // environments - fall back to dark (the historical default) there.
-  const mq = typeof window.matchMedia === "function" ? window.matchMedia("(prefers-color-scheme: light)") : null;
+  const mq =
+    typeof window.matchMedia === "function"
+      ? window.matchMedia("(prefers-color-scheme: light)")
+      : null;
   const sync = () => {
     root.dataset.theme = mq?.matches ? "light" : "dark";
   };

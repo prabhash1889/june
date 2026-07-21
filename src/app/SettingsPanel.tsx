@@ -911,11 +911,19 @@ function PrivacySection({
 
 /** Theme picker: System / Light / Dark. Applies the choice immediately (live
  *  preview) as well as persisting it, so the window recolours as the radio flips. */
-function AppearanceSection({ settings, update }: { settings: JuneSettings; update: (s: JuneSettings) => void }) {
+function AppearanceSection({
+  settings,
+  update,
+}: {
+  settings: JuneSettings;
+  update: (s: JuneSettings) => void;
+}) {
   return (
     <section className="settings-section">
       <h2>Appearance</h2>
-      <p className="settings-hint">Choose June's colour theme. System follows your OS light/dark setting.</p>
+      <p className="settings-hint">
+        Choose June's colour theme. System follows your OS light/dark setting.
+      </p>
       <div role="radiogroup" aria-label="Colour theme">
         {THEMES.map((t) => (
           <label key={t.id} className="privacy-mode">

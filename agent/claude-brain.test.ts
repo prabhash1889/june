@@ -23,7 +23,7 @@ describe("MessageQueue", () => {
     q.push(userMsg("hello"));
     const r = await pending;
     expect(r.done).toBe(false);
-    expect((r.value.message.content as string)).toBe("hello");
+    expect(r.value.message.content as string).toBe("hello");
   });
 
   it("buffers messages pushed ahead of demand, in order", async () => {
@@ -66,7 +66,8 @@ describe("streamed text deltas + dedupe (3.6)", () => {
   const fakeQuery = (msgs: unknown[]) => {
     let i = 0;
     return {
-      next: async () => (i < msgs.length ? { value: msgs[i++], done: false } : { value: undefined, done: true }),
+      next: async () =>
+        i < msgs.length ? { value: msgs[i++], done: false } : { value: undefined, done: true },
       interrupt: async () => {},
       return: async () => ({ value: undefined, done: true }),
       [Symbol.asyncIterator]() {
@@ -74,7 +75,12 @@ describe("streamed text deltas + dedupe (3.6)", () => {
       },
     };
   };
-  const result = (text: string) => ({ type: "result", subtype: "success", result: text, usage: {} });
+  const result = (text: string) => ({
+    type: "result",
+    subtype: "success",
+    result: text,
+    usage: {},
+  });
 
   it("emits deltas as they arrive and does NOT re-emit the whole block", async () => {
     queryMock.mockReturnValue(
@@ -125,12 +131,18 @@ describe("streamed text deltas + dedupe (3.6)", () => {
 describe("in-session context trim (3.2)", () => {
   const allowAll: ToolGate = async () => ({ allow: true });
   const brain = () => new ClaudeBrain({ systemPrompt: "sys", mcpServers: {} });
-  const result = (text: string) => ({ type: "result", subtype: "success", result: text, usage: {} });
+  const result = (text: string) => ({
+    type: "result",
+    subtype: "success",
+    result: text,
+    usage: {},
+  });
   const oneTurn = () => {
     let i = 0;
     const msgs = [result("ok")];
     return {
-      next: async () => (i < msgs.length ? { value: msgs[i++], done: false } : { value: undefined, done: true }),
+      next: async () =>
+        i < msgs.length ? { value: msgs[i++], done: false } : { value: undefined, done: true },
       interrupt: async () => {},
       return: async () => ({ value: undefined, done: true }),
     };

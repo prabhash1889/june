@@ -256,7 +256,11 @@ export class ClaudeBrain implements Brain {
           // reaches TTS as soon as it forms, and mark the block streamed so the
           // full-block fallback below doesn't re-emit the same text.
           const ev = msg.event;
-          if (ev.type === "content_block_delta" && ev.delta.type === "text_delta" && ev.delta.text) {
+          if (
+            ev.type === "content_block_delta" &&
+            ev.delta.type === "text_delta" &&
+            ev.delta.text
+          ) {
             streamedText = true;
             hooks.onText?.(ev.delta.text);
           }
@@ -302,7 +306,8 @@ export class ClaudeBrain implements Brain {
           else if (msg.subtype === "error_max_turns")
             // Hit the tool-loop bound (1.6): speak a short, actionable line rather
             // than the raw subtype.
-            finalText = "I worked on that for a while without finishing. Ask me to keep going, or narrow it down.";
+            finalText =
+              "I worked on that for a while without finishing. Ask me to keep going, or narrow it down.";
           else finalText = `June hit an error: ${msg.subtype}`;
           break;
         }
@@ -314,7 +319,9 @@ export class ClaudeBrain implements Brain {
       const raw = e instanceof Error ? e.message : String(e);
       console.error(`[june] claude brain error: ${raw}`);
       const status = statusFromMessage(raw);
-      finalText = (status && friendlyApiError(status)) || "I hit an error talking to the model. Try again in a moment.";
+      finalText =
+        (status && friendlyApiError(status)) ||
+        "I hit an error talking to the model. Try again in a moment.";
       isError = true;
     } finally {
       this.#hooks = null;

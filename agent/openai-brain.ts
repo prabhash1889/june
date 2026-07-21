@@ -82,7 +82,12 @@ interface StreamChunk {
   choices?: {
     delta?: {
       content?: string | null;
-      tool_calls?: { index?: number; id?: string; type?: string; function?: { name?: string; arguments?: string } }[];
+      tool_calls?: {
+        index?: number;
+        id?: string;
+        type?: string;
+        function?: { name?: string; arguments?: string };
+      }[];
     };
   }[];
   usage?: { prompt_tokens?: number; completion_tokens?: number };
@@ -94,7 +99,10 @@ interface StreamChunk {
  *  unit-tested without a live stream. */
 export function foldStreamChunk(acc: StreamAccum, chunk: StreamChunk): string {
   if (chunk.usage) {
-    acc.usage = { inputTokens: chunk.usage.prompt_tokens ?? 0, outputTokens: chunk.usage.completion_tokens ?? 0 };
+    acc.usage = {
+      inputTokens: chunk.usage.prompt_tokens ?? 0,
+      outputTokens: chunk.usage.completion_tokens ?? 0,
+    };
   }
   const delta = chunk.choices?.[0]?.delta;
   if (!delta) return "";
@@ -105,7 +113,11 @@ export function foldStreamChunk(acc: StreamAccum, chunk: StreamChunk): string {
   }
   for (const tc of delta.tool_calls ?? []) {
     const i = tc.index ?? 0;
-    const slot = (acc.toolCalls[i] ??= { id: "", type: "function", function: { name: "", arguments: "" } });
+    const slot = (acc.toolCalls[i] ??= {
+      id: "",
+      type: "function",
+      function: { name: "", arguments: "" },
+    });
     if (tc.id) slot.id = tc.id;
     if (tc.function?.name) slot.function.name += tc.function.name;
     if (tc.function?.arguments) slot.function.arguments += tc.function.arguments;
@@ -204,12 +216,11 @@ export class OpenAiCompatBrain implements Brain {
       // several round-trips, and only the total is meaningful for the ledger (2.6).
       const usage: TokenUsage = { inputTokens: 0, outputTokens: 0 };
       for (let step = 0; step < MAX_STEPS; step++) {
-        const { message: reply, usage: u, streamed } = await this.#complete(
-          history,
-          tools,
-          hooks.onText,
-          abort.signal,
-        );
+        const {
+          message: reply,
+          usage: u,
+          streamed,
+        } = await this.#complete(history, tools, hooks.onText, abort.signal);
         if (u) {
           usage.inputTokens += u.inputTokens;
           usage.outputTokens += u.outputTokens;
@@ -279,13 +290,21 @@ export class OpenAiCompatBrain implements Brain {
     const action = actionOf(fullName);
     let input: Record<string, unknown> = {};
     try {
-      input = call.function.arguments ? (JSON.parse(call.function.arguments) as Record<string, unknown>) : {};
+      input = call.function.arguments
+        ? (JSON.parse(call.function.arguments) as Record<string, unknown>)
+        : {};
     } catch {
       return `Error: the tool arguments were not valid JSON.`;
     }
 
     const cls = classify(action, serverOf(fullName));
-    const decision = await hooks.gate({ tool: fullName, action, cls, input, summary: summarize(action, input) });
+    const decision = await hooks.gate({
+      tool: fullName,
+      action,
+      cls,
+      input,
+      summary: summarize(action, input),
+    });
     if (!decision.allow) return `Not run: ${decision.reason}`;
     const finalInput = decision.input ?? input;
 
@@ -342,7 +361,12 @@ export class OpenAiCompatBrain implements Brain {
     // connection shouldn't kill the spoken turn. A 4xx (auth/bad request) is the
     // user's problem, not transient - fail it at once. An abort (barge-in/cancel)
     // is terminal too and propagates unchanged so run() rolls the turn back.
-    const resp = await this.#fetchWithRetry(`${this.#baseUrl}/chat/completions`, headers, payload, signal);
+    const resp = await this.#fetchWithRetry(
+      `${this.#baseUrl}/chat/completions`,
+      headers,
+      payload,
+      signal,
+    );
 
     const contentType = resp.headers.get("content-type") ?? "";
     if (contentType.includes("text/event-stream") && resp.body) {
@@ -359,10 +383,17 @@ export class OpenAiCompatBrain implements Brain {
     // OpenAI-compatible usage: {prompt_tokens, completion_tokens}. No cost - the
     // API doesn't price the call, so costUsd stays undefined for this brain (2.6).
     const usage = json.usage
-      ? { inputTokens: json.usage.prompt_tokens ?? 0, outputTokens: json.usage.completion_tokens ?? 0 }
+      ? {
+          inputTokens: json.usage.prompt_tokens ?? 0,
+          outputTokens: json.usage.completion_tokens ?? 0,
+        }
       : undefined;
     return {
-      message: { role: "assistant", content: message.content ?? null, tool_calls: message.tool_calls },
+      message: {
+        role: "assistant",
+        content: message.content ?? null,
+        tool_calls: message.tool_calls,
+      },
       streamed: false,
       usage,
     };
@@ -530,7 +561,10 @@ export function transportFor(cfg: McpServerConfig): Transport | undefined {
   if (isStdio(cfg)) return new StdioClientTransport(stdioParams(cfg));
   if (isHttp(cfg)) {
     const headers = cfg.headers;
-    return new StreamableHTTPClientTransport(new URL(cfg.url), headers ? { requestInit: { headers } } : undefined);
+    return new StreamableHTTPClientTransport(
+      new URL(cfg.url),
+      headers ? { requestInit: { headers } } : undefined,
+    );
   }
   return undefined;
 }
@@ -538,7 +572,11 @@ export function transportFor(cfg: McpServerConfig): Transport | undefined {
 /** Build StdioClientTransport params, wrapping `npx` through the shell on Windows
  *  (npx is a .cmd shim that can't be spawned directly - the same fix
  *  agent_runner.rs applies for the run-once child). */
-function stdioParams(cfg: StdioConfig): { command: string; args: string[]; env?: Record<string, string> } {
+function stdioParams(cfg: StdioConfig): {
+  command: string;
+  args: string[];
+  env?: Record<string, string>;
+} {
   const args = cfg.args ?? [];
   if (process.platform === "win32" && cfg.command === "npx") {
     return { command: "cmd", args: ["/C", "npx", ...args], env: cfg.env };
@@ -549,12 +587,19 @@ function stdioParams(cfg: StdioConfig): { command: string; args: string[]; env?:
 /** MCP tool -> OpenAI function-tool schema. The pure per-tool translation,
  *  unit-tested without a live model; each server's tools are translated once at
  *  connect time and reused for the whole turn. */
-export function toOpenAiTool(t: { name: string; description?: string; inputSchema?: unknown }): OpenAiTool {
+export function toOpenAiTool(t: {
+  name: string;
+  description?: string;
+  inputSchema?: unknown;
+}): OpenAiTool {
   const params =
     t.inputSchema && typeof t.inputSchema === "object"
       ? (t.inputSchema as Record<string, unknown>)
       : { type: "object", properties: {} };
-  return { type: "function", function: { name: t.name, description: t.description, parameters: params } };
+  return {
+    type: "function",
+    function: { name: t.name, description: t.description, parameters: params },
+  };
 }
 
 /** Keep the system message plus the most recent turns of `messages`, capped at
@@ -562,7 +607,10 @@ export function toOpenAiTool(t: { name: string; description?: string; inputSchem
  *  message (a turn boundary) so an assistant tool_call is never split from its
  *  tool results, which the chat API rejects. Returns the same array when nothing
  *  needs trimming. Pure, so the boundary logic is unit-tested. */
-export function trimTurnHistory<T extends { role: string }>(messages: T[], maxHistory: number): T[] {
+export function trimTurnHistory<T extends { role: string }>(
+  messages: T[],
+  maxHistory: number,
+): T[] {
   if (messages.length <= 1 + maxHistory) return messages;
   let cut = messages.length - maxHistory;
   while (cut < messages.length && messages[cut].role !== "user") cut++;

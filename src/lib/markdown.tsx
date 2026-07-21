@@ -126,7 +126,12 @@ export function Markdown({ text }: { text: string }): ReactNode {
         return;
       }
       flushList(`l${key}`);
-      if (line.trim()) blocks.push(<p key={`p${key}`} className="md-p">{inline(line, key)}</p>);
+      if (line.trim())
+        blocks.push(
+          <p key={`p${key}`} className="md-p">
+            {inline(line, key)}
+          </p>,
+        );
     });
     flushList(`l${si}-end`);
   });

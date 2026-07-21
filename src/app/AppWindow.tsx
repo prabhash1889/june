@@ -7,7 +7,11 @@ import { useApprovalKeys } from "../lib/approval-hooks.ts";
 import { ApprovalMeta } from "../lib/approval-ui.tsx";
 import { usePttLabel } from "../lib/hotkey.ts";
 import { Markdown } from "../lib/markdown.tsx";
-import { formatModelProgress, MODEL_PROGRESS_EVENT, type ModelProgress } from "../lib/model-progress.ts";
+import {
+  formatModelProgress,
+  MODEL_PROGRESS_EVENT,
+  type ModelProgress,
+} from "../lib/model-progress.ts";
 import { PRIVACY_MODES, type PrivacyMode } from "../lib/privacy.ts";
 import { followBottom } from "../lib/scroll.ts";
 import { allocTurn, type Approval, newConversation, usePendingApproval } from "../lib/session.ts";
@@ -97,7 +101,10 @@ function useConversation(): { entries: Entry[]; working: boolean } {
               }
               if (x.turn === p.turn && x.kind === "tool") break; // a tool split the reply; new bubble
             }
-            return [...xs, { kind: "june", key: key(), turn: p.turn, text: p.delta, at: Date.now() }];
+            return [
+              ...xs,
+              { kind: "june", key: key(), turn: p.turn, text: p.delta, at: Date.now() },
+            ];
           });
           break;
         }
@@ -111,7 +118,12 @@ function useConversation(): { entries: Entry[]; working: boolean } {
           setEntries((xs) => {
             for (let i = xs.length - 1; i >= 0; i--) {
               const x = xs[i];
-              if (x.kind === "tool" && x.turn === p.turn && x.action === p.action && x.result === undefined) {
+              if (
+                x.kind === "tool" &&
+                x.turn === p.turn &&
+                x.action === p.action &&
+                x.result === undefined
+              ) {
                 const next = [...xs];
                 next[i] = { ...x, result: summarizeResult(p.res, p.isError), error: p.isError };
                 return next;
@@ -136,7 +148,10 @@ function useConversation(): { entries: Entry[]; working: boolean } {
               }
             }
             if (!p.text.trim()) return xs;
-            return [...xs, { kind: "june", key: key(), turn: p.turn, text: p.text, at: Date.now() }];
+            return [
+              ...xs,
+              { kind: "june", key: key(), turn: p.turn, text: p.text, at: Date.now() },
+            ];
           });
           break;
         }
@@ -162,9 +177,14 @@ function useConversation(): { entries: Entry[]; working: boolean } {
       apply(name, payload);
     };
 
-    const unlisten = ["agent://user", "agent://text", "agent://tool", "agent://result", "agent://final", "agent://reset"].map((n) =>
-      listen<Record<string, unknown>>(n, (e) => receive(n, e.payload)),
-    );
+    const unlisten = [
+      "agent://user",
+      "agent://text",
+      "agent://tool",
+      "agent://result",
+      "agent://final",
+      "agent://reset",
+    ].map((n) => listen<Record<string, unknown>>(n, (e) => receive(n, e.payload)));
 
     void invoke<SessionEvent[]>("session_events")
       .then((history) => {
@@ -219,7 +239,9 @@ export function AppWindow() {
   // Load settings once; if the one-time welcome hasn't been dismissed, show it.
   const [settings, setSettings] = useState<JuneSettings | null>(null);
   useEffect(() => {
-    void loadSettings().then(setSettings).catch(() => {});
+    void loadSettings()
+      .then(setSettings)
+      .catch(() => {});
   }, []);
   // On-device voice setup progress (improvement-7 1.5). The download usually runs
   // in the widget webview (or this window's settings preload); the aggregate is
@@ -272,7 +294,12 @@ export function AppWindow() {
   // typing in a field so a draft containing a slash isn't hijacked.
   const composerRef = useRef<HTMLTextAreaElement>(null);
   useEffect(() => {
-    const VIEW_KEYS: Record<string, View> = { "1": "chat", "2": "missions", "3": "runs", "4": "settings" };
+    const VIEW_KEYS: Record<string, View> = {
+      "1": "chat",
+      "2": "missions",
+      "3": "runs",
+      "4": "settings",
+    };
     const onKey = (e: KeyboardEvent) => {
       if (e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey && VIEW_KEYS[e.key]) {
         e.preventDefault();
@@ -291,7 +318,11 @@ export function AppWindow() {
   }, []);
 
   const tab = (v: View, label: string) => (
-    <button className={view === v ? "active" : ""} aria-current={view === v ? "page" : undefined} onClick={() => setView(v)}>
+    <button
+      className={view === v ? "active" : ""}
+      aria-current={view === v ? "page" : undefined}
+      onClick={() => setView(v)}
+    >
       {label}
       {v === "runs" && runsUnseen && <span className="tab-badge" aria-label="new runs" />}
     </button>
@@ -335,7 +366,9 @@ export function AppWindow() {
             title="Start a new conversation - June forgets the current one"
             disabled={entries.length === 0 && !working}
             onClick={() =>
-              void newConversation().catch(() => setNote("Couldn't reset the conversation. Try again."))
+              void newConversation().catch(() =>
+                setNote("Couldn't reset the conversation. Try again."),
+              )
             }
           >
             New conversation
@@ -377,8 +410,8 @@ export function AppWindow() {
           <div className="conversation" ref={scroller}>
             {entries.length === 0 && (
               <p className="empty">
-                Nothing yet. Type a command below or hold {pttLabel} and speak - your commands, June's replies, and
-                every action it takes appear here live.
+                Nothing yet. Type a command below or hold {pttLabel} and speak - your commands,
+                June's replies, and every action it takes appear here live.
               </p>
             )}
             {entries.map((e) => (
@@ -414,13 +447,18 @@ function Onboarding({
   onDone: (openSettings: boolean) => void;
 }) {
   return (
-    <div className="onboarding-backdrop" role="dialog" aria-modal="true" aria-label="Welcome to June">
+    <div
+      className="onboarding-backdrop"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Welcome to June"
+    >
       <div className="onboarding-card">
         <h1>Welcome to June</h1>
         <p>
-          June is a voice-first assistant that lives in the corner of your screen. Hold <kbd>{pttLabel}</kbd> and speak,
-          or just type in the box below - your commands, June's replies, and every action it takes appear in the
-          Conversation view.
+          June is a voice-first assistant that lives in the corner of your screen. Hold{" "}
+          <kbd>{pttLabel}</kbd> and speak, or just type in the box below - your commands, June's
+          replies, and every action it takes appear in the Conversation view.
         </p>
 
         <div className="onboarding-privacy">
@@ -446,7 +484,8 @@ function Onboarding({
         {modelSetup && (
           <p className="onboarding-progress" role="status">
             Setting up on-device voice
-            {formatModelProgress(modelSetup) ? ` (${formatModelProgress(modelSetup)})` : "…"} - one-time download.
+            {formatModelProgress(modelSetup) ? ` (${formatModelProgress(modelSetup)})` : "…"} -
+            one-time download.
           </p>
         )}
 
@@ -460,7 +499,9 @@ function Onboarding({
           />
           <span>
             <span className="privacy-name">Start June at login</span>
-            <span className="privacy-desc">So wake word, push to talk and schedules survive a reboot.</span>
+            <span className="privacy-desc">
+              So wake word, push to talk and schedules survive a reboot.
+            </span>
           </span>
         </label>
 
@@ -479,7 +520,13 @@ function Onboarding({
  *  are equals now. Enter sends (Shift+Enter for a newline); the reply streams into
  *  the conversation above via the shared agent://* events. Sending while June is
  *  working preempts the active turn, exactly like barging in by voice. */
-function Composer({ onError, fieldRef }: { onError: (m: string) => void; fieldRef?: Ref<HTMLTextAreaElement> }) {
+function Composer({
+  onError,
+  fieldRef,
+}: {
+  onError: (m: string) => void;
+  fieldRef?: Ref<HTMLTextAreaElement>;
+}) {
   const [text, setText] = useState("");
   // Last sent command, for ArrowUp recall (6.3) - the raw text (newlines kept).
   const lastSent = useRef("");
@@ -525,7 +572,9 @@ function ConversationEntry({ entry }: { entry: Entry }) {
   // reads "read file", not raw snake_case, and running state is visible.
   const running = entry.result === undefined;
   return (
-    <div className={`turn tool ${entry.error ? "tool-error" : ""} ${running ? "tool-running" : ""}`}>
+    <div
+      className={`turn tool ${entry.error ? "tool-error" : ""} ${running ? "tool-running" : ""}`}
+    >
       <span className="tool-name">{humanizeAction(entry.action)}</span>
       {entry.result && <span className="tool-result"> - {entry.result}</span>}
     </div>
@@ -545,7 +594,10 @@ function JuneBubble({ entry }: { entry: Extract<Entry, { kind: "june" }> }) {
       })
       .catch(() => {});
   };
-  const time = new Date(entry.at).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+  const time = new Date(entry.at).toLocaleTimeString(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
   return (
     <div className="turn june">
       <div className="md">
@@ -561,15 +613,25 @@ function JuneBubble({ entry }: { entry: Extract<Entry, { kind: "june" }> }) {
   );
 }
 
-function ApprovalBanner({ approval, onDecide }: { approval: Approval; onDecide: (d: "allow" | "deny") => void }) {
+function ApprovalBanner({
+  approval,
+  onDecide,
+}: {
+  approval: Approval;
+  onDecide: (d: "allow" | "deny") => void;
+}) {
   // Keyboard path (improvement-5 P0.9): focus lands on the safe Reject button,
   // Esc rejects from anywhere in the window.
   const rejectRef = useApprovalKeys(approval.id, onDecide);
   return (
     // role=alertdialog + assertive live region: a screen reader announces the
     // pending approval the moment it appears, not only when focus reaches it (3.4).
-    <div className="app-approval" role="alertdialog" aria-live="assertive" aria-label="Approval needed">
-
+    <div
+      className="app-approval"
+      role="alertdialog"
+      aria-live="assertive"
+      aria-label="Approval needed"
+    >
       <div className="app-approval-text">
         <span className="approval-head">
           <span className="app-approval-label">Approval needed</span>

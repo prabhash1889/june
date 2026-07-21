@@ -2,7 +2,14 @@ import { invoke } from "@tauri-apps/api/core";
 
 import { coerceMcpServers, type McpServerEntry } from "./mcp-servers.ts";
 import { type PrivacyMode, providerAllowed } from "./privacy.ts";
-import { coerceSchedules, coerceTriggers, coerceWatches, type FileTrigger, type Schedule, type WatchLoop } from "./schedules.ts";
+import {
+  coerceSchedules,
+  coerceTriggers,
+  coerceWatches,
+  type FileTrigger,
+  type Schedule,
+  type WatchLoop,
+} from "./schedules.ts";
 import { PROVIDERS, resolveProvider, type Stage } from "./providers.ts";
 import type { ThemeMode } from "./theme.ts";
 import type { TermMap } from "./transcript.ts";
@@ -196,10 +203,13 @@ function termMap(v: unknown, cap = 200): TermMap {
  *  back so the UI never renders a dangling selection. */
 function coerce(raw: RawSettings): JuneSettings {
   const d = DEFAULT_SETTINGS;
-  const obj = (k: string): RawSettings => (typeof raw[k] === "object" && raw[k] !== null ? (raw[k] as RawSettings) : {});
+  const obj = (k: string): RawSettings =>
+    typeof raw[k] === "object" && raw[k] !== null ? (raw[k] as RawSettings) : {};
   const stage = (k: Stage, fallback: StageChoice): StageChoice => {
     const s = obj(k);
-    const provider = resolveProvider(k, str(s.provider, fallback.provider)) ? str(s.provider, fallback.provider) : fallback.provider;
+    const provider = resolveProvider(k, str(s.provider, fallback.provider))
+      ? str(s.provider, fallback.provider)
+      : fallback.provider;
     return { provider, model: str(s.model, fallback.model) };
   };
   const efforts: Effort[] = ["low", "medium", "high"];
@@ -223,7 +233,8 @@ function coerce(raw: RawSettings): JuneSettings {
     pttHotkey: str(raw.pttHotkey, d.pttHotkey),
     // Preserve an explicit empty string (quick capture turned off); only an absent
     // or non-string value falls back to the default chord.
-    captureHotkey: typeof raw.captureHotkey === "string" ? raw.captureHotkey.trim() : d.captureHotkey,
+    captureHotkey:
+      typeof raw.captureHotkey === "string" ? raw.captureHotkey.trim() : d.captureHotkey,
     micDeviceId: typeof raw.micDeviceId === "string" ? raw.micDeviceId : d.micDeviceId,
     outputDeviceId: typeof raw.outputDeviceId === "string" ? raw.outputDeviceId : d.outputDeviceId,
     outputVolume: unit(raw.outputVolume, d.outputVolume),
@@ -302,7 +313,12 @@ export function deleteKey(service: string): Promise<void> {
 /** MCP server secrets (env values / HTTP headers). `kind` is "env" or "hdr". The
  *  value goes to the OS keychain; settings.json only ever holds the `keychain:`
  *  sentinel (see mcp-servers.ts KEYCHAIN_REF). */
-export function setMcpSecret(serverId: string, kind: "env" | "hdr", key: string, value: string): Promise<void> {
+export function setMcpSecret(
+  serverId: string,
+  kind: "env" | "hdr",
+  key: string,
+  value: string,
+): Promise<void> {
   return invoke("set_mcp_secret", { serverId, kind, key, value });
 }
 
