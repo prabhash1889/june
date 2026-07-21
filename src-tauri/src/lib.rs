@@ -2,6 +2,7 @@ mod agent_runner;
 mod dictation;
 mod diagnostics;
 mod keychain;
+mod logf;
 mod missions;
 mod scheduler;
 mod settings;
@@ -101,6 +102,7 @@ pub fn run() {
             keychain::set_api_key,
             keychain::has_api_key,
             keychain::delete_api_key,
+            logf::log_message,
             stt::transcribe,
             tts::synthesize,
             dictation::inject_text,

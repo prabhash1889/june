@@ -499,7 +499,7 @@ fn save_state(
     let tmp = path.with_extension("json.tmp");
     let write = std::fs::write(&tmp, render_state(&state).as_bytes()).and_then(|()| std::fs::rename(&tmp, &path));
     if let Err(e) = write {
-        eprintln!("[scheduler] couldn't persist fired state: {e}");
+        crate::logf::log(app, &format!("[scheduler] couldn't persist fired state: {e}"));
     }
 }
 

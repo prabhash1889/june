@@ -246,7 +246,7 @@ fn slug(outcome: &str) -> String {
 fn persist(app: &AppHandle, mission: &Mission) {
     let content = serde_json::to_string(mission).unwrap_or_default();
     if let Err(e) = write_mission_inner(app, &content) {
-        eprintln!("[mission] couldn't persist the board: {e}");
+        crate::logf::log(app, &format!("[mission] couldn't persist the board: {e}"));
     }
 }
 

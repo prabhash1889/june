@@ -49,7 +49,7 @@ fn append_audit(app: &AppHandle, entry: &serde_json::Value) {
     let dir = match app.path().app_data_dir() {
         Ok(dir) => dir,
         Err(e) => {
-            eprintln!("[audit] no app data dir: {e}");
+            crate::logf::log(app, &format!("[audit] no app data dir: {e}"));
             return;
         }
     };
@@ -69,7 +69,7 @@ fn append_audit(app: &AppHandle, entry: &serde_json::Value) {
         .open(&path)
         .and_then(|mut f| writeln!(f, "{line}"));
     if let Err(e) = write {
-        eprintln!("[audit] could not write {}: {e}", path.display());
+        crate::logf::log(app, &format!("[audit] could not write {}: {e}", path.display()));
     }
 }
 
@@ -142,7 +142,7 @@ fn append_run(
         .open(&path)
         .and_then(|mut f| writeln!(f, "{line}"));
     if let Err(e) = write {
-        eprintln!("[runs] could not write {}: {e}", path.display());
+        crate::logf::log(app, &format!("[runs] could not write {}: {e}", path.display()));
     }
 }
 
@@ -544,12 +544,27 @@ fn spawn_serve(
         .current_dir(&cwd)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
+        // Pipe (not inherit) the resident's stderr so serve.ts crash output and its
+        // console.error's survive on a windowed release build (2.1): a reader thread
+        // routes each line into june.log. Draining it also avoids a full-pipe stall.
+        .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("Could not start the agent: {e}"))?;
 
     let stdin = child.stdin.take().ok_or("The agent has no stdin.")?;
     let stdout = child.stdout.take().ok_or("The agent produced no output stream.")?;
+    if let Some(stderr) = child.stderr.take() {
+        let app = app.clone();
+        std::thread::spawn(move || {
+            for line in BufReader::new(stderr).lines() {
+                let Ok(line) = line else { break };
+                if line.trim().is_empty() {
+                    continue;
+                }
+                crate::logf::log(&app, &format!("[serve] {line}"));
+            }
+        });
+    }
     Ok((stdin, stdout, child))
 }
 

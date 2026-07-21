@@ -82,11 +82,16 @@ round-trip + legacy migration (1.9).
 
 ## Phase 2 - See what is happening (observability and trust)
 
-2.1 **File logger for release builds** (x2: rust + reliability) | P1 | M
+2.1 **File logger for release builds** (x2: rust + reliability) | P1 | M - DONE
     Windowed release builds discard every `eprintln!` failure path (audit, runs, mission,
     scheduler) - failures are undiagnosable on a user machine. Rotating file log at
     `<app_data_dir>/june.log`, route the ~8 sites through it, and pipe the resident's
     stderr into it so serve.ts crash output survives.
+    New `src-tauri/src/logf.rs`: `log(app, line)` appends a timestamped line to
+    `june.log` (rotated one generation at 2MB), mirrors to stderr in debug. Routed the
+    audit/runs/mission/scheduler write-failure sites through it; `spawn_serve` now pipes
+    the resident's stderr (was `Stdio::inherit`) into `june.log` via a `[serve]` reader
+    thread. `log_message` command backs 2.2.
 
 2.2 **Renderer ErrorBoundary + global error hooks** | P1
     A render throw blanks the always-on-top widget with no trace ("June died"). One
