@@ -10,8 +10,18 @@ import {
   testBrain,
 } from "../lib/diagnostics.ts";
 import { chordFromKeyEvent, hotkeyLabel } from "../lib/hotkey.ts";
-import { type LatencySample, latencySamples, percentile, type UsageTotals, usageTotal } from "../lib/latency.ts";
-import { formatModelProgress, MODEL_PROGRESS_EVENT, type ModelProgress } from "../lib/model-progress.ts";
+import {
+  type LatencySample,
+  latencySamples,
+  percentile,
+  type UsageTotals,
+  usageTotal,
+} from "../lib/latency.ts";
+import {
+  formatModelProgress,
+  MODEL_PROGRESS_EVENT,
+  type ModelProgress,
+} from "../lib/model-progress.ts";
 import { type VoiceHealth, voiceHealth } from "../lib/voice-health.ts";
 import {
   KEYCHAIN_REF,
@@ -22,9 +32,9 @@ import {
   slugify,
 } from "../lib/mcp-servers.ts";
 import { PRIVACY_MODES, type PrivacyMode } from "../lib/privacy.ts";
-import { lastRunFor, relativeTime, type RunRecord } from "../lib/runs.ts";
-import { describeNext, type FileTrigger, type Schedule, type WatchLoop } from "../lib/schedules.ts";
-import { clearRecordedData, readRuns, runScheduleNow } from "../lib/session.ts";
+import { clearRecordedData } from "../lib/session.ts";
+import { AutomationSection } from "./settings/AutomationSection.tsx";
+import { msg } from "./settings/common.ts";
 import {
   defaultVoiceFor,
   keyedProviders,
@@ -82,10 +92,6 @@ interface PendingSave {
 async function persistPending(p: PendingSave): Promise<void> {
   if (p.general) await saveSettings(p.next);
   if (p.automation) await saveAutomations(p.next.schedules, p.next.triggers, p.next.watches);
-}
-
-function msg(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
 }
 
 /** The endpoint June will hit for the chosen brain: a custom provider uses the
@@ -189,7 +195,10 @@ export function SettingsPanel() {
   return (
     <div className="settings-view">
       {saveFailed && (
-        <p className="err">Couldn't save your settings - recent changes may not persist. They'll retry on your next edit.</p>
+        <p className="err">
+          Couldn't save your settings - recent changes may not persist. They'll retry on your next
+          edit.
+        </p>
       )}
       <SectionNav />
       <div id="sec-models" className="settings-anchor">
@@ -256,7 +265,9 @@ function SectionNav() {
       {NAV_SECTIONS.map((s) => (
         <button
           key={s.id}
-          onClick={() => document.getElementById(s.id)?.scrollIntoView({ behavior: "smooth", block: "start" })}
+          onClick={() =>
+            document.getElementById(s.id)?.scrollIntoView({ behavior: "smooth", block: "start" })
+          }
         >
           {s.label}
         </button>
@@ -267,7 +278,13 @@ function SectionNav() {
 
 // --- Models ---------------------------------------------------------------
 
-function ModelsSection({ settings, update }: { settings: JuneSettings; update: (s: JuneSettings) => void }) {
+function ModelsSection({
+  settings,
+  update,
+}: {
+  settings: JuneSettings;
+  update: (s: JuneSettings) => void;
+}) {
   return (
     <section className="settings-section">
       <h2>Models</h2>
@@ -296,7 +313,11 @@ function ProviderSelect({
   onChange: (id: string) => void;
 }) {
   return (
-    <select value={value} aria-label={`${label} provider`} onChange={(e) => onChange(e.target.value)}>
+    <select
+      value={value}
+      aria-label={`${label} provider`}
+      onChange={(e) => onChange(e.target.value)}
+    >
       {providersFor(stage).map((p) => (
         <option key={p.id} value={p.id} disabled={!p.available}>
           {p.label}
@@ -360,7 +381,11 @@ function TestControl({ run, blocked }: { run: () => Promise<ProbeResult>; blocke
 
   return (
     <div className="settings-test">
-      <button onClick={click} disabled={busy || blocked} title={blocked ? "Waiting for the on-device model download" : undefined}>
+      <button
+        onClick={click}
+        disabled={busy || blocked}
+        title={blocked ? "Waiting for the on-device model download" : undefined}
+      >
         {busy ? "Testing…" : "Test"}
       </button>
       {result && (
@@ -433,7 +458,11 @@ function MicMeter({ capture }: { capture: RefObject<CaptureHandle | null> }) {
  *  paying it), and the caller blocks its Test button until ready. Only the
  *  provider's listed model ids preload - a custom id typed into the free-text
  *  model field still loads on first use, so keystrokes never trigger downloads. */
-function useLocalModelSetup(stage: "stt" | "tts", providerId: string, model: string): { ready: boolean; row: ReactNode } {
+function useLocalModelSetup(
+  stage: "stt" | "tts",
+  providerId: string,
+  model: string,
+): { ready: boolean; row: ReactNode } {
   const provider = resolveProvider(stage, providerId);
   const known = provider?.kind === "local" && provider.models.some((m) => m.id === model);
   const [ready, setReady] = useState(true);
@@ -476,18 +505,26 @@ function useLocalModelSetup(stage: "stt" | "tts", providerId: string, model: str
   if (!known || ready) return { ready: true, row: null };
   const row = failed ? (
     <p className="err" role="alert">
-      Couldn't download the on-device model - check your connection. It will retry when you use voice.
+      Couldn't download the on-device model - check your connection. It will retry when you use
+      voice.
     </p>
   ) : (
     <p className="settings-hint" role="status">
-      Setting up on-device voice{progress && formatModelProgress(progress) ? ` (${formatModelProgress(progress)})` : "…"}{" "}
-      - one-time download.
+      Setting up on-device voice
+      {progress && formatModelProgress(progress) ? ` (${formatModelProgress(progress)})` : "…"} -
+      one-time download.
     </p>
   );
   return { ready: false, row };
 }
 
-function SttCard({ settings, update }: { settings: JuneSettings; update: (s: JuneSettings) => void }) {
+function SttCard({
+  settings,
+  update,
+}: {
+  settings: JuneSettings;
+  update: (s: JuneSettings) => void;
+}) {
   const provider = resolveProvider("stt", settings.stt.provider);
   // Local model warm-up (1.5): picking Moonshine starts the download here, and
   // Test is blocked until it's ready instead of hanging on the download.
@@ -524,7 +561,11 @@ function SttCard({ settings, update }: { settings: JuneSettings; update: (s: Jun
       setResult(
         text
           ? { ok: true, detail: `Heard: "${text}"`, ms }
-          : { ok: false, detail: "Transcription came back empty - try speaking during the test.", ms },
+          : {
+              ok: false,
+              detail: "Transcription came back empty - try speaking during the test.",
+              ms,
+            },
       );
     } catch (e) {
       setResult({ ok: false, detail: msg(e), ms: 0 });
@@ -556,7 +597,11 @@ function SttCard({ settings, update }: { settings: JuneSettings; update: (s: Jun
       </div>
       <div className="stage-row">
         <span className="stage-label">Microphone</span>
-        <DevicePicker kind="audioinput" value={settings.micDeviceId} onChange={(id) => update({ ...settings, micDeviceId: id })} />
+        <DevicePicker
+          kind="audioinput"
+          value={settings.micDeviceId}
+          onChange={(id) => update({ ...settings, micDeviceId: id })}
+        />
       </div>
       {setup.row}
       <div className="settings-test">
@@ -579,22 +624,41 @@ function SttCard({ settings, update }: { settings: JuneSettings; update: (s: Jun
   );
 }
 
-function BrainCard({ settings, update }: { settings: JuneSettings; update: (s: JuneSettings) => void }) {
+function BrainCard({
+  settings,
+  update,
+}: {
+  settings: JuneSettings;
+  update: (s: JuneSettings) => void;
+}) {
   const provider = resolveProvider("brain", settings.brain.provider);
 
-  const runTest = (): Promise<ProbeResult> => testBrain(settings.brain.provider, brainBaseUrl(settings));
+  const runTest = (): Promise<ProbeResult> =>
+    testBrain(settings.brain.provider, brainBaseUrl(settings));
 
   return (
     <div className="stage-card">
       <div className="stage-row">
         <span className="stage-label">Brain</span>
-        <ProviderSelect stage="brain" label="Brain" value={settings.brain.provider} onChange={(id) => update(withProvider(settings, "brain", id))} />
+        <ProviderSelect
+          stage="brain"
+          label="Brain"
+          value={settings.brain.provider}
+          onChange={(id) => update(withProvider(settings, "brain", id))}
+        />
         {provider && (
-          <ModelInput provider={provider} label="Brain" value={settings.brain.model} onChange={(v) => update({ ...settings, brain: { ...settings.brain, model: v } })} />
+          <ModelInput
+            provider={provider}
+            label="Brain"
+            value={settings.brain.model}
+            onChange={(v) => update({ ...settings, brain: { ...settings.brain, model: v } })}
+          />
         )}
         <select
           value={settings.brain.effort}
-          onChange={(e) => update({ ...settings, brain: { ...settings.brain, effort: e.target.value as Effort } })}
+          onChange={(e) =>
+            update({ ...settings, brain: { ...settings.brain, effort: e.target.value as Effort } })
+          }
           title="Reasoning effort"
           aria-label="Reasoning effort"
         >
@@ -622,7 +686,13 @@ function BrainCard({ settings, update }: { settings: JuneSettings; update: (s: J
   );
 }
 
-function TtsCard({ settings, update }: { settings: JuneSettings; update: (s: JuneSettings) => void }) {
+function TtsCard({
+  settings,
+  update,
+}: {
+  settings: JuneSettings;
+  update: (s: JuneSettings) => void;
+}) {
   const provider = resolveProvider("tts", settings.tts.provider);
   // Local model warm-up (1.5): picking Kokoro starts the download here.
   const setup = useLocalModelSetup("tts", settings.tts.provider, settings.tts.model);
@@ -640,8 +710,20 @@ function TtsCard({ settings, update }: { settings: JuneSettings; update: (s: Jun
     <div className="stage-card">
       <div className="stage-row">
         <span className="stage-label">Text to speech</span>
-        <ProviderSelect stage="tts" label="Text to speech" value={settings.tts.provider} onChange={(id) => update(withProvider(settings, "tts", id))} />
-        {provider && <ModelInput provider={provider} label="Text to speech" value={settings.tts.model} onChange={(v) => update({ ...settings, tts: { ...settings.tts, model: v } })} />}
+        <ProviderSelect
+          stage="tts"
+          label="Text to speech"
+          value={settings.tts.provider}
+          onChange={(id) => update(withProvider(settings, "tts", id))}
+        />
+        {provider && (
+          <ModelInput
+            provider={provider}
+            label="Text to speech"
+            value={settings.tts.model}
+            onChange={(v) => update({ ...settings, tts: { ...settings.tts, model: v } })}
+          />
+        )}
         <select
           value={settings.tts.voice}
           onChange={(e) => update({ ...settings, tts: { ...settings.tts, voice: e.target.value } })}
@@ -657,7 +739,11 @@ function TtsCard({ settings, update }: { settings: JuneSettings; update: (s: Jun
       </div>
       <div className="stage-row">
         <span className="stage-label">Speaker</span>
-        <DevicePicker kind="audiooutput" value={settings.outputDeviceId} onChange={(id) => update({ ...settings, outputDeviceId: id })} />
+        <DevicePicker
+          kind="audiooutput"
+          value={settings.outputDeviceId}
+          onChange={(id) => update({ ...settings, outputDeviceId: id })}
+        />
       </div>
       <div className="stage-row">
         <span className="stage-label">Volume</span>
@@ -687,7 +773,10 @@ function withProvider(settings: JuneSettings, stage: Stage, providerId: string):
   const model = p?.models[0]?.id ?? "";
   const cur = settings[stage];
   if (stage === "tts") {
-    return { ...settings, tts: { ...settings.tts, provider: providerId, model, voice: defaultVoiceFor(providerId) } };
+    return {
+      ...settings,
+      tts: { ...settings.tts, provider: providerId, model, voice: defaultVoiceFor(providerId) },
+    };
   }
   return { ...settings, [stage]: { ...cur, provider: providerId, model } };
 }
@@ -698,7 +787,10 @@ function KeysSection() {
   return (
     <section className="settings-section">
       <h2>API keys</h2>
-      <p className="settings-hint">Stored in your OS keychain, never in settings files. Local providers (Ollama, LM Studio) need no key.</p>
+      <p className="settings-hint">
+        Stored in your OS keychain, never in settings files. Local providers (Ollama, LM Studio)
+        need no key.
+      </p>
       {keyedProviders().map((p) => (
         <KeyRow key={p.keyService} label={p.label} keyService={p.keyService} />
       ))}
@@ -771,7 +863,13 @@ function KeyRow({ label, keyService }: { label: string; keyService: string }) {
 
 // --- Privacy --------------------------------------------------------------
 
-function PrivacySection({ settings, update }: { settings: JuneSettings; update: (s: JuneSettings) => void }) {
+function PrivacySection({
+  settings,
+  update,
+}: {
+  settings: JuneSettings;
+  update: (s: JuneSettings) => void;
+}) {
   const violations = privacyViolations(settings);
   return (
     <section className="settings-section">
@@ -820,8 +918,8 @@ function ClearActivity() {
   return (
     <div className="clear-activity">
       <p className="privacy-desc">
-        June records your runs and an audit trail on this device (the Runs tab reads them). They're kept until you clear
-        them here; on-device privacy modes redact prompt and reply content.
+        June records your runs and an audit trail on this device (the Runs tab reads them). They're
+        kept until you clear them here; on-device privacy modes redact prompt and reply content.
       </p>
       {armed ? (
         <div className="clear-activity-confirm">
@@ -850,9 +948,16 @@ function ClearActivity() {
 
 // --- Activation -----------------------------------------------------------
 
-function ActivationSection({ settings, update }: { settings: JuneSettings; update: (s: JuneSettings) => void }) {
+function ActivationSection({
+  settings,
+  update,
+}: {
+  settings: JuneSettings;
+  update: (s: JuneSettings) => void;
+}) {
   const wake = settings.wake;
-  const setWake = (next: Partial<JuneSettings["wake"]>) => update({ ...settings, wake: { ...wake, ...next } });
+  const setWake = (next: Partial<JuneSettings["wake"]>) =>
+    update({ ...settings, wake: { ...wake, ...next } });
   // Wake uses cloud STT today, so it can't run under a mode that keeps voice
   // on-device (there is no local voice provider yet) - say so instead of failing.
   const voiceOff = !voiceAllowed(settings);
@@ -876,7 +981,9 @@ function ActivationSection({ settings, update }: { settings: JuneSettings; updat
       ),
       listen("capture://down", () => setCaptureVerified(true)),
       listen<{ ok: boolean; error?: string | null }>("capture://status", (e) =>
-        setCaptureError(e.payload.ok ? null : (e.payload.error ?? "Couldn't register that hotkey.")),
+        setCaptureError(
+          e.payload.ok ? null : (e.payload.error ?? "Couldn't register that hotkey."),
+        ),
       ),
     ];
     return () => unlisten.forEach((p) => void p.then((f) => f()));
@@ -971,8 +1078,8 @@ function ActivationSection({ settings, update }: { settings: JuneSettings; updat
           <span>
             <span className="privacy-name">Start June at login</span>
             <span className="privacy-desc">
-              Launch the widget automatically when you sign in, so wake word, push to talk and schedules survive a
-              reboot.
+              Launch the widget automatically when you sign in, so wake word, push to talk and
+              schedules survive a reboot.
             </span>
           </span>
         </label>
@@ -989,9 +1096,9 @@ function ActivationSection({ settings, update }: { settings: JuneSettings; updat
           <span>
             <span className="privacy-name">Wake word (hands-free)</span>
             <span className="privacy-desc">
-              Say the wake word to start a command without touching the keyboard. Detected on-device (openWakeWord); the
-              command itself still uses your speech-to-text provider, so hands-free stays off in privacy modes that keep
-              voice on-device.
+              Say the wake word to start a command without touching the keyboard. Detected on-device
+              (openWakeWord); the command itself still uses your speech-to-text provider, so
+              hands-free stays off in privacy modes that keep voice on-device.
             </span>
           </span>
         </label>
@@ -1008,8 +1115,9 @@ function ActivationSection({ settings, update }: { settings: JuneSettings; updat
               />
             </div>
             <p className="settings-hint">
-              The on-device wake word is currently <strong>"hey jarvis"</strong> (a trained "hey june" model is coming).
-              This phrase applies only to the cloud fallback used if the local model can't load.
+              The on-device wake word is currently <strong>"hey jarvis"</strong> (a trained "hey
+              june" model is coming). This phrase applies only to the cloud fallback used if the
+              local model can't load.
             </p>
             <div className="stage-row">
               <span className="stage-label">Sensitivity</span>
@@ -1023,14 +1131,20 @@ function ActivationSection({ settings, update }: { settings: JuneSettings; updat
                 onChange={(e) => setWake({ sensitivity: Number(e.target.value) })}
               />
               <span className="settings-hint">
-                {wake.sensitivity >= 0.75 ? "Strict - fewest false triggers" : wake.sensitivity <= 0.35 ? "Loose - easiest to trigger" : "Balanced"}
+                {wake.sensitivity >= 0.75
+                  ? "Strict - fewest false triggers"
+                  : wake.sensitivity <= 0.35
+                    ? "Loose - easiest to trigger"
+                    : "Balanced"}
               </span>
             </div>
           </>
         )}
 
         {voiceOff && (
-          <p className="settings-hint">Wake word is unavailable in your current privacy mode. Switch to Standard to use it.</p>
+          <p className="settings-hint">
+            Wake word is unavailable in your current privacy mode. Switch to Standard to use it.
+          </p>
         )}
       </div>
     </section>
@@ -1042,7 +1156,13 @@ function ActivationSection({ settings, update }: { settings: JuneSettings; updat
 // Hands-free & conversational voice UX (PLAN.md Phase 14). Every toggle is off by
 // default: manual review + click-to-approve is the safe baseline. Voice-off modes
 // disable the whole group (there is no local voice provider for these flows yet).
-function HandsFreeSection({ settings, update }: { settings: JuneSettings; update: (s: JuneSettings) => void }) {
+function HandsFreeSection({
+  settings,
+  update,
+}: {
+  settings: JuneSettings;
+  update: (s: JuneSettings) => void;
+}) {
   const hands = settings.handsFree;
   const setHands = (next: Partial<JuneSettings["handsFree"]>) =>
     update({ ...settings, handsFree: { ...hands, ...next } });
@@ -1075,8 +1195,8 @@ function HandsFreeSection({ settings, update }: { settings: JuneSettings; update
     <section className="settings-section">
       <h2>Hands-free</h2>
       <p className="settings-hint">
-        A fully spoken loop - wake, command, spoken approval, follow-up - with hands off the keyboard. All off by
-        default; turn on only what you want.
+        A fully spoken loop - wake, command, spoken approval, follow-up - with hands off the
+        keyboard. All off by default; turn on only what you want.
       </p>
       <div className="stage-card">
         {rows.map((r) => (
@@ -1094,7 +1214,9 @@ function HandsFreeSection({ settings, update }: { settings: JuneSettings; update
           </label>
         ))}
         {voiceOff && (
-          <p className="settings-hint">Hands-free is unavailable in your current privacy mode. Switch to Standard to use it.</p>
+          <p className="settings-hint">
+            Hands-free is unavailable in your current privacy mode. Switch to Standard to use it.
+          </p>
         )}
       </div>
     </section>
@@ -1109,7 +1231,13 @@ function HandsFreeSection({ settings, update }: { settings: JuneSettings; update
 // snippets are user term maps (the dictionary also grows itself from corrections
 // made at the review gate). Dictation mode itself is a toggle in the widget - a
 // held Ctrl+Shift+Space types your speech into the focused app.
-function TranscriptSection({ settings, update }: { settings: JuneSettings; update: (s: JuneSettings) => void }) {
+function TranscriptSection({
+  settings,
+  update,
+}: {
+  settings: JuneSettings;
+  update: (s: JuneSettings) => void;
+}) {
   const t = settings.transcript;
   const setT = (next: Partial<JuneSettings["transcript"]>) =>
     update({ ...settings, transcript: { ...t, ...next } });
@@ -1119,18 +1247,24 @@ function TranscriptSection({ settings, update }: { settings: JuneSettings; updat
       <h2>Dictation &amp; transcript</h2>
       <p className="settings-hint">
         Turn on <strong>dictation</strong> from the widget (the keyboard icon), then hold{" "}
-        <kbd>{hotkeyLabel(settings.pttHotkey)}</kbd> to type your speech into whatever app is focused. Cleaning below
-        applies to both dictation and spoken commands, and runs entirely on-device.
+        <kbd>{hotkeyLabel(settings.pttHotkey)}</kbd> to type your speech into whatever app is
+        focused. Cleaning below applies to both dictation and spoken commands, and runs entirely
+        on-device.
       </p>
 
       <div className="stage-card">
         <label className="wake-toggle">
-          <input type="checkbox" checked={t.autoEdit} onChange={(e) => setT({ autoEdit: e.target.checked })} />
+          <input
+            type="checkbox"
+            checked={t.autoEdit}
+            onChange={(e) => setT({ autoEdit: e.target.checked })}
+          />
           <span>
             <span className="privacy-name">Auto-edit transcripts</span>
             <span className="privacy-desc">
-              Strip fillers (“um”, “uh”), tidy spacing and punctuation, and capitalize - before the review card and before
-              dictation injection. Your dictionary and snippets always apply regardless.
+              Strip fillers (“um”, “uh”), tidy spacing and punctuation, and capitalize - before the
+              review card and before dictation injection. Your dictionary and snippets always apply
+              regardless.
             </span>
           </span>
         </label>
@@ -1178,11 +1312,20 @@ function TranscriptSection({ settings, update }: { settings: JuneSettings; updat
 // Conversation memory (PLAN.md Phase 11.2). June now carries context across
 // turns; this sets how long an idle gap must be before the next command starts a
 // fresh conversation. 0 = never auto-reset (use "New conversation" to clear it).
-function ConversationSection({ settings, update }: { settings: JuneSettings; update: (s: JuneSettings) => void }) {
+function ConversationSection({
+  settings,
+  update,
+}: {
+  settings: JuneSettings;
+  update: (s: JuneSettings) => void;
+}) {
   return (
     <section className="settings-section">
       <h2>Conversation</h2>
-      <p className="settings-hint">June remembers the current conversation across turns. Use “New conversation” in either window to clear it.</p>
+      <p className="settings-hint">
+        June remembers the current conversation across turns. Use “New conversation” in either
+        window to clear it.
+      </p>
       <div className="stage-card">
         <div className="stage-row">
           <span className="stage-label">New conversation after</span>
@@ -1193,7 +1336,10 @@ function ConversationSection({ settings, update }: { settings: JuneSettings; upd
             value={settings.conversationIdleMinutes}
             aria-label="Minutes idle before a new conversation starts"
             onChange={(e) =>
-              update({ ...settings, conversationIdleMinutes: Math.max(0, Math.floor(Number(e.target.value) || 0)) })
+              update({
+                ...settings,
+                conversationIdleMinutes: Math.max(0, Math.floor(Number(e.target.value) || 0)),
+              })
             }
           />
           <span className="settings-hint">
@@ -1270,7 +1416,11 @@ function NotesSection({
           rows={6}
         />
         <div className="settings-test">
-          <button className="primary" onClick={() => text !== null && save(text)} disabled={loading || busy || !dirty}>
+          <button
+            className="primary"
+            onClick={() => text !== null && save(text)}
+            disabled={loading || busy || !dirty}
+          >
             {busy ? "Saving…" : "Save"}
           </button>
           <button
@@ -1316,26 +1466,39 @@ function LessonsSection() {
 // server, not new core code) and is local/offline-safe, so it stays on under
 // Strict offline. Off by default - the filesystem is exposed only on opt-in, and
 // only for the one folder chosen here. saple-bridge-control is always attached.
-function CapabilitiesSection({ settings, update }: { settings: JuneSettings; update: (s: JuneSettings) => void }) {
+function CapabilitiesSection({
+  settings,
+  update,
+}: {
+  settings: JuneSettings;
+  update: (s: JuneSettings) => void;
+}) {
   const files = settings.files;
-  const setFiles = (next: Partial<JuneSettings["files"]>) => update({ ...settings, files: { ...files, ...next } });
+  const setFiles = (next: Partial<JuneSettings["files"]>) =>
+    update({ ...settings, files: { ...files, ...next } });
   const rootMissing = files.enabled && !files.root.trim();
 
   return (
     <section className="settings-section">
       <h2>Capabilities</h2>
       <p className="settings-hint">
-        Capabilities are MCP servers. <strong>saple-bridge-control</strong> is always connected; enable others below.
+        Capabilities are MCP servers. <strong>saple-bridge-control</strong> is always connected;
+        enable others below.
       </p>
 
       <div className="stage-card">
         <label className="wake-toggle">
-          <input type="checkbox" checked={files.enabled} onChange={(e) => setFiles({ enabled: e.target.checked })} />
+          <input
+            type="checkbox"
+            checked={files.enabled}
+            onChange={(e) => setFiles({ enabled: e.target.checked })}
+          />
           <span>
             <span className="privacy-name">Files (local folder)</span>
             <span className="privacy-desc">
-              Let June read and write files inside one folder you choose. Runs entirely on-device - no network - so it
-              stays available in every privacy mode. Reads are automatic; writing a file always asks first.
+              Let June read and write files inside one folder you choose. Runs entirely on-device -
+              no network - so it stays available in every privacy mode. Reads are automatic; writing
+              a file always asks first.
             </span>
           </span>
         </label>
@@ -1352,7 +1515,9 @@ function CapabilitiesSection({ settings, update }: { settings: JuneSettings; upd
           </div>
         )}
         {rootMissing && (
-          <p className="settings-hint err">Choose a folder - June needs one allowed folder before it can touch files.</p>
+          <p className="settings-hint err">
+            Choose a folder - June needs one allowed folder before it can touch files.
+          </p>
         )}
       </div>
 
@@ -1382,7 +1547,13 @@ const CLASS_OPTIONS: { value: "" | McpClass; label: string }[] = [
 // (agent_runner::mcp_servers_env). This is the keychain-per-server surface that
 // replaced the earlier plaintext KEY=value textarea.
 
-function McpServersSubsection({ settings, update }: { settings: JuneSettings; update: (s: JuneSettings) => void }) {
+function McpServersSubsection({
+  settings,
+  update,
+}: {
+  settings: JuneSettings;
+  update: (s: JuneSettings) => void;
+}) {
   const servers = settings.mcpServers;
   const setServers = (next: McpServerEntry[]) => update({ ...settings, mcpServers: next });
 
@@ -1394,7 +1565,8 @@ function McpServersSubsection({ settings, update }: { settings: JuneSettings; up
   // in the credential store (best-effort: a delete failure still removes the entry).
   const remove = async (entry: McpServerEntry) => {
     const t = entry.transport;
-    const [secretMap, kind] = t.kind === "stdio" ? [t.env, "env" as const] : [t.headers, "hdr" as const];
+    const [secretMap, kind] =
+      t.kind === "stdio" ? [t.env, "env" as const] : [t.headers, "hdr" as const];
     for (const [key, val] of Object.entries(secretMap)) {
       if (val !== "") await deleteMcpSecret(entry.id, kind, key).catch(() => {});
     }
@@ -1409,7 +1581,13 @@ function McpServersSubsection({ settings, update }: { settings: JuneSettings; up
   };
   const addBlank = () => {
     const id = freshId();
-    upsert({ id, label: "New server", enabled: false, offlineSafe: false, transport: { kind: "stdio", command: "npx", args: [], env: {} } });
+    upsert({
+      id,
+      label: "New server",
+      enabled: false,
+      offlineSafe: false,
+      transport: { kind: "stdio", command: "npx", args: [], env: {} },
+    });
   };
   const addPreset = (id: string) => {
     const preset = MCP_CATALOG.find((c) => c.entry.id === id);
@@ -1420,8 +1598,9 @@ function McpServersSubsection({ settings, update }: { settings: JuneSettings; up
     <>
       <h3 className="settings-subhead">Custom MCP servers</h3>
       <p className="settings-hint">
-        Add any MCP server and June can use it - no June update needed. Tools from a new server always ask for approval
-        until you promote the server to a safer class. Networked servers are turned off under Strict offline.
+        Add any MCP server and June can use it - no June update needed. Tools from a new server
+        always ask for approval until you promote the server to a safer class. Networked servers are
+        turned off under Strict offline.
       </p>
 
       {servers.map((s) => (
@@ -1623,10 +1802,16 @@ function McpServerCard({
     <div className="stage-card">
       <div className="stage-row">
         <label className="wake-toggle" style={{ flex: 1 }}>
-          <input type="checkbox" checked={entry.enabled} onChange={(e) => onChange({ ...entry, enabled: e.target.checked })} />
+          <input
+            type="checkbox"
+            checked={entry.enabled}
+            onChange={(e) => onChange({ ...entry, enabled: e.target.checked })}
+          />
           <input
             value={entry.label}
-            onChange={(e) => onChange({ ...entry, label: e.target.value, id: entry.id || slugify(e.target.value) })}
+            onChange={(e) =>
+              onChange({ ...entry, label: e.target.value, id: entry.id || slugify(e.target.value) })
+            }
             placeholder="Server name"
           />
         </label>
@@ -1656,11 +1841,17 @@ function McpServerCard({
         <>
           <div className="stage-row">
             <span className="stage-label">Command</span>
-            <input value={t.command} onChange={(e) => setTransport({ ...t, command: e.target.value })} placeholder="npx" />
+            <input
+              value={t.command}
+              onChange={(e) => setTransport({ ...t, command: e.target.value })}
+              placeholder="npx"
+            />
             <input
               className="wide"
               value={t.args.join(" ")}
-              onChange={(e) => setTransport({ ...t, args: e.target.value.split(/\s+/).filter(Boolean) })}
+              onChange={(e) =>
+                setTransport({ ...t, args: e.target.value.split(/\s+/).filter(Boolean) })
+              }
               placeholder="-y @modelcontextprotocol/server-github@2025.4.8"
             />
           </div>
@@ -1703,7 +1894,11 @@ function McpServerCard({
 
       <div className="stage-row">
         <label className="wake-toggle">
-          <input type="checkbox" checked={entry.offlineSafe} onChange={(e) => onChange({ ...entry, offlineSafe: e.target.checked })} />
+          <input
+            type="checkbox"
+            checked={entry.offlineSafe}
+            onChange={(e) => onChange({ ...entry, offlineSafe: e.target.checked })}
+          />
           <span className="privacy-name">Offline-safe (runs fully on-device)</span>
         </label>
       </div>
@@ -1726,328 +1921,6 @@ function McpServerCard({
         </select>
       </div>
     </div>
-  );
-}
-
-/** Fire one schedule on demand (2.4): a one-off unattended run so the user can test
- *  a 9am briefing without waiting for 9am. Reads the SAVED schedule from disk, so a
- *  just-typed edit needs its debounced save to land first (hence the hint). Result
- *  lands in the Runs tab. Disabled for a schedule with an empty prompt (nothing to
- *  run). */
-function RunNowButton({ id, disabled }: { id: string; disabled: boolean }) {
-  const [note, setNote] = useState<string | null>(null);
-  const run = () => {
-    setNote(null);
-    void runScheduleNow(id)
-      .then(() => setNote("Started - watch the Runs tab."))
-      .catch((e) => setNote(msg(e)));
-  };
-  return (
-    <>
-      <button onClick={run} disabled={disabled} title="Run this saved schedule once now">
-        Run now
-      </button>
-      {note && <span className="settings-hint">{note}</span>}
-    </>
-  );
-}
-
-// --- Automation (Phase 18) ------------------------------------------------
-// Scheduled runs and file-watch triggers. Both fire UNATTENDED: any action that
-// needs approval is blocked automatically (18.2), never auto-approved, and the
-// audit log records everything the run did. All opt-in, off by default.
-
-const DAY_LABELS = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
-const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
-
-/** The run ledger, for the automation cards' last-outcome line (6.2). Refreshes on
- *  `runs://updated` so a run that just landed shows without reopening Settings. */
-function useRuns(): RunRecord[] {
-  const [runs, setRuns] = useState<RunRecord[]>([]);
-  useEffect(() => {
-    const load = () => void readRuns().then(setRuns);
-    load();
-    const unlisten = listen("runs://updated", load);
-    return () => void unlisten.then((f) => f());
-  }, []);
-  return runs;
-}
-
-/** Confirmation line under an automation card (6.2): the next fire time (schedules
- *  only - triggers and watches have no clock the UI can anchor) and the last matching
- *  ledger outcome, so a card is no longer write-only. */
-function CardStatus({ next, source, runs }: { next?: string; source: string; runs: RunRecord[] }) {
-  const last = lastRunFor(runs, source);
-  return (
-    <p className="card-status">
-      {next && <span className="card-next">{next}</span>}
-      {last ? (
-        <span className={`card-last ${last.isError ? "bad" : "ok"}`}>
-          {last.isError ? "✗" : "✓"} last ran {relativeTime(last.started)}
-          {last.blocked.length > 0 ? ` (${last.blocked.length} blocked)` : ""}
-        </span>
-      ) : (
-        <span className="card-last">no runs yet</span>
-      )}
-    </p>
-  );
-}
-
-function AutomationSection({ settings, update }: { settings: JuneSettings; update: (s: JuneSettings) => void }) {
-  const { schedules, triggers, watches } = settings;
-  const runs = useRuns();
-  const now = new Date();
-
-  const setSchedules = (next: Schedule[]) => update({ ...settings, schedules: next });
-  const setTriggers = (next: FileTrigger[]) => update({ ...settings, triggers: next });
-  const setWatches = (next: WatchLoop[]) => update({ ...settings, watches: next });
-
-  const freshId = (base: string, taken: { id: string }[]): string => {
-    if (!taken.some((t) => t.id === base)) return base;
-    for (let n = 2; ; n++) if (!taken.some((t) => t.id === `${base}-${n}`)) return `${base}-${n}`;
-  };
-
-  const addSchedule = () =>
-    setSchedules([
-      ...schedules,
-      { id: freshId("schedule", schedules), label: "New schedule", prompt: "", kind: "daily", time: "09:00", days: [], everyMinutes: 60, at: "", enabled: false },
-    ]);
-  const addTrigger = () =>
-    setTriggers([
-      ...triggers,
-      { id: freshId("trigger", triggers), label: "New trigger", path: "", prompt: "", enabled: false },
-    ]);
-  const addWatch = () =>
-    setWatches([
-      ...watches,
-      { id: freshId("watch", watches), label: "New watch", prompt: "", everyMinutes: 10, untilCondition: "", enabled: false },
-    ]);
-
-  const patchSchedule = (id: string, p: Partial<Schedule>) =>
-    setSchedules(schedules.map((s) => (s.id === id ? { ...s, ...p } : s)));
-  const patchTrigger = (id: string, p: Partial<FileTrigger>) =>
-    setTriggers(triggers.map((t) => (t.id === id ? { ...t, ...p } : t)));
-  const patchWatch = (id: string, p: Partial<WatchLoop>) =>
-    setWatches(watches.map((w) => (w.id === id ? { ...w, ...p } : w)));
-
-  return (
-    <section className="settings-section">
-      <h2>Automation</h2>
-      <p className="settings-hint">
-        June can run on a schedule or when a file changes - <strong>unattended</strong>. Any action that needs approval is
-        blocked automatically and you're notified; June never approves its own actions. Every run is in the audit log.
-      </p>
-
-      <h3 className="settings-subhead">Scheduled runs</h3>
-      {schedules.map((s) => (
-        <div key={s.id} className="stage-card">
-          <div className="stage-row">
-            <input
-              className="wide"
-              value={s.label}
-              onChange={(e) => patchSchedule(s.id, { label: e.target.value })}
-              placeholder="Morning briefing"
-            />
-            <label className="wake-toggle">
-              <input type="checkbox" checked={s.enabled} onChange={(e) => patchSchedule(s.id, { enabled: e.target.checked })} />
-              <span>Enabled</span>
-            </label>
-            <RunNowButton id={s.id} disabled={!s.prompt.trim()} />
-            <button onClick={() => setSchedules(schedules.filter((x) => x.id !== s.id))}>Remove</button>
-          </div>
-          {/* A `once` reminder (improvement-6 4.1) is created by voice and retires
-              itself after firing, so it is read-only here - only its one-time fire
-              time is shown, not the recurring daily/every controls. */}
-          {s.kind === "once" ? (
-            <div className="stage-row">
-              <span className="stage-label">Reminder</span>
-              <span className="settings-hint">one-time at {s.at || "—"} (created by voice)</span>
-            </div>
-          ) : (
-            <div className="stage-row">
-              <span className="stage-label">Repeat</span>
-              <select
-                value={s.kind}
-                onChange={(e) => patchSchedule(s.id, { kind: e.target.value === "every" ? "every" : "daily" })}
-                title="How this schedule recurs"
-                aria-label="How this schedule recurs"
-              >
-                <option value="daily">Daily at a time</option>
-                <option value="every">Every N minutes</option>
-              </select>
-            </div>
-          )}
-          {s.kind === "once" ? null : s.kind === "every" ? (
-            <div className="stage-row">
-              <span className="stage-label">Every</span>
-              <input
-                type="number"
-                min={1}
-                className="num"
-                value={s.everyMinutes}
-                onChange={(e) => patchSchedule(s.id, { everyMinutes: Math.max(1, Math.floor(Number(e.target.value) || 1)) })}
-              />
-              <span className="settings-hint">minutes</span>
-            </div>
-          ) : (
-            <div className="stage-row">
-              <span className="stage-label">At</span>
-              <input
-                type="time"
-                value={s.time}
-                aria-label="Time of day"
-                onChange={(e) => patchSchedule(s.id, { time: e.target.value || "09:00" })}
-              />
-              <span className="settings-hint">
-                {DAY_LABELS.map((lbl, d) => {
-                  const on = s.days.includes(d);
-                  return (
-                    <button
-                      key={d}
-                      className={on ? "day-on" : "day-off"}
-                      aria-pressed={on}
-                      aria-label={DAY_NAMES[d]}
-                      onClick={() =>
-                        patchSchedule(s.id, {
-                          days: on ? s.days.filter((x) => x !== d) : [...s.days, d].sort((a, b) => a - b),
-                        })
-                      }
-                    >
-                      {lbl}
-                    </button>
-                  );
-                })}
-                {s.days.length === 0 ? " every day" : ""}
-              </span>
-            </div>
-          )}
-          <textarea
-            className="memory-text"
-            value={s.prompt}
-            onChange={(e) => patchSchedule(s.id, { prompt: e.target.value })}
-            placeholder="Give me a short briefing of today's calendar and any unread priority mail."
-            rows={2}
-          />
-          <CardStatus next={describeNext(s, now)} source={`schedule: ${s.label}`} runs={runs} />
-        </div>
-      ))}
-      <div className="settings-test">
-        <button onClick={addSchedule}>Add schedule</button>
-      </div>
-
-      <h3 className="settings-subhead">File triggers</h3>
-      <p className="settings-hint">
-        When the watched file changes, June opens an investigation with the file's new contents as context. That content is
-        treated as <strong>untrusted</strong> - information only, never instructions - and can never authorize an action.
-      </p>
-      {triggers.map((t) => (
-        <div key={t.id} className="stage-card">
-          <div className="stage-row">
-            <input
-              className="wide"
-              value={t.label}
-              onChange={(e) => patchTrigger(t.id, { label: e.target.value })}
-              placeholder="Error log watch"
-            />
-            <label className="wake-toggle">
-              <input type="checkbox" checked={t.enabled} onChange={(e) => patchTrigger(t.id, { enabled: e.target.checked })} />
-              <span>Enabled</span>
-            </label>
-            <button onClick={() => setTriggers(triggers.filter((x) => x.id !== t.id))}>Remove</button>
-          </div>
-          <div className="stage-row">
-            <span className="stage-label">Watch file</span>
-            <input
-              className="wide"
-              value={t.path}
-              onChange={(e) => patchTrigger(t.id, { path: e.target.value })}
-              placeholder="C:\logs\app\error.log"
-            />
-          </div>
-          <textarea
-            className="memory-text"
-            value={t.prompt}
-            onChange={(e) => patchTrigger(t.id, { prompt: e.target.value })}
-            placeholder="Summarize the newest error and suggest a likely cause."
-            rows={2}
-          />
-          <CardStatus source={`trigger: ${t.label}`} runs={runs} />
-        </div>
-      ))}
-      <div className="settings-test">
-        <button onClick={addTrigger}>Add trigger</button>
-      </div>
-
-      <h3 className="settings-subhead">Watch loops</h3>
-      <p className="settings-hint">
-        June re-checks something on an interval and stops when a condition holds - "check the build every ten minutes until
-        it's green". Each check is <strong>unattended</strong> (observe-only), and June stops after {30} checks even if the
-        condition never comes true.
-      </p>
-      {watches.map((w) => (
-        <div key={w.id} className="stage-card">
-          <div className="stage-row">
-            <input
-              className="wide"
-              value={w.label}
-              onChange={(e) => patchWatch(w.id, { label: e.target.value })}
-              placeholder="Build watch"
-            />
-            <label className="wake-toggle">
-              <input type="checkbox" checked={w.enabled} onChange={(e) => patchWatch(w.id, { enabled: e.target.checked })} />
-              <span>Enabled</span>
-            </label>
-            <button onClick={() => setWatches(watches.filter((x) => x.id !== w.id))}>Remove</button>
-          </div>
-          <div className="stage-row">
-            <span className="stage-label">Every</span>
-            <input
-              type="number"
-              min={1}
-              className="num"
-              value={w.everyMinutes}
-              onChange={(e) => patchWatch(w.id, { everyMinutes: Math.max(1, Math.floor(Number(e.target.value) || 1)) })}
-            />
-            <span className="settings-hint">minutes</span>
-          </div>
-          <textarea
-            className="memory-text"
-            value={w.prompt}
-            onChange={(e) => patchWatch(w.id, { prompt: e.target.value })}
-            placeholder="Check whether the CI build for the main branch has finished."
-            rows={2}
-          />
-          <div className="stage-row">
-            <span className="stage-label">Until</span>
-            <input
-              className="wide"
-              value={w.untilCondition}
-              onChange={(e) => patchWatch(w.id, { untilCondition: e.target.value })}
-              placeholder="the build is green"
-            />
-          </div>
-          <div className="stage-row">
-            <span className="stage-label">Stop after</span>
-            <input
-              type="number"
-              min={1}
-              className="num"
-              value={w.maxChecks ?? ""}
-              placeholder="30"
-              onChange={(e) => {
-                const n = Math.floor(Number(e.target.value));
-                patchWatch(w.id, { maxChecks: Number.isFinite(n) && n >= 1 ? n : undefined });
-              }}
-            />
-            <span className="settings-hint">checks (blank = 30)</span>
-          </div>
-          <CardStatus next={`Every ${w.everyMinutes} min`} source={`watch: ${w.label}`} runs={runs} />
-        </div>
-      ))}
-      <div className="settings-test">
-        <button onClick={addWatch}>Add watch loop</button>
-      </div>
-    </section>
   );
 }
 
@@ -2120,7 +1993,9 @@ function DiagnosticsSection() {
       <VoiceHealthReadout health={voice} />
       <div className="diag-row">
         <button onClick={exportReport}>Export diagnostics</button>
-        <span className="settings-hint">Redacted JSON (versions + latency, no keys or transcript) for support.</span>
+        <span className="settings-hint">
+          Redacted JSON (versions + latency, no keys or transcript) for support.
+        </span>
       </div>
       <p className="settings-hint">Per-stage latency is shown by each Test button above.</p>
     </section>
@@ -2132,7 +2007,11 @@ function DiagnosticsSection() {
 // line: 800ms median once the local voice stack (Phase 12) lands.
 function LatencyReadout({ samples }: { samples: LatencySample[] }) {
   if (samples.length === 0) {
-    return <p className="settings-hint">Voice latency: no turns recorded yet - speak a command to see P50/P95.</p>;
+    return (
+      <p className="settings-hint">
+        Voice latency: no turns recorded yet - speak a command to see P50/P95.
+      </p>
+    );
   }
   const totals = samples.map((s) => s.total);
   const p50 = percentile(totals, 50);
@@ -2148,12 +2027,13 @@ function LatencyReadout({ samples }: { samples: LatencySample[] }) {
         <span className={`test-result ${p50 <= 800 ? "ok" : "bad"}`}>P50 {p50} ms</span>
         <span className={`test-result ${p95 <= 2000 ? "ok" : "bad"}`}>P95 {p95} ms</span>
         <span className="settings-hint">
-          {samples.length} turn{samples.length === 1 ? "" : "s"} · targets P50 ≤ 800 ms · P95 ≤ 2000 ms
+          {samples.length} turn{samples.length === 1 ? "" : "s"} · targets P50 ≤ 800 ms · P95 ≤ 2000
+          ms
         </span>
       </div>
       <p className="settings-hint">
-        Median stages: speech-to-text {stage((s) => s.stt)} ms · brain {stage((s) => s.brain)} ms · text-to-speech{" "}
-        {stage((s) => s.tts)} ms
+        Median stages: speech-to-text {stage((s) => s.stt)} ms · brain {stage((s) => s.brain)} ms ·
+        text-to-speech {stage((s) => s.tts)} ms
       </p>
     </div>
   );
@@ -2187,9 +2067,17 @@ function UsageReadout({ usage }: { usage: UsageTotals | null }) {
 function VoiceHealthReadout({ health }: { health: VoiceHealth }) {
   const rows = Object.entries(health);
   if (rows.length === 0) {
-    return <p className="settings-hint">Voice stack: no turns this session yet - speak to see VAD/wake health.</p>;
+    return (
+      <p className="settings-hint">
+        Voice stack: no turns this session yet - speak to see VAD/wake health.
+      </p>
+    );
   }
-  const label: Record<string, string> = { barge: "Barge-in VAD", endpointing: "Endpointing VAD", wake: "Wake word" };
+  const label: Record<string, string> = {
+    barge: "Barge-in VAD",
+    endpointing: "Endpointing VAD",
+    wake: "Wake word",
+  };
   const good = new Set(["silero", "local"]);
   return (
     <div className="diag-latency">
