@@ -41,6 +41,12 @@ export function configureXformers(): void {
       mjs: xfUrl("ort-wasm-simd-threaded.jsep.mjs"),
     };
     wasm.numThreads = 1;
+    // 3.2: run wasm inference in a worker, not on the webview main thread. Moonshine
+    // and every Kokoro sentence otherwise freeze the widget UI and stall the barge-in
+    // Silero inference that shares that thread. proxy is orthogonal to numThreads - it
+    // relocates the single-threaded backend off the UI thread (no cross-origin
+    // isolation needed, unlike SharedArrayBuffer multithreading).
+    wasm.proxy = true;
   }
   // Weights come from the HF hub (cached in the browser), not a local dir.
   env.allowLocalModels = false;

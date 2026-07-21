@@ -213,10 +213,15 @@ round-trip + legacy migration (1.9).
     `RequestBuilder::timeout` (STT 15s, TTS 30s, probes 2s). Dropped the per-call
     `Client::builder()` and its build-error arms. All 40 cargo tests + clippy green.
 
-3.2 **Move local STT/TTS inference off the webview main thread** | P1 | M
+3.2 **Move local STT/TTS inference off the webview main thread** | P1 | M - DONE
     `numThreads: 1`, no worker proxy - Moonshine and every Kokoro sentence freeze the
     widget UI and stall barge-in Silero inference. Set ORT `proxy: true` in
     `src/lib/xformers.ts` (or wrap in a Web Worker); verify barge-in latency before/after.
+    Set `wasm.proxy = true` in `configureXformers()` so the shared transformers.js ORT
+    backend runs in a worker instead of the widget's main thread (orthogonal to the
+    `numThreads: 1` no-SharedArrayBuffer constraint - proxy only relocates the
+    single-threaded backend off the UI thread). Typecheck + eslint green. Barge-in
+    latency before/after still wants a device run - the win is not measurable in CI.
 
 3.3 **Persistent audio front-end: shared mic stream + warm VAD + pre-roll ring buffer** | P1 | L
     Every phase transition reopens `getUserMedia` and a fresh `MicVAD` (100-400ms each on
