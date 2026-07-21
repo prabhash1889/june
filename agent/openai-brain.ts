@@ -269,24 +269,17 @@ export class OpenAiCompatBrain implements Brain {
   ): Promise<{ message: OpenAiMessage; usage?: TokenUsage }> {
     const headers: Record<string, string> = { "content-type": "application/json" };
     if (this.#apiKey) headers.authorization = `Bearer ${this.#apiKey}`;
-
-    const resp = await fetch(`${this.#baseUrl}/chat/completions`, {
-      method: "POST",
-      headers,
-      signal,
-      body: JSON.stringify({
-        model: this.model,
-        messages,
-        ...(tools.length ? { tools, tool_choice: "auto" } : {}),
-      }),
+    const payload = JSON.stringify({
+      model: this.model,
+      messages,
+      ...(tools.length ? { tools, tool_choice: "auto" } : {}),
     });
-    if (!resp.ok) {
-      const body = await resp.text().catch(() => "");
-      // Keep the raw body in the log (piped into june.log, 2.1); speak only a
-      // short mapped sentence so TTS never reads a JSON error blob aloud (2.5).
-      console.error(`[june] model API ${resp.status}: ${body.slice(0, 500).trim()}`);
-      throw new Error(friendlyApiError(resp.status) ?? `the model API returned ${resp.status}.`);
-    }
+
+    // Retry a transient blip a couple of times (3.7): one 429/5xx or a dropped
+    // connection shouldn't kill the spoken turn. A 4xx (auth/bad request) is the
+    // user's problem, not transient - fail it at once. An abort (barge-in/cancel)
+    // is terminal too and propagates unchanged so run() rolls the turn back.
+    const resp = await this.#fetchWithRetry(`${this.#baseUrl}/chat/completions`, headers, payload, signal);
     const json = (await resp.json()) as {
       choices?: { message?: OpenAiMessage }[];
       usage?: { prompt_tokens?: number; completion_tokens?: number };
@@ -302,6 +295,63 @@ export class OpenAiCompatBrain implements Brain {
       message: { role: "assistant", content: message.content ?? null, tool_calls: message.tool_calls },
       usage,
     };
+  }
+
+  /** POST the completion request, retrying a transient failure up to twice (3.7).
+   *  Retries a network throw and a 429/5xx response; a 4xx and an abort are terminal.
+   *  Honors a numeric `Retry-After` on a 429, else backs off exponentially. Returns
+   *  a 2xx response; throws the mapped/raw error on the last (or a terminal) failure. */
+  async #fetchWithRetry(
+    url: string,
+    headers: Record<string, string>,
+    body: string,
+    signal?: AbortSignal,
+  ): Promise<Response> {
+    const MAX_ATTEMPTS = 3; // initial try + 2 retries
+    for (let attempt = 1; ; attempt++) {
+      let resp: Response;
+      try {
+        resp = await fetch(url, { method: "POST", headers, signal, body });
+      } catch (e) {
+        // A network drop retries; an abort (barge-in) does not - propagate it.
+        if (signal?.aborted || attempt >= MAX_ATTEMPTS) throw e;
+        await this.#backoff(attempt, null, signal);
+        continue;
+      }
+      if (resp.ok) return resp;
+      const text = await resp.text().catch(() => "");
+      // Keep the raw body in the log (piped into june.log, 2.1); speak only a
+      // short mapped sentence so TTS never reads a JSON error blob aloud (2.5).
+      console.error(`[june] model API ${resp.status}: ${text.slice(0, 500).trim()}`);
+      const transient = resp.status === 429 || resp.status >= 500;
+      if (transient && attempt < MAX_ATTEMPTS && !signal?.aborted) {
+        await this.#backoff(attempt, resp.headers.get("retry-after"), signal);
+        continue;
+      }
+      throw new Error(friendlyApiError(resp.status) ?? `the model API returned ${resp.status}.`);
+    }
+  }
+
+  /** Wait before a retry: a numeric `Retry-After` (seconds, capped at 10s) if the
+   *  server sent one, else exponential (0.5s, 1s). Rejects at once if the turn is
+   *  aborted mid-wait so a barge-in never stalls on a dead request's backoff.
+   *  ponytail: the HTTP-date form of Retry-After is not parsed - it falls back to
+   *  the exponential delay, which is fine (a 429 uses the seconds form in practice). */
+  #backoff(attempt: number, retryAfter: string | null, signal?: AbortSignal): Promise<void> {
+    let ms = 500 * 2 ** (attempt - 1);
+    const secs = retryAfter ? Number(retryAfter) : NaN;
+    if (Number.isFinite(secs) && secs >= 0) ms = Math.min(secs * 1000, 10_000);
+    return new Promise<void>((resolve, reject) => {
+      const onAbort = () => {
+        clearTimeout(timer);
+        reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
+      };
+      const timer = setTimeout(() => {
+        signal?.removeEventListener("abort", onAbort);
+        resolve();
+      }, ms);
+      signal?.addEventListener("abort", onAbort, { once: true });
+    });
   }
 
   /** Connect to every configured MCP capability server as a client, once, and

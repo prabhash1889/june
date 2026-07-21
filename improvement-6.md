@@ -278,9 +278,18 @@ round-trip + legacy migration (1.9).
     800ms target. Set `includePartialMessages: true` and emit `stream_event` deltas,
     keeping the block path as dedupe fallback. `agent/claude-brain.ts`.
 
-3.7 **Retry transient completion errors** | P2 | S
+3.7 **Retry transient completion errors** | P2 | S - DONE
     One 429/network blip kills the spoken turn. Retry 429/5xx once or twice in
     `#complete`, honor `Retry-After`, bail on abort and 4xx auth. `agent/openai-brain.ts`.
+    Extracted the POST into `#fetchWithRetry` (initial try + 2 retries): a network
+    throw and a 429/5xx retry; a 4xx and an abort (barge-in) are terminal and
+    propagate unchanged so `run()` rolls the turn back / speaks the mapped sentence.
+    `#backoff` honors a numeric `Retry-After` (capped 10s) on a 429, else exponential
+    (0.5s, 1s), and rejects at once if the turn aborts mid-wait so a barge-in never
+    stalls on a dead request. The raw body still lands in june.log; only the short
+    mapped sentence is thrown. `openai-brain.test.ts` pins retry-429-then-succeed,
+    retry-dropped-connection-then-succeed, and 4xx-fails-at-once. (HTTP-date
+    Retry-After falls back to exponential - noted with a ponytail comment.)
 
 3.8 **Give the model a clock** | P2 | S
     Nothing injects the current date/time, yet June creates "daily at 9am" schedules and

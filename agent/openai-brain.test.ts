@@ -122,6 +122,79 @@ describe("cancel", () => {
   });
 });
 
+// 3.7: a transient blip (429/5xx or a dropped connection) must be retried a couple
+// of times rather than killing the spoken turn, while a 4xx (auth) fails at once.
+describe("transient-error retry (3.7)", () => {
+  const brain = () =>
+    new OpenAiCompatBrain({
+      id: "test",
+      model: "m",
+      baseUrl: "http://localhost/v1",
+      apiKey: "k",
+      systemPrompt: "sys",
+      mcpServers: {},
+    });
+  const okResp = (content: string) => ({
+    ok: true,
+    status: 200,
+    headers: { get: () => null },
+    json: async () => ({ choices: [{ message: { role: "assistant", content } }], usage: {} }),
+    text: async () => "",
+  });
+  const errResp = (status: number, retryAfter?: string) => ({
+    ok: false,
+    status,
+    headers: { get: (h: string) => (h.toLowerCase() === "retry-after" ? (retryAfter ?? null) : null) },
+    text: async () => `{"error":"boom"}`,
+  });
+
+  it("retries a 429 (honoring Retry-After) then succeeds", async () => {
+    let calls = 0;
+    vi.stubGlobal("fetch", async () => {
+      calls++;
+      return calls === 1 ? errResp(429, "0") : okResp("hello there");
+    });
+    try {
+      const result = await brain().run("hi", { gate: allowAll });
+      expect(calls).toBe(2);
+      expect(result).toMatchObject({ text: "hello there", isError: false });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("retries a dropped connection then succeeds", async () => {
+    let calls = 0;
+    vi.stubGlobal("fetch", async () => {
+      calls++;
+      if (calls === 1) throw new Error("ECONNRESET");
+      return okResp("recovered");
+    });
+    try {
+      const result = await brain().run("hi", { gate: allowAll });
+      expect(calls).toBe(2);
+      expect(result).toMatchObject({ text: "recovered", isError: false });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("does not retry a 4xx auth error - fails the turn at once", async () => {
+    let calls = 0;
+    vi.stubGlobal("fetch", async () => {
+      calls++;
+      return errResp(401);
+    });
+    try {
+      const result = await brain().run("hi", { gate: allowAll });
+      expect(calls).toBe(1);
+      expect(result.isError).toBe(true);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
 // B4.5: retained history is trimmed so a long-lived session can't grow #messages
 // without bound - but only ever at a whole-turn (user) boundary, so an assistant
 // tool_call is never split from its tool results (which the chat API rejects).
