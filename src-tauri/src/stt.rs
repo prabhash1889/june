@@ -9,7 +9,7 @@
 
 use std::time::Duration;
 
-use crate::keychain::get_api_key_inner;
+use crate::keychain::get_api_key_async;
 
 const OPENAI_KEY_SERVICE: &str = "june_provider_openai_api_key";
 const WHISPER_URL: &str = "https://api.openai.com/v1/audio/transcriptions";
@@ -32,7 +32,8 @@ struct OpenAiStt;
 
 impl SttProvider for OpenAiStt {
     async fn transcribe(&self, audio: Vec<u8>, mime: &str) -> Result<String, String> {
-        let key = get_api_key_inner(OPENAI_KEY_SERVICE.to_string())
+        let key = get_api_key_async(OPENAI_KEY_SERVICE.to_string())
+            .await
             .map_err(|_| "No OpenAI API key set. Add one in June's settings.".to_string())?;
         if key.trim().is_empty() {
             return Err("The OpenAI API key is empty. Set it in June's settings.".to_string());

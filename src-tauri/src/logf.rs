@@ -32,9 +32,7 @@ pub fn log(app: &AppHandle, line: &str) {
     #[cfg(debug_assertions)]
     eprintln!("{line}");
     let Some(path) = log_path(app) else { return };
-    if std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0) > MAX_LOG_BYTES {
-        let _ = std::fs::rename(&path, path.with_extension("log.1"));
-    }
+    crate::fsutil::rotate_if_larger(&path, MAX_LOG_BYTES); // one generation at the cap (7.8a)
     let ts = Local::now().format("%Y-%m-%dT%H:%M:%S");
     let _ = std::fs::OpenOptions::new()
         .create(true)

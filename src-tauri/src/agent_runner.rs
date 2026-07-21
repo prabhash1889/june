@@ -59,9 +59,7 @@ fn append_audit(app: &AppHandle, entry: &serde_json::Value) {
     // audit.jsonl.1 (replacing any prior roll) so a long-lived tray resident can't
     // grow it without bound. One generation of history is kept - plenty for the
     // "reviewable audit trail" the exit criterion names, without unbounded disk.
-    if std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0) > MAX_AUDIT_BYTES {
-        let _ = std::fs::rename(&path, dir.join("audit.jsonl.1"));
-    }
+    crate::fsutil::rotate_if_larger(&path, MAX_AUDIT_BYTES);
     let line = entry.to_string();
     let write = std::fs::OpenOptions::new()
         .create(true)
@@ -159,9 +157,7 @@ pub(crate) fn append_run(
     };
     let _ = std::fs::create_dir_all(&dir);
     let path = dir.join("june-runs.jsonl");
-    if std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0) > MAX_RUNS_BYTES {
-        let _ = std::fs::rename(&path, dir.join("june-runs.jsonl.1"));
-    }
+    crate::fsutil::rotate_if_larger(&path, MAX_RUNS_BYTES);
     let line = record.to_string();
     let write = std::fs::OpenOptions::new()
         .create(true)
@@ -970,6 +966,25 @@ fn await_turn(rx: &Receiver<TurnMsg>, idle: Duration) -> Result<TurnOutcome, ()>
     }
 }
 
+/// Handle a watchdog-wedged turn uniformly (7.8b): drop the turn slot, shut the
+/// resident down so the next run gets a fresh process, and record `msg` as this
+/// turn's errored `final` in the session log. The three turn pipelines (run_agent /
+/// run_attended / run_unattended) share this tail - each supplies its own message and
+/// maps the result its own way (the unattended path also writes a ledger record on
+/// top). The pipelines otherwise legitimately differ (async spawn_blocking + idle
+/// reset, a busy-recheck, the ledger, distinct return types), so only this common
+/// wedge policy is factored out rather than forced into one flag-driven core.
+fn fail_wedged_turn(app: &AppHandle, session: &AgentSession, turn: u64, msg: &str) {
+    session.turns.lock().unwrap().remove(&turn);
+    session.shutdown();
+    record(
+        session,
+        app,
+        "agent://final",
+        serde_json::json!({ "turn": turn, "text": msg, "isError": true }),
+    );
+}
+
 /// Run one agent turn from the given transcript and return June's spoken-style
 /// reply (with the brain's `isError` flag, B3.4). Streams every step as an
 /// `agent://*` event tagged with `turn`. A crash/watchdog comes back as `Err` so
@@ -1054,15 +1069,8 @@ pub async fn run_agent(
     match outcome {
         Ok(result) => result,
         Err(()) => {
-            session.turns.lock().unwrap().remove(&turn);
-            session.shutdown();
             let msg = "The agent did not respond in time.".to_string();
-            record(
-                &session,
-                &app,
-                "agent://final",
-                serde_json::json!({ "turn": turn, "text": msg, "isError": true }),
-            );
+            fail_wedged_turn(&app, &session, turn, &msg);
             Err(msg)
         }
     }
@@ -1118,15 +1126,8 @@ pub(crate) fn run_attended(
     match await_turn(&rx, WATCHDOG) {
         Ok(outcome) => outcome,
         Err(()) => {
-            session.turns.lock().unwrap().remove(&turn);
-            session.shutdown();
             let msg = "The agent did not respond in time.".to_string();
-            record(
-                session,
-                app,
-                "agent://final",
-                serde_json::json!({ "turn": turn, "text": msg, "isError": true }),
-            );
+            fail_wedged_turn(app, session, turn, &msg);
             Err(msg)
         }
     }
@@ -1235,15 +1236,8 @@ pub fn run_unattended(
             Err(msg)
         }
         Err(()) => {
-            session.turns.lock().unwrap().remove(&turn);
-            session.shutdown();
             let msg = "The unattended run did not respond in time.".to_string();
-            record(
-                session,
-                app,
-                "agent://final",
-                serde_json::json!({ "turn": turn, "text": msg, "isError": true }),
-            );
+            fail_wedged_turn(app, session, turn, &msg);
             append_run(app, turn, &source_rec, &prompt_rec, &started, &msg, true, &blocked, None);
             Err(msg)
         }
@@ -1388,9 +1382,7 @@ pub fn write_memory(
     content: String,
 ) -> Result<(), String> {
     let path = memory_file(&app)?;
-    let tmp = path.with_extension("md.tmp");
-    std::fs::write(&tmp, content.as_bytes()).map_err(|e| e.to_string())?;
-    std::fs::rename(&tmp, &path).map_err(|e| e.to_string())?;
+    crate::fsutil::atomic_write(&path, content.as_bytes()).map_err(|e| e.to_string())?;
     session.request_respawn();
     Ok(())
 }
@@ -1418,9 +1410,7 @@ pub fn write_lessons(
     content: String,
 ) -> Result<(), String> {
     let path = lessons_file(&app)?;
-    let tmp = path.with_extension("md.tmp");
-    std::fs::write(&tmp, content.as_bytes()).map_err(|e| e.to_string())?;
-    std::fs::rename(&tmp, &path).map_err(|e| e.to_string())?;
+    crate::fsutil::atomic_write(&path, content.as_bytes()).map_err(|e| e.to_string())?;
     session.request_respawn();
     Ok(())
 }
@@ -1518,9 +1508,7 @@ pub fn read_mission(app: AppHandle) -> Result<String, String> {
 /// board is UI state, not part of the system prompt.
 pub(crate) fn write_mission_inner(app: &AppHandle, content: &str) -> Result<(), String> {
     let path = mission_file(app)?;
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, content.as_bytes()).map_err(|e| e.to_string())?;
-    std::fs::rename(&tmp, &path).map_err(|e| e.to_string())?;
+    crate::fsutil::atomic_write(&path, content.as_bytes()).map_err(|e| e.to_string())?;
     // Broadcast the new board (parsed, or null when cleared) to every window.
     let payload = serde_json::from_str::<serde_json::Value>(content).unwrap_or(serde_json::Value::Null);
     let _ = app.emit("mission://updated", payload);

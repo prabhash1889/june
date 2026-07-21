@@ -79,10 +79,8 @@ fn read_settings_file(path: &Path) -> Result<Value, String> {
 
 fn write_settings_file(path: &Path, settings: &Value) -> Result<(), String> {
     let raw = serde_json::to_string_pretty(settings).map_err(|e| e.to_string())?;
-    // Temp file + rename so a crash mid-write can't leave settings.json truncated/corrupt.
-    let tmp = path.with_extension("json.tmp");
-    fs::write(&tmp, raw).map_err(|e| e.to_string())?;
-    fs::rename(&tmp, path).map_err(|e| e.to_string())
+    // Temp file + rename so a crash mid-write can't leave settings.json truncated/corrupt (7.8a).
+    crate::fsutil::atomic_write(path, raw.as_bytes()).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

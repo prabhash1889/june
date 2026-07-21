@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use tokio::sync::Notify;
 
-use crate::keychain::get_api_key_inner;
+use crate::keychain::get_api_key_async;
 
 const OPENAI_KEY_SERVICE: &str = "june_provider_openai_api_key";
 const SPEECH_URL: &str = "https://api.openai.com/v1/audio/speech";
@@ -54,7 +54,8 @@ impl OpenAiTts {
 
 impl TtsProvider for OpenAiTts {
     async fn synthesize(&self, text: &str) -> Result<Vec<u8>, String> {
-        let key = get_api_key_inner(OPENAI_KEY_SERVICE.to_string())
+        let key = get_api_key_async(OPENAI_KEY_SERVICE.to_string())
+            .await
             .map_err(|_| "No OpenAI API key set. Add one in June's settings.".to_string())?;
         if key.trim().is_empty() {
             return Err("The OpenAI API key is empty. Set it in June's settings.".to_string());

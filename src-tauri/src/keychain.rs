@@ -59,6 +59,22 @@ pub(crate) fn get_api_key_opt(service: String) -> Result<Option<String>, String>
     }
 }
 
+/// Async wrappers (7.8c): the keyring OS call BLOCKS, so callers on the tokio
+/// runtime (stt/tts/diagnostics probes) must read the key off a blocking pool rather
+/// than stalling an async worker on the credential store. Same result as the sync
+/// pair, just moved off the runtime.
+pub(crate) async fn get_api_key_async(service: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || get_api_key_inner(service))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+pub(crate) async fn get_api_key_opt_async(service: String) -> Result<Option<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || get_api_key_opt(service))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 pub async fn has_api_key(service: String) -> Result<bool, String> {
     validate_service_name(&service)?;

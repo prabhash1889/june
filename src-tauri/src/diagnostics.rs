@@ -157,7 +157,7 @@ pub async fn test_brain(provider: String, base_url: String) -> ProbeResult {
     let key = if key_service.is_empty() {
         String::new()
     } else {
-        match resolve_key(crate::keychain::get_api_key_opt(key_service.to_string())) {
+        match resolve_key(crate::keychain::get_api_key_opt_async(key_service.to_string()).await) {
             Ok(k) => k,
             Err(detail) => return ProbeResult { ok: false, detail, ms: elapsed(started) },
         }

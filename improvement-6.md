@@ -884,7 +884,7 @@ round-trip + legacy migration (1.9).
     overlays + preserves the rest). 45 cargo tests + 294 vitest + clippy `-D warnings` +
     typecheck + eslint green.
 
-7.8 **Consolidate duplicated plumbing** | P2 | S-M
+7.8 **Consolidate duplicated plumbing** | P2 | S-M - DONE
     (a) One `fsutil` module for the 5x hand-rolled atomic write (fixed tmp names can
     collide) and 2x JSONL rotation. (b) Extract one `run_turn` core from the three
     copy-pasted turn pipelines (`run_agent`/`run_attended`/`run_unattended`) so the next
@@ -892,6 +892,24 @@ round-trip + legacy migration (1.9).
     tokio runtime (stt/tts/diagnostics call it directly today).
     `src-tauri/src/agent_runner.rs`, `settings.rs`, `scheduler.rs`, `missions.rs`,
     `keychain.rs`.
+    (a) New `src-tauri/src/fsutil.rs`: `atomic_write(path, bytes)` writes a UNIQUE temp
+    sibling (`.<name>.<pid>.<seq>.tmp`, a process-local counter) then renames - the old
+    fixed `path.with_extension("*.tmp")` names could collide between two writers of the
+    same file and corrupt one. `rotate_if_larger(path, max)` + `rolled_path` fold the
+    one-generation JSONL/log rotation. Routed all 5 atomic writes (memory, lessons,
+    mission board, settings.json, scheduler state) and all 3 rotations (audit.jsonl,
+    june-runs.jsonl, june.log) through it. Pinned: fsutil tests (replace + no leaked temp,
+    unique temp per call, rotate only over the cap). (b) The three turn pipelines
+    genuinely diverge (run_agent is async with spawn_blocking + idle-reset; run_unattended
+    has a busy-recheck, a ledger write, and a different return type), so a single
+    flag-driven core would be LESS maintainable than three focused fns. Extracted the one
+    truly copy-pasted block instead - the watchdog-wedge tail (drop the slot + shut the
+    resident down + record the errored final) as `fail_wedged_turn`, used by all three, so
+    the "resident is dead, restart it" policy lives once (the unattended path still writes
+    its ledger record on top). (c) New `get_api_key_async` / `get_api_key_opt_async`
+    (spawn_blocking wrappers) in keychain.rs; stt.transcribe, tts.synthesize and the
+    test_brain probe now `.await` the key off the runtime instead of blocking a tokio
+    worker on the OS credential store. 51 cargo tests + clippy `-D warnings` green.
 
 7.9 **Scrub brain API keys from MCP child env** | P1 | M - DONE
     All five built-in servers inherit `process.env` including `ANTHROPIC_API_KEY`; whether

@@ -1,6 +1,7 @@
 mod agent_runner;
 mod dictation;
 mod diagnostics;
+mod fsutil;
 mod http;
 mod keychain;
 mod logf;
