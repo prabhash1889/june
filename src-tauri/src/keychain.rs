@@ -99,6 +99,118 @@ pub async fn has_api_key(service: String) -> Result<bool, String> {
     .map_err(|e| e.to_string())?
 }
 
+// --- MCP server secrets (keychain-backed env vars / HTTP headers) --------------
+// Custom MCP servers need tokens (GITHUB_PERSONAL_ACCESS_TOKEN, Authorization
+// headers). Those used to sit in plaintext in settings.json; now the value lives
+// in the OS keychain and settings.json holds only the sentinel `keychain:`
+// (mcp-servers.ts KEYCHAIN_REF). Service name: `june_mcp::<id>::<env|hdr>::<KEY>`
+// - deterministic so the renderer's set/delete and the resident-spawn rehydration
+// (agent_runner::mcp_servers_env) agree without a raw service string crossing IPC.
+
+/// Sentinel a settings.json env/header value carries when its secret is in the
+/// keychain. Must match mcp-servers.ts KEYCHAIN_REF.
+pub(crate) const MCP_SENTINEL: &str = "keychain:";
+
+fn mcp_service(server_id: &str, kind: &str, key: &str) -> String {
+    format!("june_mcp::{server_id}::{kind}::{key}")
+}
+
+/// Validate the parts the renderer supplies before they become a keychain service
+/// name. `server_id` is a slug (as coerced by mcp-servers.ts), `kind` is env/hdr,
+/// `key` is an env-var / header name. Rejecting here keeps the renderer from
+/// writing arbitrary keychain entries via these commands.
+fn validate_mcp_parts(server_id: &str, kind: &str, key: &str) -> Result<(), String> {
+    let slug_ok = !server_id.is_empty()
+        && server_id
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+    let kind_ok = kind == "env" || kind == "hdr";
+    let key_ok = !key.is_empty()
+        && key.len() <= 128
+        && key
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'));
+    if slug_ok && kind_ok && key_ok {
+        Ok(())
+    } else {
+        Err(format!(
+            "Invalid MCP secret target (server '{server_id}', kind '{kind}', key '{key}')."
+        ))
+    }
+}
+
+/// MCP secret mutations only happen in the full Settings window. Deny them from the
+/// widget or any other webview (least privilege, same stance as delete_api_key).
+fn require_app_window(window: &tauri::Window) -> Result<(), String> {
+    if window.label() == "app" {
+        Ok(())
+    } else {
+        Err("Editing server secrets is only available from the Settings window.".into())
+    }
+}
+
+/// Read one MCP secret for resident-spawn rehydration. Returns None for a missing
+/// entry OR a broken/locked keychain - the caller substitutes an empty value, so a
+/// stale sentinel never leaks the literal "keychain:" to the child as a token.
+pub(crate) fn get_mcp_secret(server_id: &str, kind: &str, key: &str) -> Option<String> {
+    get_api_key_opt(mcp_service(server_id, kind, key))
+        .ok()
+        .flatten()
+}
+
+#[tauri::command]
+pub async fn set_mcp_secret(
+    app: AppHandle,
+    window: tauri::Window,
+    server_id: String,
+    kind: String,
+    key: String,
+    value: String,
+) -> Result<(), String> {
+    require_app_window(&window)?;
+    validate_mcp_parts(&server_id, &kind, &key)?;
+    let svc = mcp_service(&server_id, &kind, &key);
+    tauri::async_runtime::spawn_blocking(move || {
+        let entry = Entry::new(&svc, KEYCHAIN_USER).map_err(|e| e.to_string())?;
+        entry.set_password(&value).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    let _ = app.emit(
+        "keychain://changed",
+        serde_json::json!({ "scope": "mcp", "action": "set" }),
+    );
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn delete_mcp_secret(
+    app: AppHandle,
+    window: tauri::Window,
+    server_id: String,
+    kind: String,
+    key: String,
+) -> Result<(), String> {
+    require_app_window(&window)?;
+    validate_mcp_parts(&server_id, &kind, &key)?;
+    let svc = mcp_service(&server_id, &kind, &key);
+    tauri::async_runtime::spawn_blocking(move || {
+        let entry = Entry::new(&svc, KEYCHAIN_USER).map_err(|e| e.to_string())?;
+        match entry.delete_password() {
+            Ok(_) => Ok(()),
+            Err(keyring::Error::NoEntry) => Ok(()),
+            Err(e) => Err(e.to_string()),
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    let _ = app.emit(
+        "keychain://changed",
+        serde_json::json!({ "scope": "mcp", "action": "deleted" }),
+    );
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn delete_api_key(
     app: AppHandle,
@@ -132,7 +244,42 @@ pub async fn delete_api_key(
 
 #[cfg(test)]
 mod tests {
-    use super::validate_service_name;
+    use super::{mcp_service, validate_mcp_parts, validate_service_name};
+
+    #[test]
+    fn mcp_service_name_is_deterministic() {
+        assert_eq!(
+            mcp_service("github", "env", "GITHUB_PERSONAL_ACCESS_TOKEN"),
+            "june_mcp::github::env::GITHUB_PERSONAL_ACCESS_TOKEN"
+        );
+        assert_eq!(
+            mcp_service("my-server", "hdr", "Authorization"),
+            "june_mcp::my-server::hdr::Authorization"
+        );
+    }
+
+    #[test]
+    fn accepts_valid_mcp_parts() {
+        assert!(validate_mcp_parts("github", "env", "GITHUB_TOKEN").is_ok());
+        assert!(validate_mcp_parts("brave-search", "env", "BRAVE_API_KEY").is_ok());
+        assert!(validate_mcp_parts("srv", "hdr", "X-Api-Key").is_ok());
+        assert!(validate_mcp_parts("s1", "hdr", "Authorization").is_ok());
+    }
+
+    #[test]
+    fn rejects_bad_mcp_parts() {
+        // Bad slug (would let a renderer target another app's namespace via ::).
+        assert!(validate_mcp_parts("UPPER", "env", "K").is_err());
+        assert!(validate_mcp_parts("has space", "env", "K").is_err());
+        assert!(validate_mcp_parts("has::colons", "env", "K").is_err());
+        assert!(validate_mcp_parts("", "env", "K").is_err());
+        // Bad kind.
+        assert!(validate_mcp_parts("srv", "other", "K").is_err());
+        // Bad key (separators that could break out of the service name).
+        assert!(validate_mcp_parts("srv", "env", "").is_err());
+        assert!(validate_mcp_parts("srv", "env", "has space").is_err());
+        assert!(validate_mcp_parts("srv", "env", "has::colon").is_err());
+    }
 
     #[test]
     fn accepts_provider_convention_services() {

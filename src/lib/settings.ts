@@ -292,6 +292,17 @@ export function deleteKey(service: string): Promise<void> {
   return invoke("delete_api_key", { service });
 }
 
+/** MCP server secrets (env values / HTTP headers). `kind` is "env" or "hdr". The
+ *  value goes to the OS keychain; settings.json only ever holds the `keychain:`
+ *  sentinel (see mcp-servers.ts KEYCHAIN_REF). */
+export function setMcpSecret(serverId: string, kind: "env" | "hdr", key: string, value: string): Promise<void> {
+  return invoke("set_mcp_secret", { serverId, kind, key, value });
+}
+
+export function deleteMcpSecret(serverId: string, kind: "env" | "hdr", key: string): Promise<void> {
+  return invoke("delete_mcp_secret", { serverId, kind, key });
+}
+
 // --- Long-term memory (Phase 11.4) ---
 // June's one user-editable memory file, kept out of settings.json - it is its own
 // `june-memory.md` in the app data dir. `writeMemory("")` is the "clear" action.

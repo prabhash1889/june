@@ -14,6 +14,7 @@ import { type LatencySample, latencySamples, percentile, type UsageTotals, usage
 import { formatModelProgress, MODEL_PROGRESS_EVENT, type ModelProgress } from "../lib/model-progress.ts";
 import { type VoiceHealth, voiceHealth } from "../lib/voice-health.ts";
 import {
+  KEYCHAIN_REF,
   MCP_CATALOG,
   type McpClass,
   type McpServerEntry,
@@ -36,6 +37,7 @@ import {
 import {
   DEFAULT_SETTINGS,
   deleteKey,
+  deleteMcpSecret,
   type Effort,
   hasKey,
   type JuneSettings,
@@ -46,6 +48,7 @@ import {
   saveAutomations,
   saveSettings,
   setKey,
+  setMcpSecret,
   voiceAllowed,
   writeLessons,
   writeMemory,
@@ -1373,11 +1376,11 @@ const CLASS_OPTIONS: { value: "" | McpClass; label: string }[] = [
   { value: "destructive", label: "Destructive (always ask)" },
 ];
 
-// env / headers are edited as `KEY=value` lines (the same shape Claude Desktop's
-// mcp.json uses) via MapTextarea (./MapTextarea.tsx), which keeps a half-typed
-// line alive instead of eating its first character (B2.4). Not for long-lived
-// secrets in a shared file, but it is how the MCP ecosystem passes tokens today;
-// a keychain-per-server surface is a follow-up.
+// env values / HTTP headers are secrets (tokens, Authorization). They go to the OS
+// keychain via McpSecretsEditor below; settings.json only ever holds the `keychain:`
+// sentinel, and the Rust host swaps in the real value when it spawns the resident
+// (agent_runner::mcp_servers_env). This is the keychain-per-server surface that
+// replaced the earlier plaintext KEY=value textarea.
 
 function McpServersSubsection({ settings, update }: { settings: JuneSettings; update: (s: JuneSettings) => void }) {
   const servers = settings.mcpServers;
@@ -1387,7 +1390,16 @@ function McpServersSubsection({ settings, update }: { settings: JuneSettings; up
     const i = servers.findIndex((s) => s.id === entry.id);
     setServers(i >= 0 ? servers.map((s, j) => (j === i ? entry : s)) : [...servers, entry]);
   };
-  const remove = (id: string) => setServers(servers.filter((s) => s.id !== id));
+  // Removing a server also deletes its keychain-backed secrets so they don't orphan
+  // in the credential store (best-effort: a delete failure still removes the entry).
+  const remove = async (entry: McpServerEntry) => {
+    const t = entry.transport;
+    const [secretMap, kind] = t.kind === "stdio" ? [t.env, "env" as const] : [t.headers, "hdr" as const];
+    for (const [key, val] of Object.entries(secretMap)) {
+      if (val !== "") await deleteMcpSecret(entry.id, kind, key).catch(() => {});
+    }
+    setServers(servers.filter((s) => s.id !== entry.id));
+  };
 
   // A unique id for a fresh blank server (base "server", "server-2", ...).
   const freshId = (): string => {
@@ -1413,7 +1425,7 @@ function McpServersSubsection({ settings, update }: { settings: JuneSettings; up
       </p>
 
       {servers.map((s) => (
-        <McpServerCard key={s.id} entry={s} onChange={upsert} onRemove={() => remove(s.id)} />
+        <McpServerCard key={s.id} entry={s} onChange={upsert} onRemove={() => void remove(s)} />
       ))}
 
       <div className="settings-test">
@@ -1434,6 +1446,164 @@ function McpServersSubsection({ settings, update }: { settings: JuneSettings; up
         </select>
       </div>
     </>
+  );
+}
+
+// A keychain-backed editor for a server's env vars or headers. Each row's VALUE is
+// a secret: it goes to the OS keychain (setMcpSecret) and only the `keychain:`
+// sentinel is stored in settings.json, so a token never sits in plaintext. A saved
+// value is shown masked and never read back into the UI. Keys are add/remove (not
+// renamed inline) so a rename can't orphan a keychain entry under the old name.
+function McpSecretsEditor({
+  serverId,
+  kind,
+  map,
+  onChange,
+  keyPlaceholder,
+  valuePlaceholder,
+}: {
+  serverId: string;
+  kind: "env" | "hdr";
+  map: Record<string, string>;
+  onChange: (m: Record<string, string>) => void;
+  keyPlaceholder: string;
+  valuePlaceholder: string;
+}) {
+  const [newKey, setNewKey] = useState("");
+  const [newVal, setNewVal] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  // Write the value to the keychain first; only then store the sentinel. On failure
+  // settings is left untouched so we never point at a secret that isn't there.
+  const saveSecret = async (key: string, value: string) => {
+    setErr("");
+    setBusy(true);
+    try {
+      await setMcpSecret(serverId, kind, key, value);
+      onChange({ ...map, [key]: KEYCHAIN_REF });
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const removeKey = async (key: string) => {
+    setErr("");
+    setBusy(true);
+    try {
+      await deleteMcpSecret(serverId, kind, key);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+    const next = { ...map };
+    delete next[key];
+    onChange(next);
+  };
+
+  const addNew = async () => {
+    const k = newKey.trim();
+    if (!k) return;
+    // A key with no value yet is a placeholder (like the catalog presets ship); it
+    // holds no secret until the user fills it in, so don't touch the keychain.
+    if (newVal === "") onChange({ ...map, [k]: "" });
+    else await saveSecret(k, newVal);
+    setNewKey("");
+    setNewVal("");
+  };
+
+  return (
+    <div className="mcp-secrets">
+      {Object.entries(map).map(([key, val]) => (
+        <McpSecretRow
+          key={key}
+          name={key}
+          saved={val !== ""}
+          disabled={busy}
+          valuePlaceholder={valuePlaceholder}
+          onSave={(v) => void saveSecret(key, v)}
+          onRemove={() => void removeKey(key)}
+        />
+      ))}
+      <div className="mcp-secret-row">
+        <input
+          value={newKey}
+          onChange={(e) => setNewKey(e.target.value)}
+          placeholder={keyPlaceholder}
+          aria-label={kind === "env" ? "New env var name" : "New header name"}
+        />
+        <input
+          type="password"
+          value={newVal}
+          onChange={(e) => setNewVal(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              void addNew();
+            }
+          }}
+          placeholder={valuePlaceholder}
+          aria-label="New value"
+        />
+        <button onClick={() => void addNew()} disabled={busy || !newKey.trim()}>
+          Add
+        </button>
+      </div>
+      {err && <p className="settings-hint bad">{err}</p>}
+    </div>
+  );
+}
+
+// One secret row: a fixed key name plus a masked value input. The stored secret is
+// never rendered; typing a new value replaces it, an empty field leaves it as-is.
+function McpSecretRow({
+  name,
+  saved,
+  disabled,
+  valuePlaceholder,
+  onSave,
+  onRemove,
+}: {
+  name: string;
+  saved: boolean;
+  disabled: boolean;
+  valuePlaceholder: string;
+  onSave: (value: string) => void;
+  onRemove: () => void;
+}) {
+  const [draft, setDraft] = useState("");
+  const commit = () => {
+    if (draft === "") return; // an empty field must not clobber a saved secret
+    onSave(draft);
+    setDraft("");
+  };
+  return (
+    <div className="mcp-secret-row">
+      <span className="mcp-secret-key" title={name}>
+        {name}
+      </span>
+      <input
+        type="password"
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            commit();
+          }
+        }}
+        placeholder={saved ? "•••••• saved - type to replace" : valuePlaceholder}
+        aria-label={`Value for ${name}`}
+        disabled={disabled}
+      />
+      <button onClick={onRemove} disabled={disabled} title={`Remove ${name}`}>
+        Remove
+      </button>
+    </div>
   );
 }
 
@@ -1494,14 +1664,15 @@ function McpServerCard({
               placeholder="-y @modelcontextprotocol/server-github@2025.4.8"
             />
           </div>
-          <div className="stage-row">
+          <div className="stage-row stage-row-top">
             <span className="stage-label">Env</span>
-            <MapTextarea
-              className="memory-text mcp-env"
-              rows={2}
+            <McpSecretsEditor
+              serverId={entry.id}
+              kind="env"
               map={t.env}
-              onCommit={(m) => setTransport({ ...t, env: m })}
-              placeholder="GITHUB_PERSONAL_ACCESS_TOKEN=ghp_…"
+              onChange={(m) => setTransport({ ...t, env: m })}
+              keyPlaceholder="GITHUB_PERSONAL_ACCESS_TOKEN"
+              valuePlaceholder="ghp_…"
             />
           </div>
         </>
@@ -1516,14 +1687,15 @@ function McpServerCard({
               placeholder="https://api.githubcopilot.com/mcp/"
             />
           </div>
-          <div className="stage-row">
+          <div className="stage-row stage-row-top">
             <span className="stage-label">Headers</span>
-            <MapTextarea
-              className="memory-text mcp-env"
-              rows={2}
+            <McpSecretsEditor
+              serverId={entry.id}
+              kind="hdr"
               map={t.headers}
-              onCommit={(m) => setTransport({ ...t, headers: m })}
-              placeholder="Authorization=Bearer …"
+              onChange={(m) => setTransport({ ...t, headers: m })}
+              keyPlaceholder="Authorization"
+              valuePlaceholder="Bearer …"
             />
           </div>
         </>

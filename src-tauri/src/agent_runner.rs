@@ -511,10 +511,46 @@ fn mcp_servers_env(app: &AppHandle, session: &AgentSession) -> Vec<(String, Stri
             .collect(),
         None => entries,
     };
+    // Rehydrate keychain-backed secrets: settings.json stores `keychain:` in place
+    // of an env/header value; swap in the real secret from the OS keychain HERE, so
+    // it reaches the resident (and its MCP children) via the child env - the same
+    // trust path as the brain key - and never sits in settings.json in plaintext.
+    let filtered: Vec<serde_json::Value> = filtered
+        .into_iter()
+        .map(rehydrate_mcp_secrets)
+        .collect();
     vec![(
         "JUNE_MCP_SERVERS".into(),
         serde_json::Value::Array(filtered).to_string(),
     )]
+}
+
+/// Replace every `keychain:` sentinel in one server entry's `transport.env` and
+/// `transport.headers` with its keychain secret. A missing entry (cleared, or the
+/// server was renamed so its id no longer matches) becomes an empty value, never
+/// the literal sentinel - so a stale reference can't be handed to a child as a token.
+fn rehydrate_mcp_secrets(mut entry: serde_json::Value) -> serde_json::Value {
+    let id = entry
+        .get("id")
+        .and_then(|x| x.as_str())
+        .unwrap_or_default()
+        .to_string();
+    for (field, kind) in [("env", "env"), ("headers", "hdr")] {
+        let Some(map) = entry
+            .get_mut("transport")
+            .and_then(|t| t.get_mut(field))
+            .and_then(|m| m.as_object_mut())
+        else {
+            continue;
+        };
+        for (key, val) in map.iter_mut() {
+            if val.as_str() == Some(crate::keychain::MCP_SENTINEL) {
+                let secret = crate::keychain::get_mcp_secret(&id, kind, key).unwrap_or_default();
+                *val = serde_json::Value::String(secret);
+            }
+        }
+    }
+    entry
 }
 
 /// Long-term memory path for the resident (PLAN.md Phase 11.4). Always attached:
@@ -1599,6 +1635,33 @@ mod tests {
             log[MAX_EVENTS - 1]["payload"]["seq"].as_u64(),
             Some(MAX_EVENTS as u64 + 10)
         );
+    }
+
+    #[test]
+    fn rehydrate_never_leaks_the_sentinel_and_passes_literals_through() {
+        // A made-up id has no keychain entry, so the sentinel must resolve to an
+        // empty value - never the literal "keychain:", which would reach the child
+        // as a bogus token. Literal (non-sentinel) values are left untouched.
+        let entry = serde_json::json!({
+            "id": "test-no-such-server-xyz",
+            "transport": {
+                "kind": "stdio",
+                "env": { "SECRET": "keychain:", "PLAIN": "visible-value" },
+            },
+        });
+        let out = rehydrate_mcp_secrets(entry);
+        let env = &out["transport"]["env"];
+        assert_eq!(env["SECRET"].as_str(), Some(""), "stale sentinel -> empty");
+        assert_eq!(env["PLAIN"].as_str(), Some("visible-value"), "literal kept");
+    }
+
+    #[test]
+    fn rehydrate_is_a_noop_without_secret_maps() {
+        // http entry with no headers, and an entry with no transport, must survive.
+        let http = serde_json::json!({ "id": "a", "transport": { "kind": "http", "url": "x" } });
+        assert_eq!(rehydrate_mcp_secrets(http.clone()), http);
+        let bare = serde_json::json!({ "id": "b" });
+        assert_eq!(rehydrate_mcp_secrets(bare.clone()), bare);
     }
 
     #[test]

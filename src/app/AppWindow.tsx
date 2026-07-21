@@ -259,8 +259,9 @@ export function AppWindow() {
 
   // 7.12: confirm a keychain change (set/delete) with a toast so it isn't silent.
   useEffect(() => {
-    const unlisten = listen<{ action?: string }>("keychain://changed", (e) => {
-      setFlash(e.payload?.action === "deleted" ? "API key removed." : "API key saved.");
+    const unlisten = listen<{ action?: string; scope?: string }>("keychain://changed", (e) => {
+      const thing = e.payload?.scope === "mcp" ? "Server secret" : "API key";
+      setFlash(e.payload?.action === "deleted" ? `${thing} removed.` : `${thing} saved.`);
     });
     return () => void unlisten.then((f) => f());
   }, []);

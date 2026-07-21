@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import {
   coerceMcpServers,
   genericMcpServers,
+  isKeychainRef,
+  KEYCHAIN_REF,
   MCP_CATALOG,
   mcpServerAllowed,
   type McpServerEntry,
@@ -184,5 +186,19 @@ describe("slugify + catalog", () => {
         expect(entry.transport.args.some((a) => /@\d/.test(a))).toBe(true);
       }
     }
+  });
+});
+
+describe("keychain reference", () => {
+  it("KEYCHAIN_REF matches the sentinel Rust rehydrates (keychain.rs MCP_SENTINEL)", () => {
+    // Cross-language contract: if this literal drifts from the Rust constant, saved
+    // secrets stop resolving. Pin it so a rename can't silently break rehydration.
+    expect(KEYCHAIN_REF).toBe("keychain:");
+  });
+
+  it("isKeychainRef flags only the sentinel, not a real or empty value", () => {
+    expect(isKeychainRef(KEYCHAIN_REF)).toBe(true);
+    expect(isKeychainRef("")).toBe(false);
+    expect(isKeychainRef("ghp_realtoken")).toBe(false);
   });
 });

@@ -41,6 +41,19 @@ export interface McpServerEntry {
   defaultClass?: McpClass;
 }
 
+/** Sentinel stored in settings.json in place of an MCP env/header secret whose
+ *  real value lives in the OS keychain (service `june_mcp::<id>::<env|hdr>::<KEY>`,
+ *  built by keychain.rs). The Rust host swaps it for the real secret when it spawns
+ *  the resident (agent_runner::mcp_servers_env), so a token never sits in
+ *  settings.json in plaintext. Kept in step with keychain.rs's MCP_SENTINEL. */
+export const KEYCHAIN_REF = "keychain:";
+
+/** Whether a stored env/header value is a keychain reference (a saved secret)
+ *  rather than a literal value the user can see. */
+export function isKeychainRef(value: string): boolean {
+  return value === KEYCHAIN_REF;
+}
+
 const SLUG = /^[a-z0-9][a-z0-9-]*$/;
 
 /** Server ids June reserves for its own built-in capabilities (B1.5). A user-added

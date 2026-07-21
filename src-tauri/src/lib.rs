@@ -199,6 +199,8 @@ pub fn run() {
             keychain::set_api_key,
             keychain::has_api_key,
             keychain::delete_api_key,
+            keychain::set_mcp_secret,
+            keychain::delete_mcp_secret,
             logf::log_message,
             stt::transcribe,
             tts::synthesize,
