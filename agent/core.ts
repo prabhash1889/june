@@ -49,7 +49,11 @@ export function filesMcpServer(root: string): Record<string, McpServerConfig> {
       command: "npx",
       args: ["tsx", filesServerPath()],
       alwaysLoad: true,
-      env: { ...process.env, JUNE_FILES_ROOT: root },
+      // ponytail: pass ONLY the delta var, not ...process.env. The whole config is
+      // JSON-serialized into one `--mcp-config` CLI arg; N servers x a full Windows
+      // env blows past the 32767-char command-line limit (spawn ENAMETOOLONG). The
+      // MCP stdio transport already inherits PATH/APPDATA/etc via getDefaultEnvironment.
+      env: { JUNE_FILES_ROOT: root },
     },
   };
 }
@@ -65,7 +69,7 @@ export function memoryMcpServer(file: string): Record<string, McpServerConfig> {
       // Keep the tool in the prompt (like the other servers) so the model with no
       // built-in tool-search can actually call `remember`.
       alwaysLoad: true,
-      env: { ...process.env, JUNE_MEMORY_FILE: file },
+      env: { JUNE_MEMORY_FILE: file }, // see filesMcpServer: only the delta var (ENAMETOOLONG)
     },
   };
 }
@@ -83,7 +87,7 @@ export function lessonsMcpServer(file: string): Record<string, McpServerConfig> 
       // Keep the tool in the prompt (like the other servers) so the model with no
       // built-in tool-search can actually call `record_lesson`.
       alwaysLoad: true,
-      env: { ...process.env, JUNE_LESSONS_FILE: file },
+      env: { JUNE_LESSONS_FILE: file }, // see filesMcpServer: only the delta var (ENAMETOOLONG)
     },
   };
 }
@@ -101,7 +105,7 @@ export function automationMcpServer(settingsFile: string): Record<string, McpSer
       // Keep the tools in the prompt (like the other built-ins) so a brain with no
       // tool-search can actually call add_schedule / add_watch.
       alwaysLoad: true,
-      env: { ...process.env, JUNE_SETTINGS_FILE: settingsFile },
+      env: { JUNE_SETTINGS_FILE: settingsFile }, // see filesMcpServer: only the delta var (ENAMETOOLONG)
     },
   };
 }
@@ -116,7 +120,7 @@ export function defaultMcpServers(workspaceId?: string): Record<string, McpServe
       // with no built-in tools the model has no search tool to discover them,
       // so without this it hallucinates tool names instead of calling ours.
       alwaysLoad: true,
-      ...(workspaceId ? { env: { ...process.env, JUNE_WORKSPACE_ID: workspaceId } } : {}),
+      ...(workspaceId ? { env: { JUNE_WORKSPACE_ID: workspaceId } } : {}), // only the delta var (ENAMETOOLONG)
     },
   };
 }
