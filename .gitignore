@@ -15,3 +15,7 @@ graphify-out/
 
 # Phase 12 local-voice model assets (staged by scripts/fetch-models.mjs, checksum-pinned).
 public/models/
+
+# improvement-7 1.1 sidecar-bundle artifacts (rebuilt by scripts/bundle-agent.mjs).
+src-tauri/resources/
+src-tauri/binaries/

@@ -4,6 +4,7 @@
 // swappable underneath. saple-bridge-control is the one committed capability -
 // saple-memory / artemis attach later as extra config entries, never new code.
 
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { type McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
@@ -14,35 +15,15 @@ import { ClaudeBrain } from "./claude-brain.ts";
 import { OpenAiCompatBrain } from "./openai-brain.ts";
 import { SYSTEM_PROMPT, withAutomations, withLessons, withMemory } from "./prompt.ts";
 
-/** Absolute path to Phase 2's MCP server, resolved from this file so it works
- *  wherever June is launched from. */
-function bridgeControlServerPath(): string {
-  return fileURLToPath(new URL("../mcp/saple-bridge-control/server.ts", import.meta.url));
-}
-
-/** Absolute path to Phase 9's non-saple files capability. */
-function filesServerPath(): string {
-  return fileURLToPath(new URL("../mcp/files/server.ts", import.meta.url));
-}
-
-/** Absolute path to Phase 11.4's long-term memory capability. */
-function memoryServerPath(): string {
-  return fileURLToPath(new URL("../mcp/memory/server.ts", import.meta.url));
-}
-
-/** Absolute path to Phase 17.1's post-run lessons capability. */
-function lessonsServerPath(): string {
-  return fileURLToPath(new URL("../mcp/lessons/server.ts", import.meta.url));
-}
-
-/** Absolute path to improvement-5 P1.5's voice-automation capability. */
-function automationServerPath(): string {
-  return fileURLToPath(new URL("../mcp/automation/server.ts", import.meta.url));
-}
-
-/** Absolute path to improvement-6 4.3's system observe pack. */
-function systemServerPath(): string {
-  return fileURLToPath(new URL("../mcp/system/server.ts", import.meta.url));
+/** How a built-in MCP server is launched (improvement-7 1.1). In a packaged app
+ *  the host sets JUNE_BUNDLE_DIR and the servers are esbuild bundles run by the
+ *  sidecar Node ALREADY running this process (process.execPath) - no repo, no
+ *  npx, no tsx. In the dev checkout the source .ts runs via npx tsx, resolved
+ *  relative to this file so it works wherever June is launched from. */
+export function builtinServerCommand(name: string): { command: string; args: string[] } {
+  const bundleDir = process.env.JUNE_BUNDLE_DIR;
+  if (bundleDir) return { command: process.execPath, args: [join(bundleDir, `mcp-${name}.mjs`)] };
+  return { command: "npx", args: ["tsx", fileURLToPath(new URL(`../mcp/${name}/server.ts`, import.meta.url))] };
 }
 
 /** The files capability (PLAN.md Phase 9), scoped to a single allowed root. Only
@@ -51,8 +32,7 @@ function systemServerPath(): string {
 export function filesMcpServer(root: string): Record<string, McpServerConfig> {
   return {
     files: {
-      command: "npx",
-      args: ["tsx", filesServerPath()],
+      ...builtinServerCommand("files"),
       alwaysLoad: true,
       // ponytail: pass the delta var plus the blanked brain secrets (7.9), never
       // ...process.env. The whole config is JSON-serialized into one `--mcp-config`
@@ -70,8 +50,7 @@ export function filesMcpServer(root: string): Record<string, McpServerConfig> {
 export function memoryMcpServer(file: string): Record<string, McpServerConfig> {
   return {
     memory: {
-      command: "npx",
-      args: ["tsx", memoryServerPath()],
+      ...builtinServerCommand("memory"),
       // Keep the tool in the prompt (like the other servers) so the model with no
       // built-in tool-search can actually call `remember`.
       alwaysLoad: true,
@@ -88,8 +67,7 @@ export function memoryMcpServer(file: string): Record<string, McpServerConfig> {
 export function lessonsMcpServer(file: string): Record<string, McpServerConfig> {
   return {
     lessons: {
-      command: "npx",
-      args: ["tsx", lessonsServerPath()],
+      ...builtinServerCommand("lessons"),
       // Keep the tool in the prompt (like the other servers) so the model with no
       // built-in tool-search can actually call `record_lesson`.
       alwaysLoad: true,
@@ -106,8 +84,7 @@ export function lessonsMcpServer(file: string): Record<string, McpServerConfig> 
 export function automationMcpServer(settingsFile: string): Record<string, McpServerConfig> {
   return {
     automation: {
-      command: "npx",
-      args: ["tsx", automationServerPath()],
+      ...builtinServerCommand("automation"),
       // Keep the tools in the prompt (like the other built-ins) so a brain with no
       // tool-search can actually call add_schedule / add_watch.
       alwaysLoad: true,
@@ -124,8 +101,7 @@ export function automationMcpServer(settingsFile: string): Record<string, McpSer
 export function systemMcpServer(): Record<string, McpServerConfig> {
   return {
     system: {
-      command: "npx",
-      args: ["tsx", systemServerPath()],
+      ...builtinServerCommand("system"),
       // Keep the tools in the prompt (like the other built-ins) so a brain with no
       // tool-search can actually call list_processes / process_running.
       alwaysLoad: true,
@@ -140,8 +116,7 @@ export function systemMcpServer(): Record<string, McpServerConfig> {
 export function defaultMcpServers(workspaceId?: string): Record<string, McpServerConfig> {
   return {
     "saple-bridge-control": {
-      command: "npx",
-      args: ["tsx", bridgeControlServerPath()],
+      ...builtinServerCommand("saple-bridge-control"),
       // Keep the tools in the prompt instead of deferred behind tool-search:
       // with no built-in tools the model has no search tool to discover them,
       // so without this it hallucinates tool names instead of calling ours.

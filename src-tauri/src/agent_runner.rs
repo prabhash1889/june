@@ -548,36 +548,26 @@ fn settings_env(app: &AppHandle) -> Vec<(String, String)> {
     }
 }
 
-/// Absolute path to agent/serve.ts, resolved from this crate at compile time
-/// (`<repo>/src-tauri` -> `<repo>/agent/serve.ts`).
-fn serve_script() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+/// How the resident agent is launched (improvement-7 1.1). Debug builds run the
+/// repo's agent/serve.ts via npx tsx (the dev loop). Release builds run the
+/// esbuild bundle from the app's resources under the pinned sidecar node.exe
+/// installed next to the main executable - no repo checkout, no npx/tsx, no
+/// CARGO_MANIFEST_DIR runtime dependence. JUNE_BUNDLE_DIR tells serve.mjs (via
+/// agent/core.ts + claude-brain.ts) to resolve the bundled MCP servers and the
+/// native Claude binary from that same directory.
+#[cfg(debug_assertions)]
+fn serve_command(_app: &AppHandle) -> Result<Command, String> {
+    let script = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .map(|repo| repo.join("agent").join("serve.ts"))
-        .unwrap_or_else(|| PathBuf::from("agent/serve.ts"))
-}
-
-/// Spawn the resident serve.ts, returning its stdin, stdout, and the child. On
-/// Windows `npx` is a `.cmd` shim that can't be exec'd directly, so go through
-/// the shell (the same fix openai-brain applies for its MCP clients).
-fn spawn_serve(
-    app: &AppHandle,
-    session: &AgentSession,
-) -> Result<(ChildStdin, std::process::ChildStdout, Child), String> {
-    let script = serve_script();
+        .ok_or("Could not locate the June project root.")?;
     let cwd = script
         .parent()
         .and_then(|agent_dir| agent_dir.parent())
         .map(|p| p.to_path_buf())
         .ok_or("Could not locate the June project root.")?;
-
-    let mut brain_vars = brain_env(app);
-    brain_vars.extend(files_env(app));
-    brain_vars.extend(memory_env(app));
-    brain_vars.extend(lessons_env(app));
-    brain_vars.extend(settings_env(app));
-    brain_vars.extend(mcp_servers_env(app, session));
-
+    // On Windows `npx` is a `.cmd` shim that can't be exec'd directly, so go
+    // through the shell (the same fix openai-brain applies for its MCP clients).
     let mut cmd = if cfg!(windows) {
         let mut c = Command::new("cmd");
         c.arg("/C").arg("npx");
@@ -585,6 +575,43 @@ fn spawn_serve(
     } else {
         Command::new("npx")
     };
+    cmd.arg("tsx").arg(&script).current_dir(&cwd);
+    Ok(cmd)
+}
+
+#[cfg(not(debug_assertions))]
+fn serve_command(app: &AppHandle) -> Result<Command, String> {
+    let resources = app
+        .path()
+        .resource_dir()
+        .map_err(|e| format!("Could not locate the app resources: {e}"))?
+        .join("resources")
+        .join("agent");
+    let node = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(std::path::Path::to_path_buf))
+        .map(|d| d.join(if cfg!(windows) { "node.exe" } else { "node" }))
+        .ok_or("Could not locate the sidecar Node runtime.")?;
+    let mut cmd = Command::new(node);
+    cmd.arg(resources.join("serve.mjs"))
+        .current_dir(&resources)
+        .env("JUNE_BUNDLE_DIR", &resources);
+    Ok(cmd)
+}
+
+/// Spawn the resident agent, returning its stdin, stdout, and the child.
+fn spawn_serve(
+    app: &AppHandle,
+    session: &AgentSession,
+) -> Result<(ChildStdin, std::process::ChildStdout, Child), String> {
+    let mut brain_vars = brain_env(app);
+    brain_vars.extend(files_env(app));
+    brain_vars.extend(memory_env(app));
+    brain_vars.extend(lessons_env(app));
+    brain_vars.extend(settings_env(app));
+    brain_vars.extend(mcp_servers_env(app, session));
+
+    let mut cmd = serve_command(app)?;
     // 1.3: JUNE_APPROVE=allow is a test-only headless policy that auto-approves
     // every gated action (agent/serve.ts). Strip it from the resident's inherited
     // env in release builds so a stray var on a user machine can never silently
@@ -592,10 +619,7 @@ fn spawn_serve(
     #[cfg(not(debug_assertions))]
     cmd.env_remove("JUNE_APPROVE");
     let mut child = cmd
-        .arg("tsx")
-        .arg(&script)
         .envs(brain_vars)
-        .current_dir(&cwd)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         // Pipe (not inherit) the resident's stderr so serve.ts crash output and its

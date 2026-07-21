@@ -7,7 +7,7 @@
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1421",
     "beforeDevCommand": "npm run dev",
-    "beforeBuildCommand": "npm run build"
+    "beforeBuildCommand": "npm run build && node scripts/bundle-agent.mjs"
   },
   "app": {
     "windows": [
@@ -35,6 +35,8 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "resources": ["resources/agent"],
+    "externalBin": ["binaries/node"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

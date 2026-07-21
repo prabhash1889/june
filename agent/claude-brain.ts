@@ -17,6 +17,8 @@
 // (Phase 14). `cancel()` interrupts the in-flight turn; `reset()` ends the held
 // session so the next turn starts a fresh conversation.
 
+import { join } from "node:path";
+
 import {
   query,
   type McpServerConfig,
@@ -144,9 +146,16 @@ export class ClaudeBrain implements Brain {
     if (this.#query) return;
     const input = new MessageQueue();
     this.#input = input;
+    // Packaged builds (improvement-7 1.1): the SDK normally resolves its native
+    // Claude Code binary from a sibling node_modules package, which a bundled
+    // serve.mjs no longer has - the host ships the binary in the app resources
+    // and points JUNE_BUNDLE_DIR at them.
+    const bundleDir = process.env.JUNE_BUNDLE_DIR;
+    const claudeExe = process.platform === "win32" ? "claude.exe" : "claude";
     this.#query = query({
       prompt: input,
       options: {
+        ...(bundleDir ? { pathToClaudeCodeExecutable: join(bundleDir, claudeExe) } : {}),
         model: this.model,
         systemPrompt: this.#systemPrompt,
         mcpServers: this.#mcpServers,
