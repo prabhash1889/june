@@ -472,11 +472,35 @@ round-trip + legacy migration (1.9).
     context). Pinned: parse.test (well-formed / blank / garbled / untitled-no-process).
     Full suite green, typecheck + eslint clean.
 
-4.5 **Quick-capture voice inbox** | P1 | S
+4.5 **Quick-capture voice inbox** | P1 | S - DONE
     A sub-second "jot this down" path: second hotkey mode, speak -> local STT -> append a
     timestamped line to `june-inbox.md` (same contained-path pattern as memory), chime
     confirm, no brain in the loop. Optional "capture as task" via saple-memory
     `create_task`. `src-tauri/src/dictation.rs`, `src/lib/hotkey.ts`, `SettingsPanel.tsx`.
+    A genuinely SECOND global hotkey (`captureHotkey`, default `ctrl+shift+j` for
+    "jot"), not a mode toggle - hold it, speak, done, no toggling. Rust's one
+    global-shortcut handler now dispatches by which chord fired (the fired `Shortcut`
+    is compared against the two parsed chords held in a shared `Chords` mutex), routing
+    to `ptt://*` or `capture://*`. `apply_hotkeys` re-registers BOTH live on
+    settings://changed; PTT still never dies (default fallback), quick capture is
+    optional - off when `captureHotkey` is empty, and REFUSED when it collides with the
+    effective PTT chord (PTT wins, `capture://status` says why) so push-to-talk can
+    never be shadowed. New `append_inbox` Tauri command appends `- [YYYY-MM-DD HH:MM]
+    <line>` to `<app_data_dir>/june-inbox.md` (host-owned contained path like
+    june-memory.md, created on first jot, local time to match the user's day); a blank
+    clip is a no-op success like inject_text. The widget adds a third capture mode
+    ("capture") beside command/dictation: `capture://down` tags it and starts a capture
+    directly (never through the command-only `activate`, independent of dictation
+    mode), and `beginTranscribe` routes it - clean the transcript, `appendInbox`, a
+    short WebAudio chime, then a "Jotted to your inbox" confirm that self-expires. Both
+    dictation and capture now share a `brainless` flag so a speechless clip stands down
+    quietly instead of erroring. Settings gains a "Quick capture" card mirroring the PTT
+    one (chord capture, live verify via `capture://down`, `capture://status` errors,
+    Backspace turns it off). Skipped: "capture as task" via saple-memory create_task -
+    the inbox file is the whole win; add when a user actually wants a jot promoted to a
+    task. Also fixed a pre-existing `tsc` failure in automation/store.test.ts (reading
+    `.enabled` off the loosely-typed SettingsBag) via a typed `lists()` view. Full
+    suite 269 vitest green, typecheck + eslint + `cargo clippy -D warnings` clean.
 
 4.6 **`open_path` / app launcher in `mcp/system`** | P2 | S
     Standalone June (no saple-bridge) cannot open a URL, file or app at all. `cmd /c start`

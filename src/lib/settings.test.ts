@@ -5,6 +5,7 @@ import { DEFAULT_SETTINGS, privacyViolations, voiceAllowed } from "./settings.ts
 describe("defaults", () => {
   it("ships the default PTT chord, system-default mic, and full volume", () => {
     expect(DEFAULT_SETTINGS.pttHotkey).toBe("ctrl+shift+space");
+    expect(DEFAULT_SETTINGS.captureHotkey).toBe("ctrl+shift+j"); // quick-capture chord (4.5)
     expect(DEFAULT_SETTINGS.micDeviceId).toBe("");
     expect(DEFAULT_SETTINGS.outputDeviceId).toBe("");
     expect(DEFAULT_SETTINGS.outputVolume).toBe(1);

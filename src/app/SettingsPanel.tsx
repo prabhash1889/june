@@ -640,11 +640,20 @@ function ActivationSection({ settings, update }: { settings: JuneSettings; updat
   // ptt://status, falling back to the default chord so PTT never dies.
   const [verified, setVerified] = useState(false);
   const [hotkeyError, setHotkeyError] = useState<string | null>(null);
+  // Quick-capture hotkey (improvement-6 4.5): its own verify/error state, driven by
+  // the parallel capture://down / capture://status events Rust emits for the second
+  // chord. Empty captureHotkey means quick capture is off (no chord registered).
+  const [captureVerified, setCaptureVerified] = useState(false);
+  const [captureError, setCaptureError] = useState<string | null>(null);
   useEffect(() => {
     const unlisten = [
       listen("ptt://down", () => setVerified(true)),
       listen<{ ok: boolean; error?: string | null }>("ptt://status", (e) =>
         setHotkeyError(e.payload.ok ? null : (e.payload.error ?? "Couldn't register that hotkey.")),
+      ),
+      listen("capture://down", () => setCaptureVerified(true)),
+      listen<{ ok: boolean; error?: string | null }>("capture://status", (e) =>
+        setCaptureError(e.payload.ok ? null : (e.payload.error ?? "Couldn't register that hotkey.")),
       ),
     ];
     return () => unlisten.forEach((p) => void p.then((f) => f()));
@@ -682,6 +691,49 @@ function ActivationSection({ settings, update }: { settings: JuneSettings; updat
         {hotkeyError && (
           <p className="err" role="alert">
             {hotkeyError}
+          </p>
+        )}
+      </div>
+
+      <div className="stage-card">
+        <div className="stage-row">
+          <span className="stage-label">Quick capture</span>
+          <input
+            className="hotkey-input"
+            value={settings.captureHotkey ? hotkeyLabel(settings.captureHotkey) : "Off"}
+            readOnly
+            aria-label="Quick-capture hotkey. Focus this field and press a key combination to set it; press Backspace to turn it off."
+            title="Click, then press the new key combination (or Backspace to turn off)"
+            onKeyDown={(e) => {
+              if (e.key === "Tab") return; // keep keyboard navigation working
+              e.preventDefault();
+              // Backspace/Delete turns quick capture off (clears the chord).
+              if (e.key === "Backspace" || e.key === "Delete") {
+                if (settings.captureHotkey !== "") {
+                  setCaptureVerified(false);
+                  setCaptureError(null);
+                  update({ ...settings, captureHotkey: "" });
+                }
+                return;
+              }
+              const chord = chordFromKeyEvent(e);
+              if (chord && chord !== settings.captureHotkey) {
+                setCaptureVerified(false);
+                update({ ...settings, captureHotkey: chord });
+              }
+            }}
+          />
+          <span className="settings-hint">
+            {!settings.captureHotkey
+              ? "Off. Click the field and press a chord (a modifier plus a key) to jot notes straight to your inbox by voice."
+              : captureVerified
+                ? "✓ Verified - hold it, speak, and the note lands in june-inbox.md."
+                : "Hold it and speak to jot a note to june-inbox.md (no reply, just a chime). Press it anywhere to verify; Backspace turns it off."}
+          </span>
+        </div>
+        {captureError && (
+          <p className="err" role="alert">
+            {captureError}
           </p>
         )}
       </div>

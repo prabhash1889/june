@@ -6,7 +6,7 @@ import { matchApproval } from "../lib/approval-voice.ts";
 import { useApprovalKeys } from "../lib/approval-hooks.ts";
 import { ApprovalMeta } from "../lib/approval-ui.tsx";
 import { hotkeyLabel } from "../lib/hotkey.ts";
-import { hasOpenAiKey, injectText, runAgent, setOpenAiKey, transcribe } from "../lib/stt.ts";
+import { appendInbox, hasOpenAiKey, injectText, runAgent, setOpenAiKey, transcribe } from "../lib/stt.ts";
 import { type Approval, cancelAgent, interactiveTurnBase, newConversation, openApp, useMission, usePendingApproval } from "../lib/session.ts";
 import { missionProgress } from "../lib/missions.ts";
 import { MODEL_PROGRESS_EVENT, type ModelProgress } from "../lib/model-progress.ts";
@@ -38,7 +38,33 @@ type Phase =
   | { s: "speaking"; text: string }
   | { s: "reply"; text: string }
   | { s: "dictated"; text: string } // Phase 15.4: text was injected into the focused app
+  | { s: "captured"; text: string } // improvement-6 4.5: text was jotted to june-inbox.md
   | { s: "error"; message: string };
+
+// A short confirmation chime for a quick-capture jot (improvement-6 4.5): no brain,
+// no TTS voice - just a brief blip so the user knows the note landed. Plays on the
+// default output; a jot confirmation doesn't warrant the TTS sink plumbing.
+// ponytail: one WebAudio sine blip. Route through setSinkId only if users ask.
+function playChime(): void {
+  const Ctx = window.AudioContext;
+  if (!Ctx) return; // no audio context (tests/headless) - the visual confirm still shows
+  try {
+    const ctx = new Ctx();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = "sine";
+    osc.frequency.value = 880;
+    gain.gain.setValueAtTime(0.0001, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.18, ctx.currentTime + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.24);
+    osc.connect(gain).connect(ctx.destination);
+    osc.start();
+    osc.stop(ctx.currentTime + 0.25);
+    osc.onended = () => void ctx.close();
+  } catch {
+    // Autoplay policy or a closed context - the visual "Jotted" confirm still shows.
+  }
+}
 
 const MAX_CAPTURE_MS = 15_000;
 const WAVE_BARS = 28;
@@ -158,7 +184,7 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
   const dictationRef = useRef(false);
   dictationRef.current = dictation;
   approvalRef.current = approval;
-  const captureModeRef = useRef<"command" | "dictation">("command");
+  const captureModeRef = useRef<"command" | "dictation" | "capture">("command");
 
   // Load the voice stack + privacy mode, and decide the key gate. Under a mode
   // that blocks cloud voice (June has no local voice provider yet) the mic is
@@ -216,14 +242,16 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
       const { audio, mime } = await handle.stop();
       timer.captureEnded();
       if (transcribeRef.current !== tid) return; // cancelled while stopping
-      const dictating = captureModeRef.current === "dictation";
+      const mode = captureModeRef.current;
+      // Dictation (15.4) and quick-capture (4.5) run brainless: on a speechless clip
+      // they stand down quietly instead of surfacing a "try again" command error.
+      const brainless = mode !== "command";
       // Skip STT entirely on a speechless clip (1.8): cloud Whisper hallucinates
       // words like "Okay." on pure silence, and handsFree.autoAccept would then
       // auto-send that phantom command. The VAD already tracks whether real speech
-      // was heard (the same signal the spoken-approval path trusts). A dictation
-      // clip stands down quietly; a command surfaces "try again".
+      // was heard (the same signal the spoken-approval path trusts).
       if (audio.length === 0 || !handle.heardSpeech()) {
-        setPhase(dictating ? { s: "idle" } : { s: "error", message: "I didn't hear a command. Try again." });
+        setPhase(brainless ? { s: "idle" } : { s: "error", message: "I didn't hear a command. Try again." });
         return;
       }
       // Belt-and-braces over the backend's own timeout: if the invoke never
@@ -249,19 +277,34 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
       // pass) before it reaches the review gate or the injector. Pure and local.
       const cleaned = cleanTranscript(text, settingsRef.current.transcript);
       if (!cleaned.trim()) {
-        // Nothing usable: a dictation clip just stands down quietly; a command
-        // surfaces the same "try again" it always has.
-        setPhase(dictating ? { s: "idle" } : { s: "error", message: "I didn't hear a command. Try again." });
+        // Nothing usable: a brainless clip (dictation/capture) just stands down
+        // quietly; a command surfaces the same "try again" it always has.
+        setPhase(brainless ? { s: "idle" } : { s: "error", message: "I didn't hear a command. Try again." });
         return;
       }
       // Phase 15.4: dictation injects into the focused app instead of the agent.
       // This is the ONLY caller of injectText, and it is reached only from a
       // user-held PTT press (captureMode is set to "dictation" nowhere else).
-      if (dictating) {
+      if (mode === "dictation") {
         try {
           await injectText(cleaned);
           if (transcribeRef.current !== tid) return;
           setPhase({ s: "dictated", text: cleaned });
+        } catch (e) {
+          if (transcribeRef.current !== tid) return;
+          setPhase({ s: "error", message: e instanceof Error ? e.message : String(e) });
+        }
+        return;
+      }
+      // Quick capture (4.5): jot the cleaned line to june-inbox.md with a chime.
+      // No brain, no agent - the ONLY caller of appendInbox, reached only from a
+      // user-held capture-hotkey press (captureMode is "capture" nowhere else).
+      if (mode === "capture") {
+        try {
+          await appendInbox(cleaned);
+          if (transcribeRef.current !== tid) return;
+          playChime();
+          setPhase({ s: "captured", text: cleaned });
         } catch (e) {
           if (transcribeRef.current !== tid) return;
           setPhase({ s: "error", message: e instanceof Error ? e.message : String(e) });
@@ -527,10 +570,10 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
   }, [phase.s]);
   const level = levels.length > 0 ? levels[levels.length - 1] : 0;
 
-  // Clear the "sent to your app" dictation note after a moment (15.4), returning
-  // the widget to rest. A new PTT press cancels it early via startListening.
+  // Clear the "sent to your app" dictation note (15.4) or the "Jotted" capture note
+  // (4.5) after a moment, returning the widget to rest. A new press cancels it early.
   useEffect(() => {
-    if (phase.s !== "dictated") return;
+    if (phase.s !== "dictated" && phase.s !== "captured") return;
     const id = window.setTimeout(() => setPhase({ s: "idle" }), DICTATED_CONFIRM_MS);
     return () => window.clearTimeout(id);
   }, [phase.s]);
@@ -577,7 +620,15 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
     // A press during transcription abandons it and records again - a stalled
     // network must never lock the user out of the mic. A press in `review` re-records
     // (B4.10: the orb was inert there), same as the card's Re-record button.
-    else if (s === "idle" || s === "reply" || s === "error" || s === "transcribing" || s === "dictated" || s === "review") {
+    else if (
+      s === "idle" ||
+      s === "reply" ||
+      s === "error" ||
+      s === "transcribing" ||
+      s === "dictated" ||
+      s === "captured" ||
+      s === "review"
+    ) {
       transcribeRef.current += 1;
       void startListening();
     }
@@ -602,9 +653,25 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
       if (phaseRef.current.s === "listening") stopListening();
       else releaseDuringSetup.current = true; // released before the mic finished opening (B4.8)
     });
+    // Quick capture (improvement-6 4.5): a dedicated second hotkey. Hold it, speak,
+    // and the jot goes to june-inbox.md - never the agent. Tagged "capture" so
+    // beginTranscribe routes it; started directly (not via activate, which is
+    // command-only) exactly like dictation, and independent of dictation mode.
+    const unlistenCapDown = listen("capture://down", () => {
+      if (phaseRef.current.s === "listening") return; // a capture/command is already live
+      captureModeRef.current = "capture";
+      transcribeRef.current += 1;
+      void startListening();
+    });
+    const unlistenCapUp = listen("capture://up", () => {
+      if (phaseRef.current.s === "listening") stopListening();
+      else releaseDuringSetup.current = true; // released before the mic finished opening (B4.8)
+    });
     return () => {
       void unlistenDown.then((f) => f());
       void unlistenUp.then((f) => f());
+      void unlistenCapDown.then((f) => f());
+      void unlistenCapUp.then((f) => f());
     };
   }, [activate, stopListening, startListening]);
 
@@ -933,6 +1000,12 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
                 <p className="reply">{phase.text}</p>
               </div>
             )}
+            {phase.s === "captured" && (
+              <div className="reply-block">
+                <span className="who">Jotted to your inbox</span>
+                <p className="reply">{phase.text}</p>
+              </div>
+            )}
             {speakingText && (
               <div className="reply-block">
                 <span className="who who-june">June</span>
@@ -1053,6 +1126,7 @@ function Status({
     speaking: "Speaking… talk or press to interrupt.",
     reply: "",
     dictated: "",
+    captured: "",
     error: "",
   };
   const busy = phase.s === "listening" || phase.s === "transcribing" || phase.s === "thinking" || phase.s === "speaking";

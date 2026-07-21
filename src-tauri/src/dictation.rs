@@ -12,7 +12,11 @@
 // always-on-top orb that never takes focus on a PTT press, so the text lands in the
 // user's target app (Notepad, a browser field, ...), not in June.
 
+use std::io::Write;
+
+use chrono::Local;
 use enigo::{Enigo, Keyboard, Settings};
+use tauri::{AppHandle, Manager};
 
 /// Type `text` into the currently focused application. Returns a human-readable
 /// error (surfaced in the widget) if the OS input path is unavailable. An empty
@@ -27,4 +31,29 @@ pub fn inject_text(text: String) -> Result<(), String> {
     enigo
         .text(&text)
         .map_err(|e| format!("Could not type the dictated text: {e}"))
+}
+
+/// Quick-capture voice inbox (improvement-6 4.5): append one timestamped line to
+/// `<app_data_dir>/june-inbox.md` - the same host-owned, contained-path pattern as
+/// june-memory.md (the model never picks the path; there is no brain in this loop).
+/// A blank clip is a no-op success, matching inject_text: a silent capture should
+/// not raise an error. The file (and its dir) are created on first jot.
+#[tauri::command]
+pub fn append_inbox(app: AppHandle, text: String) -> Result<(), String> {
+    let line = text.trim();
+    if line.is_empty() {
+        return Ok(());
+    }
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let path = dir.join("june-inbox.md");
+    // Local time to match the user's day (the scheduler reads NaiveDateTime as
+    // local too); one bullet per jot so the inbox reads as a flat checklist.
+    let stamp = Local::now().format("%Y-%m-%d %H:%M");
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .map_err(|e| e.to_string())?;
+    writeln!(file, "- [{stamp}] {line}").map_err(|e| e.to_string())
 }

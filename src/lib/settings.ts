@@ -77,6 +77,11 @@ export interface JuneSettings {
   /** Global push-to-talk chord (improvement-5 P2 6.6) in global-shortcut syntax
    *  ("ctrl+shift+space"). Rust re-registers it live on settings change. */
   pttHotkey: string;
+  /** Global quick-capture chord (improvement-6 4.5) in global-shortcut syntax. A
+   *  dedicated second hotkey for "jot this down" - hold it, speak, and the cleaned
+   *  transcript is appended to june-inbox.md with no brain in the loop. Empty = off
+   *  (no second shortcut registered). */
+  captureHotkey: string;
   /** Preferred microphone deviceId (improvement-5 P2 6.5); "" = system default.
    *  Passed as an `ideal` constraint, so an unplugged device falls back. */
   micDeviceId: string;
@@ -111,6 +116,7 @@ export const DEFAULT_SETTINGS: JuneSettings = {
   tts: { provider: "openai", model: "tts-1", voice: "alloy" },
   brainBaseUrl: "",
   pttHotkey: "ctrl+shift+space",
+  captureHotkey: "ctrl+shift+j", // "jot" - a dedicated quick-capture chord (4.5)
   micDeviceId: "",
   outputDeviceId: "",
   outputVolume: 1,
@@ -189,6 +195,9 @@ function coerce(raw: RawSettings): JuneSettings {
     tts: { ...stage("tts", d.tts), voice: str(obj("tts").voice, d.tts.voice) },
     brainBaseUrl: str(raw.brainBaseUrl, d.brainBaseUrl),
     pttHotkey: str(raw.pttHotkey, d.pttHotkey),
+    // Preserve an explicit empty string (quick capture turned off); only an absent
+    // or non-string value falls back to the default chord.
+    captureHotkey: typeof raw.captureHotkey === "string" ? raw.captureHotkey.trim() : d.captureHotkey,
     micDeviceId: typeof raw.micDeviceId === "string" ? raw.micDeviceId : d.micDeviceId,
     outputDeviceId: typeof raw.outputDeviceId === "string" ? raw.outputDeviceId : d.outputDeviceId,
     outputVolume: unit(raw.outputVolume, d.outputVolume),

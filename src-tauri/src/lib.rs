@@ -89,11 +89,12 @@ pub fn run() {
                 })
                 .build(app)?;
 
-            // Push-to-talk (Phase 4): a real global hold-to-talk hotkey. The plugin's
-            // Pressed/Released states give true hold semantics a terminal can't - the
-            // webview starts capturing on ptt://down and transcribes on ptt://up.
+            // Push-to-talk (Phase 4) + quick-capture (improvement-6 4.5): the two real
+            // global hold-to-talk hotkeys. The plugin's Pressed/Released states give
+            // true hold semantics a terminal can't - the webview starts capturing on
+            // <kind>://down and transcribes on <kind>://up for each chord.
             #[cfg(desktop)]
-            register_push_to_talk(app.handle())?;
+            register_hotkeys(app.handle())?;
 
             Ok(())
         })
@@ -108,6 +109,7 @@ pub fn run() {
             tts::synthesize,
             tts::cancel_synthesis,
             dictation::inject_text,
+            dictation::append_inbox,
             diagnostics::bridge_health,
             diagnostics::test_brain,
             agent_runner::run_agent,
@@ -250,6 +252,19 @@ async fn show_app(app: tauri::AppHandle) -> Result<(), String> {
 #[cfg(desktop)]
 const DEFAULT_PTT: &str = "ctrl+shift+space";
 
+/// The two live global chords, parsed, shared between the plugin's one handler
+/// closure and `apply_hotkeys` (improvement-6 4.5). The handler compares the fired
+/// shortcut against these to route it to the PTT or the quick-capture event stream;
+/// `apply_hotkeys` rewrites them when settings change. `.0` is PTT, `.1` is capture
+/// (None when quick capture is off or failed to register).
+#[cfg(desktop)]
+type Chords = std::sync::Arc<
+    std::sync::Mutex<(
+        Option<tauri_plugin_global_shortcut::Shortcut>,
+        Option<tauri_plugin_global_shortcut::Shortcut>,
+    )>,
+>;
+
 /// The user's configured push-to-talk chord (settings `pttHotkey`,
 /// improvement-5 P2 6.6), falling back to the default when unset or blank.
 #[cfg(desktop)]
@@ -263,65 +278,141 @@ fn ptt_hotkey(app: &tauri::AppHandle) -> String {
         .to_string()
 }
 
-/// (Re-)registers `hotkey` as the one global PTT chord. On failure (unparseable,
-/// or taken by another app) the default chord is restored so push-to-talk never
-/// silently dies, and the outcome is broadcast as `ptt://status` for the
-/// Activation settings card.
+/// The user's configured quick-capture chord (settings `captureHotkey`,
+/// improvement-6 4.5). Empty/unset -> quick capture is off (no second shortcut is
+/// registered), unlike PTT which always falls back to a default.
 #[cfg(desktop)]
-fn apply_ptt_hotkey(app: &tauri::AppHandle, hotkey: &str) {
-    use tauri::Emitter;
-    use tauri_plugin_global_shortcut::GlobalShortcutExt;
+fn capture_hotkey(app: &tauri::AppHandle) -> String {
+    settings::read_settings(app)
+        .get("captureHotkey")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .unwrap_or("")
+        .to_string()
+}
 
-    let shortcuts = app.global_shortcut();
-    let _ = shortcuts.unregister_all();
-    let error = match shortcuts.register(hotkey) {
-        Ok(()) => None,
-        Err(e) => {
-            let _ = shortcuts.register(DEFAULT_PTT);
+/// (Re-)registers both global chords - PTT and the optional quick-capture chord -
+/// and stores their parsed forms in `chords` for the handler to dispatch on. PTT
+/// never dies: on any failure the default chord is restored. Quick capture is
+/// optional and skipped when unset or when it collides with PTT (PTT wins - a jot
+/// key that stole push-to-talk is worse than no jot key). Each outcome is broadcast
+/// as `ptt://status` / `capture://status` for the Activation settings cards.
+#[cfg(desktop)]
+fn apply_hotkeys(app: &tauri::AppHandle, chords: &Chords) {
+    use tauri::Emitter;
+    use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
+
+    // Parse `s` then register it, returning the parsed Shortcut so the handler can
+    // compare against it. A parse failure surfaces the same way as a register clash.
+    let register = |s: &str| -> Result<Shortcut, String> {
+        let sc: Shortcut = s.parse().map_err(|e| format!("{e}"))?;
+        app.global_shortcut()
+            .register(sc)
+            .map(|()| sc)
+            .map_err(|e| format!("{e}"))
+    };
+
+    let ptt = ptt_hotkey(app);
+    let capture = capture_hotkey(app);
+    let _ = app.global_shortcut().unregister_all();
+
+    // PTT: never allowed to silently die - restore the default chord on any failure.
+    let (ptt_shortcut, ptt_str, ptt_error) = match register(&ptt) {
+        Ok(sc) => (Some(sc), ptt.clone(), None),
+        Err(e) => (
+            register(DEFAULT_PTT).ok(),
+            DEFAULT_PTT.to_string(),
             Some(format!(
-                "Couldn't register \"{hotkey}\" ({e}) - push to talk stays on the default chord."
-            ))
-        }
+                "Couldn't register \"{ptt}\" ({e}) - push to talk stays on the default chord."
+            )),
+        ),
     };
     let _ = app.emit(
         "ptt://status",
-        serde_json::json!({ "ok": error.is_none(), "hotkey": hotkey, "error": error }),
+        serde_json::json!({ "ok": ptt_error.is_none(), "hotkey": ptt_str, "error": ptt_error }),
     );
+
+    // Quick capture (4.5): optional. Off when unset; refused when it collides with
+    // the effective PTT chord so push-to-talk is never shadowed.
+    let mut capture_shortcut: Option<Shortcut> = None;
+    if !capture.is_empty() {
+        let (ok, error) = if capture.eq_ignore_ascii_case(&ptt_str) {
+            (
+                false,
+                Some("Quick-capture hotkey matches push-to-talk - pick a different chord.".to_string()),
+            )
+        } else {
+            match register(&capture) {
+                Ok(sc) => {
+                    capture_shortcut = Some(sc);
+                    (true, None)
+                }
+                Err(e) => (
+                    false,
+                    Some(format!(
+                        "Couldn't register \"{capture}\" ({e}) - quick capture is off until you pick a free chord."
+                    )),
+                ),
+            }
+        };
+        let _ = app.emit(
+            "capture://status",
+            serde_json::json!({ "ok": ok, "hotkey": capture, "error": error }),
+        );
+    }
+
+    *chords.lock().unwrap() = (ptt_shortcut, capture_shortcut);
 }
 
-/// Registers the push-to-talk hotkey and bridges its Pressed/Released edges to
-/// the webview as `ptt://down` / `ptt://up` events. The chord comes from
-/// settings (6.6) and re-registers live when a settings write changes it - the
-/// scheduler's out-of-band `settings://changed` broadcasts arrive here too, so a
-/// voice-created settings edit is picked up as well.
+/// Registers the global hotkeys and bridges each chord's Pressed/Released edges to
+/// the webview: PTT as `ptt://down` / `ptt://up`, quick capture (4.5) as
+/// `capture://down` / `capture://up`. The chords come from settings and re-register
+/// live when a settings write changes either one - the scheduler's out-of-band
+/// `settings://changed` broadcasts arrive here too, so a voice-created settings edit
+/// is picked up as well.
 #[cfg(desktop)]
-fn register_push_to_talk(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> {
+fn register_hotkeys(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     use tauri::{Emitter, Listener};
     use tauri_plugin_global_shortcut::ShortcutState;
 
-    // June registers exactly one global shortcut - the PTT chord - so the
-    // handler needs no per-shortcut dispatch.
+    let chords: Chords = std::sync::Arc::new(std::sync::Mutex::new((None, None)));
+
+    // The one handler dispatches by which registered chord fired (the fired shortcut
+    // is compared against the two stored chords), so PTT and quick capture share a
+    // single global-shortcut plugin.
+    let chords_h = chords.clone();
     app.plugin(
         tauri_plugin_global_shortcut::Builder::new()
-            .with_handler(move |app, _shortcut, event| {
-                let name = match event.state() {
-                    ShortcutState::Pressed => "ptt://down",
-                    ShortcutState::Released => "ptt://up",
+            .with_handler(move |app, shortcut, event| {
+                let kind = {
+                    let c = chords_h.lock().unwrap();
+                    if c.0.as_ref() == Some(shortcut) {
+                        "ptt"
+                    } else if c.1.as_ref() == Some(shortcut) {
+                        "capture"
+                    } else {
+                        return; // a stale registration edge; ignore
+                    }
                 };
-                let _ = app.emit(name, ());
+                let name = match event.state() {
+                    ShortcutState::Pressed => format!("{kind}://down"),
+                    ShortcutState::Released => format!("{kind}://up"),
+                };
+                let _ = app.emit(&name, ());
             })
             .build(),
     )?;
-    apply_ptt_hotkey(app, &ptt_hotkey(app));
+    apply_hotkeys(app, &chords);
 
-    let current = std::sync::Mutex::new(ptt_hotkey(app));
     let handle = app.clone();
+    let chords_l = chords.clone();
+    let last = std::sync::Mutex::new((ptt_hotkey(app), capture_hotkey(app)));
     app.listen("settings://changed", move |_| {
-        let want = ptt_hotkey(&handle);
-        let mut cur = current.lock().unwrap();
+        let want = (ptt_hotkey(&handle), capture_hotkey(&handle));
+        let mut cur = last.lock().unwrap();
         if *cur != want {
             *cur = want.clone();
-            apply_ptt_hotkey(&handle, &want);
+            apply_hotkeys(&handle, &chords_l);
         }
     });
     Ok(())

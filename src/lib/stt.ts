@@ -42,6 +42,14 @@ export function injectText(text: string): Promise<void> {
   return invoke("inject_text", { text });
 }
 
+/** Quick-capture voice inbox (improvement-6 4.5): append the cleaned transcript as
+ *  one timestamped line to june-inbox.md. Called ONLY from the user-held capture
+ *  hotkey path in the widget - never by the agent, no brain in the loop. Rejects
+ *  with a readable message if the file can't be written. */
+export function appendInbox(text: string): Promise<void> {
+  return invoke("append_inbox", { text });
+}
+
 /** Whether an OpenAI key is present, so the UI can prompt for one up front. */
 export function hasOpenAiKey(): Promise<boolean> {
   return invoke<boolean>("has_api_key", { service: "june_provider_openai_api_key" });

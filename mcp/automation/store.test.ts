@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   removeAutomation,
+  type SettingsBag,
   setAutomationEnabled,
   summarizeAutomations,
   validateSchedule,
@@ -9,6 +10,12 @@ import {
   withSchedule,
   withWatch,
 } from "./store.ts";
+
+// setAutomationEnabled/removeAutomation return the loosely-typed SettingsBag
+// (Record<string, unknown>); this narrows the three managed lists so the
+// assertions can read `.enabled` without an `as` cast at every call site.
+const lists = (b: SettingsBag) =>
+  b as { schedules: { enabled: boolean }[]; watches: { enabled: boolean }[]; triggers: { enabled: boolean }[] };
 
 describe("validateSchedule (P1.5)", () => {
   it("accepts a valid daily schedule and fills defaults", () => {
@@ -106,15 +113,15 @@ describe("setAutomationEnabled / removeAutomation (4.2)", () => {
   it("disables a watch by label (case-insensitive) and preserves everything else", () => {
     const { bag: next, result } = setAutomationEnabled(bag(), "build watch", false);
     expect(result).toEqual({ kind: "watch", id: "build", label: "Build watch" });
-    expect(next.watches[0].enabled).toBe(false);
-    expect(next.schedules[0].enabled).toBe(true); // untouched
+    expect(lists(next).watches[0].enabled).toBe(false);
+    expect(lists(next).schedules[0].enabled).toBe(true); // untouched
     expect(next.other).toEqual({ keep: true }); // untouched
   });
 
   it("enables a trigger by id", () => {
     const { bag: next, result } = setAutomationEnabled(bag(), "err", true);
     expect(result?.kind).toBe("trigger");
-    expect(next.triggers[0].enabled).toBe(true);
+    expect(lists(next).triggers[0].enabled).toBe(true);
   });
 
   it("removes a schedule by label and leaves the others", () => {
