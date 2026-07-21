@@ -608,10 +608,176 @@ pub fn run_schedule_now(app: AppHandle, session: State<'_, AgentSession>, id: St
     Ok(())
 }
 
+/// The scheduler's persisted + in-memory bookkeeping, threaded through each tick's
+/// dispatch sections (2.4). Grouped so the section fns take one `&mut` instead of
+/// seven loose maps. Trigger mtimes stay in-memory (a restart re-baselines without
+/// firing); everything else is persisted via `save_state` so a restart can't
+/// re-fire a schedule that already ran nor re-arm a finished watch.
+struct TickState {
+    fired: HashMap<String, NaiveDateTime>,
+    attempts: HashMap<String, u32>,
+    mtimes: HashMap<String, std::time::SystemTime>,
+    watch_fired: HashMap<String, NaiveDateTime>,
+    watch_iters: HashMap<String, u32>,
+    watch_done: std::collections::HashSet<String>,
+    /// The `now` of the previous live tick, closing the schedule-starvation window
+    /// (5.1): a fire moment that fell in the gap since we last looked is still
+    /// honoured. `None` until the first tick completes.
+    last_tick: Option<NaiveDateTime>,
+}
+
+/// One tick's schedule pass (2.4): fire every due, enabled schedule the session
+/// isn't too busy for. A `once` reminder is delivered inline (no agent turn) and
+/// retired; a normal schedule fires through the retrying agent path and is marked
+/// fired only once the cycle is DONE (B3.3 + P0.4).
+fn run_schedules(
+    app: &AppHandle,
+    session: &AgentSession,
+    settings: &serde_json::Value,
+    now: NaiveDateTime,
+    st: &mut TickState,
+) {
+    for sc in read_schedules(settings) {
+        if !sc.enabled {
+            continue;
+        }
+        if !is_due(now, &sc, st.fired.get(&sc.id).copied(), st.last_tick) {
+            // Any half-spent retry budget is void once the window closes.
+            st.attempts.remove(&sc.id);
+            continue;
+        }
+        if session.is_busy() {
+            continue; // don't preempt an interactive turn; retry next tick
+        }
+        if sc.kind == Kind::Once {
+            deliver_reminder(app, &sc);
+            st.fired.insert(sc.id.clone(), now);
+            crate::settings::disable_schedule(app, &sc.id);
+            save_state(app, &st.fired, &st.watch_fired, &st.watch_iters, &st.watch_done);
+            continue;
+        }
+        let outcome = fire(app, session, format!("schedule: {}", sc.label), sc.prompt.clone(), None);
+        if settle_attempt(&mut st.attempts, &sc.id, &outcome) {
+            if let FireOutcome::Errored(e) = &outcome {
+                notify(app, &format!("June couldn't finish: schedule: {}", sc.label), e);
+            }
+            st.fired.insert(sc.id.clone(), now);
+            save_state(app, &st.fired, &st.watch_fired, &st.watch_iters, &st.watch_done);
+        }
+    }
+}
+
+/// One tick's file-trigger pass (2.4): for each enabled trigger, decide via the
+/// pure `trigger_action` whether to ignore, re-baseline, or fire, and advance the
+/// baseline only once a fire actually dispatched (B3.1/B3.3).
+fn run_triggers(app: &AppHandle, session: &AgentSession, settings: &serde_json::Value, st: &mut TickState) {
+    for tr in read_triggers(settings) {
+        if !tr.enabled {
+            continue;
+        }
+        let Ok(modified) = std::fs::metadata(&tr.path).and_then(|m| m.modified()) else {
+            continue; // file missing/unreadable this tick
+        };
+        match trigger_action(st.mtimes.get(&tr.id).copied(), modified, session.is_busy()) {
+            TriggerAction::Ignore => {}
+            TriggerAction::Baseline => {
+                st.mtimes.insert(tr.id.clone(), modified);
+            }
+            TriggerAction::Fire => {
+                let payload = read_trigger_head(&tr.path);
+                // Advance the baseline ONLY once the run actually dispatched: a run
+                // deferred by the spawn-race (B3.3) must re-fire next tick so the
+                // change isn't lost. An errored run consumes the change (retrying the
+                // same payload would loop).
+                match fire(app, session, format!("trigger: {}", tr.label), tr.prompt.clone(), Some(payload)) {
+                    FireOutcome::Deferred => {}
+                    FireOutcome::Ran => {
+                        st.mtimes.insert(tr.id.clone(), modified);
+                    }
+                    FireOutcome::Errored(e) => {
+                        notify(app, &format!("June couldn't finish: trigger: {}", tr.label), &e);
+                        st.mtimes.insert(tr.id.clone(), modified);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// One tick's watch-loop pass (2.4): re-run an observe-only unattended turn on its
+/// interval, stopping when June replies DONE or the per-watch check cap is hit. The
+/// unattended leash (18.2) makes this safe - a watch can read and report, never act.
+fn run_watches(
+    app: &AppHandle,
+    session: &AgentSession,
+    settings: &serde_json::Value,
+    now: NaiveDateTime,
+    st: &mut TickState,
+) {
+    for w in read_watches(settings) {
+        if !w.enabled || st.watch_done.contains(&w.id) {
+            continue;
+        }
+        if !interval_due(now, w.every_minutes, st.watch_fired.get(&w.id).copied()) {
+            continue;
+        }
+        if session.is_busy() {
+            continue; // don't preempt an interactive turn; retry next tick
+        }
+        let framed = frame_watch(&w.prompt, &w.until_condition);
+        match run_unattended(app, session, framed, format!("watch: {}", w.label), None) {
+            // Spawn-race deferral (B3.3): retry next tick without advancing the
+            // baseline, so the interval isn't reset by a run that never fired.
+            Ok(None) => {}
+            outcome => {
+                st.watch_fired.insert(w.id.clone(), now);
+                let iters = {
+                    let n = st.watch_iters.entry(w.id.clone()).or_insert(0);
+                    *n += 1;
+                    *n
+                };
+                // Per-watch cap (5.5), falling back to the default so an existing
+                // watch with no maxChecks behaves exactly as before.
+                let cap = w.max_checks.unwrap_or(MAX_WATCH_ITERS);
+                // Decide whether this watch is finished (DONE) or has hit its check
+                // cap, and the completion note to speak.
+                let retire: Option<(String, String)> = match outcome {
+                    Ok(Some(reply)) => {
+                        if parse_verdict(&reply) == Verdict::Done {
+                            Some((format!("Watch complete: {}", w.label), truncate(&reply, 240)))
+                        } else if iters >= cap {
+                            Some((format!("Watch stopped (max checks): {}", w.label), truncate(&reply, 240)))
+                        } else {
+                            None
+                        }
+                    }
+                    // A transient error counts as an iteration; give up at the cap.
+                    Err(e) if iters >= cap => Some((format!("Watch stopped: {}", w.label), e)),
+                    Err(_) => None,
+                    Ok(None) => unreachable!("Ok(None) handled above"),
+                };
+                // Retire a finished watch: mark it done AND flip its `enabled` off in
+                // settings (1.9), so it neither re-arms on restart nor lingers as
+                // "enabled" in the UI.
+                if let Some((title, body)) = retire {
+                    st.watch_done.insert(w.id.clone());
+                    crate::settings::disable_watch(app, &w.id);
+                    notify(app, &title, &body);
+                }
+                // Persist the watch bookkeeping so a restart honours the interval and
+                // the DONE set (1.9).
+                save_state(app, &st.fired, &st.watch_fired, &st.watch_iters, &st.watch_done);
+            }
+        }
+    }
+}
+
 /// Start the scheduler's background thread (Phase 18). Reads settings each tick, so
 /// added/edited schedules and triggers take effect on the next tick with no restart.
 /// A busy session (an interactive turn or a pending approval) defers this tick's
-/// fires so an unattended run never barges in on the user.
+/// fires so an unattended run never barges in on the user. The per-section dispatch
+/// lives in `run_schedules` / `run_triggers` / `run_watches` (2.4); this fn owns the
+/// tick loop, the settings cache, and the pending-mission drain.
 pub fn start(app: AppHandle, session: AgentSession, runner: MissionRunner) {
     std::thread::spawn(move || {
         // Scheduler bookkeeping is persisted (june-scheduler.json, improvement-5
@@ -620,15 +786,17 @@ pub fn start(app: AppHandle, session: AgentSession, runner: MissionRunner) {
         // restart re-baselines them without firing, so relaunching never acts on an
         // already-old file.
         let loaded = load_state(&app);
-        let mut fired: HashMap<String, NaiveDateTime> = loaded.fired;
-        let mut attempts: HashMap<String, u32> = HashMap::new();
-        let mut mtimes: HashMap<String, std::time::SystemTime> = HashMap::new();
-        // Watch-loop state (P1.2, now persisted per 1.9): last-fired, iteration
-        // count, and the set that have hit their stop condition (or the iteration
-        // cap). Persisting `watch_done` stops a finished watch re-firing on restart.
-        let mut watch_fired: HashMap<String, NaiveDateTime> = loaded.watch_fired;
-        let mut watch_iters: HashMap<String, u32> = loaded.watch_iters;
-        let mut watch_done: std::collections::HashSet<String> = loaded.watch_done;
+        // Watch-loop state (P1.2, persisted per 1.9): last-fired, iteration count, and
+        // the set that have hit their stop condition, all grouped into TickState.
+        let mut st = TickState {
+            fired: loaded.fired,
+            attempts: HashMap::new(),
+            mtimes: HashMap::new(),
+            watch_fired: loaded.watch_fired,
+            watch_iters: loaded.watch_iters,
+            watch_done: loaded.watch_done,
+            last_tick: None,
+        };
         // Last-seen settings.json mtime, to notice an out-of-band write (P1.5: the
         // automation MCP server writes schedules/watches straight to settings.json,
         // which can't emit a Tauri event itself).
@@ -639,11 +807,6 @@ pub fn start(app: AppHandle, session: AgentSession, runner: MissionRunner) {
         // waste when nothing changed).
         let mut cached_settings: serde_json::Value = serde_json::Value::Object(Default::default());
         let mut settings_loaded = false;
-        // The `now` of the previous live tick, to close the schedule-starvation
-        // window (5.1): a schedule whose fire moment fell in the gap since we last
-        // looked - a gap a long blocking `fire()` can stretch past the fixed
-        // catch-up - is still honoured. `None` until the first tick completes.
-        let mut last_tick: Option<NaiveDateTime> = None;
 
         loop {
             std::thread::sleep(TICK);
@@ -677,7 +840,7 @@ pub fn start(app: AppHandle, session: AgentSession, runner: MissionRunner) {
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false)
             {
-                last_tick = Some(now);
+                st.last_tick = Some(now);
                 continue;
             }
 
@@ -710,145 +873,17 @@ pub fn start(app: AppHandle, session: AgentSession, runner: MissionRunner) {
                 }
             }
 
-            for sc in read_schedules(settings) {
-                if !sc.enabled {
-                    continue;
-                }
-                if !is_due(now, &sc, fired.get(&sc.id).copied(), last_tick) {
-                    // Any half-spent retry budget is void once the window closes
-                    // (or the interval passes), so it can't bleed into the next fire.
-                    attempts.remove(&sc.id);
-                    continue;
-                }
-                if session.is_busy() {
-                    continue; // don't preempt an interactive turn (or talk over it); retry next tick
-                }
-                // A `once` reminder (4.1) needs no agent turn: deliver it (speak +
-                // notify), record it fired, and retire it by disabling in settings so
-                // it neither re-fires this session nor re-arms on restart. Done inline,
-                // never through the retrying `fire()` agent path.
-                if sc.kind == Kind::Once {
-                    deliver_reminder(&app, &sc);
-                    fired.insert(sc.id.clone(), now);
-                    crate::settings::disable_schedule(&app, &sc.id);
-                    save_state(&app, &fired, &watch_fired, &watch_iters, &watch_done);
-                    continue;
-                }
-                // Mark fired only once the schedule is DONE for this cycle (B3.3 +
-                // improvement-5 P0.4): a spawn-race deferral retries next tick, and
-                // an error retries up to MAX_ATTEMPTS before the cycle is given up.
-                let outcome = fire(&app, &session, format!("schedule: {}", sc.label), sc.prompt.clone(), None);
-                if settle_attempt(&mut attempts, &sc.id, &outcome) {
-                    if let FireOutcome::Errored(e) = &outcome {
-                        notify(&app, &format!("June couldn't finish: schedule: {}", sc.label), e);
-                    }
-                    // Full timestamp (P1.1): a daily schedule compares the date, an
-                    // `every` schedule measures the elapsed interval from here.
-                    fired.insert(sc.id.clone(), now);
-                    save_state(&app, &fired, &watch_fired, &watch_iters, &watch_done);
-                }
-            }
-
-            for tr in read_triggers(settings) {
-                if !tr.enabled {
-                    continue;
-                }
-                let Ok(modified) = std::fs::metadata(&tr.path).and_then(|m| m.modified()) else {
-                    continue; // file missing/unreadable this tick
-                };
-                match trigger_action(mtimes.get(&tr.id).copied(), modified, session.is_busy()) {
-                    TriggerAction::Ignore => {}
-                    TriggerAction::Baseline => {
-                        mtimes.insert(tr.id.clone(), modified);
-                    }
-                    TriggerAction::Fire => {
-                        let payload = read_trigger_head(&tr.path);
-                        // Advance the baseline ONLY once the run actually dispatched:
-                        // a run deferred by the spawn-race (B3.3) must re-fire on the
-                        // next tick, so the change isn't lost (B3.1). An errored run
-                        // consumes the change (retrying the same payload would loop).
-                        match fire(&app, &session, format!("trigger: {}", tr.label), tr.prompt.clone(), Some(payload)) {
-                            FireOutcome::Deferred => {}
-                            FireOutcome::Ran => {
-                                mtimes.insert(tr.id.clone(), modified);
-                            }
-                            FireOutcome::Errored(e) => {
-                                notify(&app, &format!("June couldn't finish: trigger: {}", tr.label), &e);
-                                mtimes.insert(tr.id.clone(), modified);
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Watch loops (improvement-5 P1.2): re-run an observe-only unattended turn
-            // on an interval, stopping when June replies DONE (the condition holds) or
-            // the iteration cap is hit. The unattended leash (18.2) makes this safe by
-            // construction - a watch can read and report, never act.
-            for w in read_watches(settings) {
-                if !w.enabled || watch_done.contains(&w.id) {
-                    continue;
-                }
-                if !interval_due(now, w.every_minutes, watch_fired.get(&w.id).copied()) {
-                    continue;
-                }
-                if session.is_busy() {
-                    continue; // don't preempt an interactive turn; retry next tick
-                }
-                let framed = frame_watch(&w.prompt, &w.until_condition);
-                match run_unattended(&app, &session, framed, format!("watch: {}", w.label), None) {
-                    // Spawn-race deferral (B3.3): retry next tick without advancing the
-                    // baseline, so the interval isn't reset by a run that never fired.
-                    Ok(None) => {}
-                    outcome => {
-                        watch_fired.insert(w.id.clone(), now);
-                        let iters = {
-                            let n = watch_iters.entry(w.id.clone()).or_insert(0);
-                            *n += 1;
-                            *n
-                        };
-                        // Per-watch cap (5.5), falling back to the default so an
-                        // existing watch with no maxChecks behaves exactly as before.
-                        let cap = w.max_checks.unwrap_or(MAX_WATCH_ITERS);
-                        // Decide whether this watch is finished (DONE) or has hit its
-                        // check cap, and the completion note to speak.
-                        let retire: Option<(String, String)> = match outcome {
-                            Ok(Some(reply)) => {
-                                if parse_verdict(&reply) == Verdict::Done {
-                                    Some((format!("Watch complete: {}", w.label), truncate(&reply, 240)))
-                                } else if iters >= cap {
-                                    Some((format!("Watch stopped (max checks): {}", w.label), truncate(&reply, 240)))
-                                } else {
-                                    None
-                                }
-                            }
-                            // A transient error counts as an iteration; give up at the cap.
-                            Err(e) if iters >= cap => {
-                                Some((format!("Watch stopped: {}", w.label), e))
-                            }
-                            Err(_) => None,
-                            Ok(None) => unreachable!("Ok(None) handled above"),
-                        };
-                        // Retire a finished watch: mark it done AND flip its `enabled`
-                        // off in settings (1.9), so it neither re-arms on restart nor
-                        // lingers as "enabled" in the UI.
-                        if let Some((title, body)) = retire {
-                            watch_done.insert(w.id.clone());
-                            crate::settings::disable_watch(&app, &w.id);
-                            notify(&app, &title, &body);
-                        }
-                        // Persist the watch bookkeeping so a restart honours the interval
-                        // and the DONE set (1.9).
-                        save_state(&app, &fired, &watch_fired, &watch_iters, &watch_done);
-                    }
-                }
-            }
+            // Per-section dispatch (2.4). Each pass reads the settings bag, fires what
+            // is due, and threads its bookkeeping through `st`.
+            run_schedules(&app, &session, settings, now, &mut st);
+            run_triggers(&app, &session, settings, &mut st);
+            run_watches(&app, &session, settings, now, &mut st);
 
             // Record this tick's clock as the boundary for the next tick's gap check
             // (5.1). Set from `now` (the tick's START), so a tick whose `fire()`
             // blocked for 30+ minutes still reports the moment it began looking - a
             // sibling that came due during the block falls in the next tick's gap.
-            last_tick = Some(now);
+            st.last_tick = Some(now);
         }
     });
 }
