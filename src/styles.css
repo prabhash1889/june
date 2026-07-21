@@ -821,7 +821,7 @@ button {
 
 /* 7.12: positive keychain-change confirmation, distinct from the red failure note. */
 .app-flash {
-  color: var(--text-dim);
+  color: var(--dim);
   border-left: 2px solid var(--accent);
   padding-left: var(--sp-2);
 }
