@@ -325,10 +325,20 @@ round-trip + legacy migration (1.9).
     the sample through the chosen sink (`playBytes` takes a `sinkId`) so the test
     exercises the real device. settings.test pins the new default.
 
-3.10 **Train and ship the real "hey june" wake model** | P2 | M
+3.10 **Train and ship the real "hey june" wake model** | P2 | M - BLOCKED (needs the trained artifact)
     The local wake phrase is literally "hey jarvis" (openWakeWord stand-in). Train
     `hey_june.onnx` per the openWakeWord recipe, pin its SHA-256 in
     `scripts/fetch-models.mjs`, drop into `createWakeRunners`.
+    The only deliverable is the trained model file itself, and the code seam already
+    accepts it with zero code change (confirmed: `wake.ts` + `createWakeRunners` load
+    the classifier by path; `fetch-models.mjs` downloads+checksums it beside the
+    shared melspec/embedding models). Producing `hey_june.onnx` means running the
+    openWakeWord training pipeline offline (synthetic "hey june" TTS utterances +
+    negatives, ~hours on a GPU) - it cannot be done in a coding session, and there is
+    no published "hey june" model to fetch. To finish: run the recipe, host the
+    `.onnx`, add a `{ url, dest: "wake/hey_june_v0.1.onnx", sha256 }` entry to
+    `downloads` in `fetch-models.mjs`, and point `createWakeRunners` at it. No other
+    code changes required.
 
 3.11 **Abort in-flight synthesis on barge-in** | P3 | S - DONE
     `SpeechQueue.stop()` drops the queue but running synth promises keep spending cloud
@@ -349,10 +359,22 @@ round-trip + legacy migration (1.9).
     via tauri - no new build cost) for `select!`/`Notify`. cargo test pins the
     registry refcount reaping; 240 vitest + 41 cargo green, clippy `-D warnings` clean.
 
-3.12 **Stream cloud TTS playback** | P3 | M
+3.12 **Stream cloud TTS playback** | P3 | M - DEFERRED (gate unmet, no evidence to justify)
     First audio waits for the complete first-sentence mp3. Chunk the response body over a
     Tauri channel into a MediaSource buffer. Only do it if Diagnostics shows p50 tts
     meaningfully above ~300ms. `src-tauri/src/tts.rs`, `src/lib/tts.ts`.
+    Held per its own precondition. Two facts make building it now premature: (1) there
+    is no isolated TTS-synth p50 metric to evaluate the gate - `latency.ts` only records
+    `firstAudio - firstToken`, which conflates brain streaming with synthesis, so we
+    cannot show TTS p50 > ~300ms; (2) it is greenfield machinery (Tauri `ipc::Channel`
+    streaming + a MediaSource/SourceBuffer append queue for `audio/mpeg`, plus a
+    barge-in interaction with the new 3.11 cancel), and sentence-streaming already puts
+    first-audio at one SHORT first sentence's latency, where MSE setup overhead can
+    exceed just fetching the whole small clip. To do it well first add a per-synth TTS
+    duration metric to Diagnostics; if a device shows p50 meaningfully above ~300ms,
+    then stream: `synthesize_stream(app, text, ..., channel)` in Rust forwarding
+    `resp.chunk()` (honoring the 3.11 cancel registry), fed into a SourceBuffer in
+    `SpeechQueue`.
 
 ---
 
