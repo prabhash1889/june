@@ -36,6 +36,16 @@ import { actionOf, classify, serverOf, summarize } from "./policy.ts";
 // turn always terminates with a spoken result instead of unbounded token spend.
 const MAX_TURNS = 24;
 
+// In-session context trim (3.2). The held query grows every turn until the 10-min
+// idle reset, so a long ACTIVE session gets slower and pricier each turn. Mirror
+// the OpenAI brain's rolling-history cap (B4.5): at this many turns, reset the SDK
+// session and re-seed a fresh one with a short recap of the most recent exchanges,
+// so continuity survives the trim. The SDK exposes no rolling-trim lever (only a
+// per-query `maxTurns` bound and near-window auto-compaction), so we bound it here.
+const CONTEXT_TRIM_TURNS = 30;
+// How many recent exchanges to carry across a trim as the recap.
+const RECAP_TURNS = 3;
+
 export interface ClaudeBrainConfig {
   model?: string;
   systemPrompt: string;
@@ -113,6 +123,13 @@ export class ClaudeBrain implements Brain {
   #input: MessageQueue | null = null;
   #hooks: TurnHooks | null = null;
 
+  // In-session context trim (3.2). `#turnCount` grows per completed turn; at
+  // CONTEXT_TRIM_TURNS the next run resets the session and prepends `#recap` (built
+  // from the last RECAP_TURNS exchanges) to the first prompt so continuity holds.
+  #turnCount = 0;
+  #recent: { you: string; june: string }[] = [];
+  #recap: string | null = null;
+
   constructor(cfg: ClaudeBrainConfig) {
     this.model = cfg.model ?? "claude-opus-4-8";
     this.#systemPrompt = cfg.systemPrompt;
@@ -182,7 +199,18 @@ export class ClaudeBrain implements Brain {
   }
 
   async run(prompt: string, hooks: TurnHooks): Promise<TurnResult> {
+    // In-session context trim (3.2): once the session has run long enough, end it
+    // and carry a recap of the recent exchanges into a fresh one before this turn,
+    // so growth is bounded without losing the thread of the conversation.
+    if (this.#turnCount >= CONTEXT_TRIM_TURNS) {
+      const recap = this.#buildRecap();
+      this.reset(); // clears query/input/counters/recap
+      this.#recap = recap;
+    }
     this.#ensureQuery();
+    // Prepend the pending recap (if any) to the first prompt of the fresh session.
+    const seeded = this.#recap ? `${this.#recap}\n\n${prompt}` : prompt;
+    this.#recap = null;
     // Capture the query reference NOW (1.5): a mid-turn reset() ("New
     // conversation") nulls `this.#query`, so reading `this.#query!` each loop
     // iteration would throw a raw TypeError. The captured `q` still points at the
@@ -192,7 +220,7 @@ export class ClaudeBrain implements Brain {
     this.#hooks = hooks;
     this.#input!.push({
       type: "user",
-      message: { role: "user", content: prompt },
+      message: { role: "user", content: seeded },
       parent_tool_use_id: null,
     });
 
@@ -292,7 +320,23 @@ export class ClaudeBrain implements Brain {
       this.#hooks = null;
     }
 
+    // Record this exchange for the trim recap and count the turn (3.2). A mid-turn
+    // reset() may have zeroed these, in which case this just seeds the fresh
+    // session's recent window - harmless.
+    this.#turnCount++;
+    this.#recent.push({ you: prompt, june: finalText });
+    if (this.#recent.length > RECAP_TURNS) this.#recent.shift();
+
     return { text: finalText, isError, usage };
+  }
+
+  /** Build a compact recap of the most recent exchanges to carry across a context
+   *  trim (3.2), so the fresh session continues the conversation instead of losing
+   *  it. ponytail: plaintext prompt/reply pairs, no tool-call detail - enough to
+   *  keep continuity; upgrade to a model-generated summary only if that proves thin. */
+  #buildRecap(): string {
+    const lines = this.#recent.map((e) => `You: ${e.you}\nJune: ${e.june}`).join("\n\n");
+    return `[Recap of the earlier conversation so far, continue naturally from it:]\n${lines}`;
   }
 
   cancel(): void {
@@ -310,6 +354,11 @@ export class ClaudeBrain implements Brain {
     this.#query = null;
     this.#input = null;
     this.#hooks = null;
+    // Drop the trim bookkeeping too: a fresh conversation starts a fresh window,
+    // and a public reset ("New conversation") must not leak a stale recap (3.2).
+    this.#turnCount = 0;
+    this.#recent = [];
+    this.#recap = null;
   }
 
   async dispose(): Promise<void> {

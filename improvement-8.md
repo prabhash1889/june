@@ -179,6 +179,15 @@ re-discovered.
     session get slow" report. Mirror the OpenAI trim rule via the SDK's compaction/`maxTurns`
     controls or reset-with-summary at a message-count threshold.
     `agent/claude-brain.ts`.
+    **DONE (reset-with-recap).** The SDK exposes no rolling-trim lever - only a
+    per-query `maxTurns` bound (already used for the tool loop) and near-window
+    auto-compaction, neither of which addresses per-turn cost growth below the window.
+    So mirrored the OpenAI B4.5 cap directly: a `#turnCount` grows per completed turn,
+    and at `CONTEXT_TRIM_TURNS` (30) the next `run` ends the held session and re-seeds
+    a fresh one, prepending a plaintext recap of the last `RECAP_TURNS` (3) exchanges to
+    the first prompt so continuity survives the trim. `reset()` clears the bookkeeping so
+    "New conversation" can't leak a stale recap. Pinned with a test that runs 30 turns on
+    one warm session then asserts the 31st opens a new query seeded with the recap.
 
 3.3 **Reply markdown rendering** (c/o 7-5.6) | P2 | S
     Replies with paths, code, and lists render as flat text in `.turn.june` bubbles - very

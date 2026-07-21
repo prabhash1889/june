@@ -117,3 +117,46 @@ describe("streamed text deltas + dedupe (3.6)", () => {
     expect(said).toEqual(["First.", "Second."]); // delta for #1, fallback for #2
   });
 });
+
+// 3.2: the held Claude session grows every turn until the 10-min idle reset. After
+// a threshold of turns, the brain must end the session and re-seed a fresh one with
+// a recap of the recent exchanges - so long sessions stay bounded without losing
+// the thread.
+describe("in-session context trim (3.2)", () => {
+  const allowAll: ToolGate = async () => ({ allow: true });
+  const brain = () => new ClaudeBrain({ systemPrompt: "sys", mcpServers: {} });
+  const result = (text: string) => ({ type: "result", subtype: "success", result: text, usage: {} });
+  const oneTurn = () => {
+    let i = 0;
+    const msgs = [result("ok")];
+    return {
+      next: async () => (i < msgs.length ? { value: msgs[i++], done: false } : { value: undefined, done: true }),
+      interrupt: async () => {},
+      return: async () => ({ value: undefined, done: true }),
+    };
+  };
+
+  it("keeps one session below the threshold, then resets and seeds a recap", async () => {
+    queryMock.mockClear(); // call count is shared across this file's tests
+    const prompts: MessageQueue[] = [];
+    queryMock.mockImplementation((arg: { prompt: MessageQueue }) => {
+      prompts.push(arg.prompt);
+      return oneTurn();
+    });
+    const b = brain();
+    // Run exactly CONTEXT_TRIM_TURNS turns: all share the one session (query()
+    // called once). The label carries the turn number so the recap is checkable.
+    for (let n = 0; n < 30; n++) await b.run(`ask ${n}`, { gate: allowAll });
+    expect(queryMock).toHaveBeenCalledTimes(1); // still one warm session
+
+    // The 31st turn crosses the threshold: the session is reset and a fresh query
+    // opens, seeded with a recap of the last few exchanges plus the new prompt.
+    await b.run("ask 30", { gate: allowAll });
+    expect(queryMock).toHaveBeenCalledTimes(2);
+    const seeded = await prompts[1][Symbol.asyncIterator]().next();
+    const content = seeded.value.message.content as string;
+    expect(content).toContain("Recap of the earlier conversation");
+    expect(content).toContain("You: ask 29"); // most-recent exchange carried over
+    expect(content.endsWith("ask 30")).toBe(true); // the actual new prompt trails the recap
+  });
+});
