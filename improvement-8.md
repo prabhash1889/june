@@ -18,8 +18,15 @@ deferred list; everything unmarked is new this round.)
 > `typecheck` / `eslint .` / `cargo clippy -D warnings` / `vite build` all green. Two items
 > deviate from the letter of the plan where the plan hit a hard constraint - both are called
 > out inline (1.1 lands as a scaffold, not a proven-green job; 1.3 pins the lifecycle at the
-> AppHandle-free seam rather than through a full fake-child integration test). Phase 3 and 4
-> are untouched.
+> AppHandle-free seam rather than through a full fake-child integration test).
+>
+> **Phase 3 + 4 status (landed this pass).** All six items are committed. Frontend baseline
+> is now **350 TS tests** (was 337), `typecheck` / `eslint .` / `vite build` green. 3.1 (OpenAI
+> SSE streaming), 3.2 (Claude reset-with-recap trim), 3.3 (reply markdown), and 3.4 (light theme
+> + a11y) all landed as specified; 3.4's palette was already CSS-variabled so it reduced to one
+> light-override block plus the theme setting, and its manual axe/tab-through sweep is the one
+> deferral (needs a running GUI). 4.1 (archive index) and 4.2 (PLAN.md status cut) done; the
+> in-flight `findings/` migration and `improvement-10.md` were left untouched as pre-existing work.
 
 ---
 
@@ -240,12 +247,21 @@ re-discovered.
     authoritative; everything else is landed history" - and point CLAUDE.md's conventions
     note at it.
     New `other-files/README.md`, `CLAUDE.md`.
+    **DONE.** Added `other-files/README.md` stating the rule (highest-numbered root
+    `improvement-N.md` is authoritative; `other-files/` + `findings/` are landed history;
+    trust `git log` over any status header) and repointed CLAUDE.md's conventions note at
+    it. Left the in-flight `findings/` migration and `improvement-10.md` alone - they are
+    pre-existing uncommitted work, not this round's.
 
 4.2 **Regenerate or delete `PLAN.md`'s status header** | P2 | S
     Both CLAUDE.md and README tell readers to ignore PLAN.md's status section and trust the
     git log. A stale status that everyone is instructed to ignore is worse than none - either
     regenerate it from the round checkboxes or cut the section so PLAN.md is design-only.
     `PLAN.md`.
+    **DONE (cut).** Deletion over addition: removed the stale multi-paragraph `**Status:**`
+    blob and the `**Last updated:**` line, replacing them with a one-line note that PLAN.md
+    is design-only and to read `git log` + the current round doc instead. The phase
+    sections (design intent, which doesn't go stale like a progress tally) stay.
 
 ---
 
