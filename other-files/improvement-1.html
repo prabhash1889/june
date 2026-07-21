@@ -1,0 +1,582 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>June - Improvement Plan #1</title>
+<style>
+  :root {
+    --bg: #0b0d12;
+    --bg-soft: #11141c;
+    --card: #161a24;
+    --card-2: #1b2030;
+    --line: #262c3d;
+    --text: #e8ebf4;
+    --muted: #9aa3b8;
+    --faint: #6b7488;
+    --accent: #8b9dff;
+    --accent-2: #5eead4;
+    --ok: #4ade80;
+    --warn: #fbbf24;
+    --bad: #f87171;
+    --sev-crit: #f87171;
+    --sev-high: #fb923c;
+    --sev-med: #fbbf24;
+    --sev-low: #94a3b8;
+    --mono: ui-monospace, "Cascadia Code", Consolas, monospace;
+    --radius: 12px;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #f6f7fb; --bg-soft: #eef0f7; --card: #ffffff; --card-2: #f2f4fa;
+      --line: #dde1ec; --text: #1a2033; --muted: #57607a; --faint: #8a92a8;
+      --accent: #4756d6; --accent-2: #0d9488;
+      --ok: #16a34a; --warn: #b45309; --bad: #dc2626;
+      --sev-crit: #dc2626; --sev-high: #ea580c; --sev-med: #b45309; --sev-low: #64748b;
+    }
+  }
+  * { box-sizing: border-box; margin: 0; }
+  html { scroll-behavior: smooth; }
+  body {
+    background: var(--bg); color: var(--text);
+    font: 15px/1.65 "Segoe UI", system-ui, -apple-system, sans-serif;
+    display: grid; grid-template-columns: 250px minmax(0, 1fr);
+    min-height: 100vh;
+  }
+
+  /* ---- sidebar ---- */
+  nav {
+    position: sticky; top: 0; align-self: start; height: 100vh; overflow-y: auto;
+    padding: 28px 18px; border-right: 1px solid var(--line); background: var(--bg-soft);
+  }
+  nav .logo { display:flex; align-items:center; gap:10px; margin-bottom: 26px; }
+  nav .logo .spark {
+    width: 30px; height: 30px; border-radius: 9px; display:grid; place-items:center;
+    background: linear-gradient(135deg, var(--accent), var(--accent-2)); color:#fff; font-size:15px;
+  }
+  nav .logo b { font-size: 17px; letter-spacing: .3px; }
+  nav .logo span { display:block; font-size: 11px; color: var(--faint); font-weight: 400; }
+  nav a {
+    display: block; color: var(--muted); text-decoration: none; font-size: 13px;
+    padding: 6px 10px; border-radius: 7px; margin: 1px 0;
+  }
+  nav a:hover { color: var(--text); background: var(--card); }
+  nav a.phase { padding-left: 22px; position: relative; }
+  nav a.phase::before {
+    content: attr(data-k); position: absolute; left: 6px; top: 7px;
+    font: 700 10px/1.5 var(--mono); color: var(--accent);
+  }
+  nav .navhead { font: 700 10px var(--mono); text-transform: uppercase; letter-spacing: 1.2px;
+    color: var(--faint); margin: 18px 0 6px 10px; }
+
+  /* ---- main ---- */
+  main { padding: 44px clamp(24px, 5vw, 72px) 90px; max-width: 1060px; }
+  header.hero { margin-bottom: 34px; }
+  .kicker { font: 700 11px var(--mono); letter-spacing: 2px; text-transform: uppercase; color: var(--accent); }
+  h1 { font-size: clamp(26px, 4vw, 38px); line-height: 1.15; margin: 8px 0 14px; letter-spacing: -.5px; }
+  .hero p.lede { color: var(--muted); max-width: 70ch; }
+  .meta { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 18px; }
+  .meta span {
+    font: 500 12px var(--mono); color: var(--muted); background: var(--card);
+    border: 1px solid var(--line); border-radius: 99px; padding: 4px 12px;
+  }
+  .meta span.green { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 35%, var(--line)); }
+
+  h2 {
+    font-size: 21px; margin: 54px 0 6px; padding-top: 14px; letter-spacing: -.3px;
+    border-top: 1px solid var(--line);
+  }
+  h2 .idx { color: var(--accent); font: 700 14px var(--mono); margin-right: 8px; }
+  h3 { font-size: 16px; margin: 26px 0 10px; }
+  p.sub { color: var(--muted); margin-bottom: 18px; max-width: 78ch; }
+  section > p { max-width: 78ch; margin-bottom: 12px; }
+  code { font: 12.5px var(--mono); background: var(--card-2); border: 1px solid var(--line);
+    padding: 1px 6px; border-radius: 5px; white-space: nowrap; }
+  strong { color: var(--text); }
+  a.ext { color: var(--accent); text-decoration: none; }
+  a.ext:hover { text-decoration: underline; }
+
+  /* ---- cards / grids ---- */
+  .grid { display: grid; gap: 12px; margin: 16px 0; }
+  .grid.cols2 { grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
+  .grid.cols3 { grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); }
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 16px 18px;
+  }
+  .card h4 { font-size: 14px; margin-bottom: 6px; }
+  .card p { font-size: 13.5px; color: var(--muted); }
+  .card .file { font: 11px var(--mono); color: var(--faint); display: block; margin-top: 8px; }
+
+  /* ---- badges ---- */
+  .badge {
+    display: inline-block; font: 700 10.5px var(--mono); letter-spacing: .6px;
+    padding: 2px 9px; border-radius: 99px; text-transform: uppercase; margin-right: 8px;
+    vertical-align: 2px;
+  }
+  .b-crit { background: color-mix(in srgb, var(--sev-crit) 16%, transparent); color: var(--sev-crit); }
+  .b-high { background: color-mix(in srgb, var(--sev-high) 16%, transparent); color: var(--sev-high); }
+  .b-med  { background: color-mix(in srgb, var(--sev-med) 16%, transparent);  color: var(--sev-med); }
+  .b-low  { background: color-mix(in srgb, var(--sev-low) 18%, transparent);  color: var(--sev-low); }
+  .b-ok   { background: color-mix(in srgb, var(--ok) 15%, transparent);       color: var(--ok); }
+  .b-info { background: color-mix(in srgb, var(--accent) 15%, transparent);   color: var(--accent); }
+
+  /* ---- findings ---- */
+  .finding {
+    border: 1px solid var(--line); border-left: 3px solid var(--sev-low);
+    background: var(--card); border-radius: 10px; padding: 14px 18px; margin: 10px 0;
+  }
+  .finding.crit { border-left-color: var(--sev-crit); }
+  .finding.high { border-left-color: var(--sev-high); }
+  .finding.med  { border-left-color: var(--sev-med); }
+  .finding h4 { font-size: 14.5px; margin-bottom: 4px; }
+  .finding p { font-size: 13.5px; color: var(--muted); max-width: none; }
+
+  /* ---- tables ---- */
+  .tblwrap { overflow-x: auto; margin: 14px 0; border: 1px solid var(--line); border-radius: var(--radius); }
+  table { border-collapse: collapse; width: 100%; min-width: 620px; font-size: 13.5px; }
+  th {
+    text-align: left; font: 700 11px var(--mono); text-transform: uppercase; letter-spacing: .8px;
+    color: var(--faint); padding: 10px 14px; background: var(--card-2); border-bottom: 1px solid var(--line);
+  }
+  td { padding: 10px 14px; border-bottom: 1px solid var(--line); vertical-align: top; color: var(--muted); }
+  td:first-child { color: var(--text); font-weight: 600; white-space: nowrap; }
+  tr:last-child td { border-bottom: none; }
+  tbody tr:hover td { background: color-mix(in srgb, var(--card-2) 55%, transparent); }
+
+  /* ---- phases ---- */
+  .phase-head {
+    display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin: 46px 0 4px;
+    padding-top: 16px; border-top: 1px solid var(--line);
+  }
+  .phase-letter {
+    font: 800 15px var(--mono); color: #fff; background: linear-gradient(135deg, var(--accent), var(--accent-2));
+    width: 34px; height: 34px; border-radius: 10px; display: grid; place-items: center; flex: none;
+    align-self: center;
+  }
+  .phase-head h2 { border: 0; margin: 0; padding: 0; }
+  .phase-head .eff { font: 600 12px var(--mono); color: var(--faint); }
+  .accept {
+    margin: 14px 0 4px; padding: 12px 16px; border-radius: 10px; font-size: 13.5px;
+    background: color-mix(in srgb, var(--ok) 8%, var(--card)); border: 1px solid color-mix(in srgb, var(--ok) 30%, var(--line));
+    color: var(--muted);
+  }
+  .accept b { color: var(--ok); font: 700 11px var(--mono); letter-spacing: 1px; text-transform: uppercase; margin-right: 8px; }
+
+  /* ---- flow ---- */
+  .flow { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 18px 0; }
+  .flow .step {
+    background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+    padding: 10px 14px; font-size: 13px; min-width: 120px;
+  }
+  .flow .step b { display: block; font: 800 12px var(--mono); color: var(--accent); margin-bottom: 2px; }
+  .flow .step span { color: var(--muted); font-size: 12px; }
+  .flow .arr { color: var(--faint); font-size: 16px; }
+
+  ul.tight { margin: 10px 0 10px 20px; color: var(--muted); font-size: 13.5px; }
+  ul.tight li { margin: 5px 0; }
+  ul.tight li::marker { color: var(--accent); }
+  ol.tight { margin: 10px 0 10px 22px; color: var(--muted); font-size: 13.5px; }
+  ol.tight li { margin: 6px 0; }
+
+  footer { margin-top: 70px; padding-top: 18px; border-top: 1px solid var(--line);
+    color: var(--faint); font-size: 12px; }
+
+  @media (max-width: 860px) {
+    body { grid-template-columns: 1fr; }
+    nav { position: static; height: auto; border-right: 0; border-bottom: 1px solid var(--line);
+      display: flex; flex-wrap: wrap; gap: 2px; align-items: center; padding: 14px 16px; }
+    nav .logo { margin: 0 14px 0 0; }
+    nav .navhead { display: none; }
+    nav a { font-size: 12px; padding: 5px 8px; }
+    nav a.phase { padding-left: 20px; } nav a.phase::before { top: 6px; }
+  }
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="logo">
+    <div class="spark">&#10022;</div>
+    <div><b>June</b><span>Improvement Plan #1</span></div>
+  </div>
+  <div class="navhead">Review</div>
+  <a href="#verdict">Verdict</a>
+  <a href="#correct">What's correct</a>
+  <a href="#wrong">What's wrong</a>
+  <a href="#gaps">Defining gaps</a>
+  <div class="navhead">Research</div>
+  <a href="#research-voice">Local voice stack</a>
+  <a href="#research-agent">Agent capabilities</a>
+  <div class="navhead">Plan</div>
+  <a class="phase" data-k="A" href="#phase-a">Close the holes</a>
+  <a class="phase" data-k="B" href="#phase-b">Persistent session</a>
+  <a class="phase" data-k="C" href="#phase-c">Local voice</a>
+  <a class="phase" data-k="D" href="#phase-d">Hands-free UX</a>
+  <a class="phase" data-k="E" href="#phase-e">Capabilities</a>
+  <a class="phase" data-k="F" href="#phase-f">Trust &amp; shipping</a>
+  <div class="navhead">Wrap-up</div>
+  <a href="#sequencing">Sequencing &amp; risks</a>
+  <a href="#acceptance">Acceptance scenario</a>
+</nav>
+
+<main>
+<header class="hero">
+  <div class="kicker">Code review + research + roadmap</div>
+  <h1>June - Improvement Plan #1</h1>
+  <p class="lede">
+    A full review of the june voice-agent codebase, two research passes (local voice pipeline tech and
+    agent capability patterns, current as of mid-2026), and a six-phase plan ordered by leverage:
+    close the safety holes, make the agent persistent and conversational, make "local-first" true,
+    make hands-free real, grow capabilities, then ship it with trust.
+  </p>
+  <div class="meta">
+    <span>2026-07-19</span>
+    <span class="green">typecheck clean</span>
+    <span class="green">48/48 vitest</span>
+    <span class="green">clippy -D warnings</span>
+    <span class="green">7/7 cargo tests</span>
+  </div>
+</header>
+
+<!-- ============================ REVIEW ============================ -->
+<section id="verdict">
+  <h2><span class="idx">1</span>Review verdict</h2>
+  <p class="sub">
+    The architecture is sound and honestly implemented: the provider seams (<code>Brain</code> /
+    <code>SttProvider</code> / <code>TtsProvider</code>), the frozen bridge contract, and the
+    execution-layer approval gate are all real in code, not just in PLAN.md. But the review found
+    <strong>2 safety holes, 1 security bug, and 4 correctness/UX bugs</strong>, plus gaps that define
+    the product today: 100% cloud voice, no conversation memory, multi-second per-turn latency.
+  </p>
+</section>
+
+<section id="correct">
+  <h3>What is correctly implemented (verified against source)</h3>
+  <div class="grid cols2">
+    <div class="card"><h4>Approval gate in the execution layer</h4>
+      <p>Both brains route every tool call through the same <code>ToolGate</code> before dispatch. Fails closed: 120s timeout denies, a closed stdin channel denies, decisions are validated and routed to the owning turn.</p>
+      <span class="file">agent/claude-brain.ts:45 - agent/openai-brain.ts:140 - agent_runner.rs:388</span></div>
+    <div class="card"><h4>Path containment in mcp/files</h4>
+      <p>Canonical root via realpath, separator-guarded prefix check, realpath re-check of targets and write parents (symlink defense), read cap. Unit tested; no escape found.</p>
+      <span class="file">mcp/files/paths.ts - mcp/files/server.ts</span></div>
+    <div class="card"><h4>Secrets never cross IPC</h4>
+      <p>No get_api_key command exists; keys are read only in Rust at call sites; renderer-facing keychain commands validate the service-name convention at the trust boundary.</p>
+      <span class="file">src-tauri/src/keychain.rs</span></div>
+    <div class="card"><h4>Brain privacy enforced at run time</h4>
+      <p>A networked brain is refused under a forbidding privacy mode at the execution boundary, so editing settings.json cannot smuggle a cloud brain past strict-offline.</p>
+      <span class="file">agent/run-once.ts:130</span></div>
+    <div class="card"><h4>Cross-window session</h4>
+      <p>Seq-stamped capped event log, replay-then-live with buffering and dedup, StrictMode-safe. A window opened mid-session shows the full conversation.</p>
+      <span class="file">agent_runner.rs - src/app/AppWindow.tsx</span></div>
+    <div class="card"><h4>Contract + settings discipline</h4>
+      <p>Frozen error codes/actions with golden JSON and validators; atomic temp-file+rename settings writes; typed coercion; merge-over-raw-bag saves; honest provider registry.</p>
+      <span class="file">src/contract/ - src-tauri/src/settings.rs - src/lib/providers.ts</span></div>
+  </div>
+</section>
+
+<section id="wrong">
+  <h3>What is wrong</h3>
+
+  <div class="finding crit">
+    <h4><span class="badge b-crit">S1 - Safety</span>Ungated terminal writes and task assignment; fail-open default</h4>
+    <p><code>agent/policy.ts:39</code> classifies any unlisted action as automatic. <code>send_to_terminal</code> writes raw
+    text to a live terminal - a payload containing <code>\n</code> executes whatever precedes it: arbitrary command execution
+    with no human yes. <code>assign_task</code> directs a paid agent to arbitrary work ungated. Every future MCP server's
+    mutating tools run silently until someone remembers to classify them.</p>
+  </div>
+  <div class="finding crit">
+    <h4><span class="badge b-crit">S2 - Security</span>Transcript passes through cmd /C on Windows (command injection)</h4>
+    <p><code>agent_runner.rs:214</code> spawns <code>cmd /C npx tsx run-once.ts "&lt;transcript&gt;"</code>. Rust escapes per MSVC
+    rules; cmd.exe does not parse by those rules. A transcript containing quotes/%/&amp; (spoken, mis-transcribed, or typed into
+    the editable review card) can break quoting and execute commands. Explicit cmd /C opts out of Rust's CVE-2024-24576 protection.</p>
+  </div>
+  <div class="finding high">
+    <h4><span class="badge b-high">S3 - Safety</span>Bridge-side one-time approval tokens not implemented</h4>
+    <p>ApprovalToken is frozen in the contract but never minted or verified. Any local process that reads the discovery
+    record's bearer token can command the bridge with no approval; June's gate only guards June's own path. Known and deferred - but it is the gap between "the brain cannot bypass the gate" and "nothing can".</p>
+  </div>
+  <div class="finding high">
+    <h4><span class="badge b-high">S4 - Safety</span>Voice-stage privacy is UI-only</h4>
+    <p>The brain is checked at the execution boundary, but Rust <code>transcribe</code>/<code>synthesize</code> will happily
+    call OpenAI under strict-offline; only the VoicePanel politely disables the mic.</p>
+  </div>
+  <div class="finding med">
+    <h4><span class="badge b-med">C1 - Bug</span>Tool results never attach for the default (Claude) brain</h4>
+    <p><code>claude-brain.ts:95</code> emits <code>onToolResult(actionOf(""), ...)</code> - always empty, because the SDK's
+    tool_result block carries an id, not a name, and nothing maps it back. The app window correlates by action name, so the
+    "started 5 of 5" batch summaries never render on the default brain.</p>
+  </div>
+  <div class="finding med">
+    <h4><span class="badge b-med">C2 - Bug</span>Settings changes never reach the running widget</h4>
+    <p>VoicePanel loads settings once on mount and the widget window never remounts. Enabling wake word, changing TTS voice,
+    or switching privacy mode requires a full app restart - contradicting Phase 8's live-toggle claim.</p>
+  </div>
+  <div class="finding med">
+    <h4><span class="badge b-med">C3 - UX</span>Hands-free is not hands-free</h4>
+    <p>After "Hey June" + speech, the review card still requires a mouse click on "Send to June". Phase 8's exit
+    ("talk to June without touching the keyboard") is unreachable end to end.</p>
+  </div>
+  <div class="finding med">
+    <h4><span class="badge b-med">C4 - UX</span>Widget demands an OpenAI key before doing anything</h4>
+    <p>Even under strict-offline where cloud voice is blocked anyway. A local-brain, no-cloud user is locked out of the default face.</p>
+  </div>
+  <div class="finding">
+    <h4><span class="badge b-low">Minor</span>Smaller issues</h4>
+    <p>STT provider/model setting is fake (Rust hardcodes whisper-1) - <code>JUNE_BRAIN_EFFORT</code> exported, read by nobody -
+    barged-in turns keep running with no kill switch (unbounded background token spend) - wake listener retries failed
+    transcriptions forever (bad key = silent API spam per speech burst) - <code>audio/mpeg</code> mapped to audio.mp4 -
+    read truncation can split a UTF-8 char - duplicate listTools() per turn.</p>
+  </div>
+</section>
+
+<section id="gaps">
+  <h3>Defining gaps (deferred by plan, but they are the product today)</h3>
+  <div class="grid cols2">
+    <div class="card"><h4><span class="badge b-high">G1</span>No conversation memory</h4>
+      <p>Every turn is a fresh process seeing only the current transcript. "Do that again", "and four more", any pronoun across turns - impossible. The single biggest capability gap.</p></div>
+    <div class="card"><h4><span class="badge b-high">G2</span>No local voice exists</h4>
+      <p>STT, TTS, and wake are all OpenAI cloud; "local-first" is aspirational; local-voice / strict-offline modes just turn voice off.</p></div>
+    <div class="card"><h4><span class="badge b-high">G3</span>Per-turn spawn latency</h4>
+      <p>cmd &rarr; npx &rarr; tsx &rarr; run-once &rarr; npx tsx per MCP server &rarr; SDK spawn. Seconds of process spawning before the brain sees a word.</p></div>
+    <div class="card"><h4><span class="badge b-med">G4 / G5</span>observe() unused - live check pending</h4>
+      <p>The event-resume machinery is bridge-side only; restart recovery is unstarted. And the live spoken round-trip has never been manually verified, so Phases 4-8 exits are formally open.</p></div>
+  </div>
+</section>
+
+<!-- ============================ RESEARCH ============================ -->
+<section id="research-voice">
+  <h2><span class="idx">2</span>Research digest - local voice stack</h2>
+  <p class="sub">
+    Key finding: <a class="ext" href="https://github.com/cjpais/Handy">Handy</a> (23k+ stars, MIT) already proves June's exact
+    architecture - Tauri + Rust with Parakeet, Whisper, Moonshine, and Silero VAD running <strong>in-process via ONNX
+    Runtime</strong>. No Python sidecars, one runtime dependency, ~650MB total model footprint for the full local stack.
+  </p>
+  <div class="tblwrap"><table>
+    <thead><tr><th>Stage</th><th>Pick</th><th>Why</th><th>License</th></tr></thead>
+    <tbody>
+      <tr><td>STT (primary)</td><td>Moonshine v2 streaming, medium (245MB .ort)</td>
+        <td>Built for voice agents; streaming partials ~107ms/update; 6.65% WER beats Whisper large-v3; C API or ort crate</td><td>MIT</td></tr>
+      <tr><td>STT (accuracy)</td><td>Parakeet-TDT-0.6b-v3 int8 ONNX</td>
+        <td>Tops open ASR leaderboards; 25 languages; near-instant push-to-talk on CPU (transcribe-rs prior art)</td><td>CC-BY-4.0</td></tr>
+      <tr><td>TTS</td><td>Kokoro-82M via Kokoros (pure Rust) or kokoro-onnx</td>
+        <td>~80MB quantized; 54 voices; sentence chunk well under 1s on desktop CPU; reuses June's sentence streamer unchanged. Watch the espeak-ng (GPL) phonemizer path</td><td>Apache-2.0</td></tr>
+      <tr><td>TTS (alt)</td><td>Supertonic (~99M)</td>
+        <td>RTF ~0.3x plain CPU, 31 languages, official Rust binding</td><td>MIT code / OpenRAIL-M weights</td></tr>
+      <tr><td>Wake word</td><td>openWakeWord custom "Hey June" (~200KB ONNX)</td>
+        <td>Trained on synthetic speech, no recordings needed, ~45min on a free GPU; A/B against LiveKit's 2026 trainer (claims 100x fewer false positives). Porcupine: ~$6k/yr, no export - skip</td><td>Apache-2.0</td></tr>
+      <tr><td>VAD</td><td>Silero VAD v5 (~2MB ONNX, silero-vad-rs / vad-rs)</td>
+        <td>Replaces the RMS energy gate for endpointing and barge-in; the Pipecat/LiveKit default</td><td>MIT</td></tr>
+      <tr><td>Turn-taking</td><td>Pipecat smart-turn-v3 int8 (8M params)</td>
+        <td>~12ms CPU inference; classifies "actually finished" vs "mid-thought"; saves 300-700ms of waiting per turn</td><td>BSD-2</td></tr>
+    </tbody>
+  </table></div>
+  <p><strong>Latency consensus:</strong> target 800ms median voice-to-voice (&gt;1.5s feels like a walkie-talkie). The winning
+  moves: streaming STT partials while the user talks, semantic turn detection, LLM tokens streamed into sentence-chunked TTS
+  (June already has the last one). Going local deletes both ~200ms network legs; sub-800ms is achievable whenever brain
+  time-to-first-token &lt; ~300ms.</p>
+</section>
+
+<section id="research-agent">
+  <h2><span class="idx">3</span>Research digest - agent capabilities &amp; safety</h2>
+  <div class="grid cols2">
+    <div class="card"><h4>Session memory is nearly free</h4>
+      <p>The Agent SDK persists sessions automatically: <code>continue: true</code> resumes the latest session in the cwd;
+      <code>resume: sessionId</code> targets one. Gotcha: keyed to cwd - pin it. The experimental V2 session API was removed
+      in SDK 0.3.142; build on query() + session options. Streaming-input mode keeps one query() alive across user messages
+      with canUseTool handled in-loop - the enabler for spoken approvals. persistSession:false exists for privacy modes.</p></div>
+    <div class="card"><h4>Long-term memory: one markdown file</h4>
+      <p>Anthropic's file-backed memory tool (memory_20250818) + a user-editable june-memory.md injected into the system
+      prompt. Skip vector stores at single-user desktop scale.</p></div>
+    <div class="card"><h4>Spoken approvals (Alexa prior art)</h4>
+      <p>Repeat back all exact parameters, accept a strict yes/no matched by a local phrase matcher - never the LLM, never
+      satisfiable by tool output. Timeout = deny ("silence is not consent" is a flagged attack surface). Highest-destructive
+      tier stays click-only.</p></div>
+    <div class="card"><h4>Safety consensus (MCP spec 2026, NSA/CISA CSI)</h4>
+      <p>Classify-by-action with risk annotations is where the ecosystem went - June's design is aligned. Tool results are
+      untrusted input (indirect injection is the top attack). Pin MCP server versions (npm typosquatting has shipped rogue
+      MCP servers). Audit-log every tool call, params, and permission decision.</p></div>
+    <div class="card"><h4>Capability order by maturity</h4>
+      <p>1. SDK built-in WebSearch/WebFetch (config-only for the Claude brain) - 2. Google Workspace MCP (email send = gated
+      external effect) - 3. official Home Assistant MCP (intent-scoped, naturally sandboxed) - 4. lightweight Spotify MCP -
+      5. Playwright MCP strictly on demand (~100k+ tokens/task). Skip raw Windows input control and computer-use.</p></div>
+    <div class="card"><h4>Sidecar packaging risk</h4>
+      <p>The Agent SDK spawns its bundled CLI as a subprocess; bundlers can break this silently. Verify query() end-to-end
+      from the compiled binary before committing. Prefer Bun --compile or node.exe + esbuild bundle as resources; avoid
+      pkg / Node SEA (prior art of dev-works-prod-fails).</p></div>
+  </div>
+</section>
+
+<!-- ============================ PLAN ============================ -->
+<section id="phase-a">
+  <div class="phase-head">
+    <div class="phase-letter">A</div>
+    <h2>Close the holes</h2>
+    <span class="eff">safety + correctness - ~1-2 days</span>
+  </div>
+  <div class="tblwrap"><table>
+    <thead><tr><th>#</th><th>Change</th><th>Detail</th></tr></thead>
+    <tbody>
+      <tr><td>A1</td><td>Fail-closed policy</td><td>Gate <code>send_to_terminal</code> (destructive) and <code>assign_task</code> (expensive); flip the unknown-action default to gated; add an optional per-server default-class map. Update the policy tests that pin fail-open as intended</td></tr>
+      <tr><td>A2</td><td>Transcript off the command line</td><td>Deliver the transcript as the first JSONL line on the stdin channel the runner already holds; drop the cmd /C argument entirely. Kills the injection surface with zero new machinery</td></tr>
+      <tr><td>A3</td><td>Voice privacy at the boundary</td><td>Rust transcribe/synthesize read privacyMode and refuse cloud voice under on-device modes - the same rule run-once already applies to the brain</td></tr>
+      <tr><td>A4</td><td>Claude tool-result correlation</td><td>Track tool_use.id &rarr; name per turn; emit the real action so batch counts render on the default brain</td></tr>
+      <tr><td>A5</td><td>Live settings propagation</td><td>Emit settings://changed on save; widget reloads wake/TTS/privacy on the event</td></tr>
+      <tr><td>A6</td><td>Key gate only when needed</td><td>Only demand the OpenAI key when the selected voice stack actually uses OpenAI and voice is allowed</td></tr>
+      <tr><td>A7</td><td>Small fixes</td><td>Wake-failure backoff; audio/mpeg &rarr; .mp3; drop dead JUNE_BRAIN_EFFORT; dedupe listTools(); UTF-8-safe truncation</td></tr>
+    </tbody>
+  </table></div>
+  <div class="accept"><b>Accept</b> Injection repro cannot execute; a spoken send_to_terminal prompts for approval; settings
+  changes apply without restart; batch counts render with the Claude brain. Also now: the long-pending live mic round-trip check (G5).</div>
+</section>
+
+<section id="phase-b">
+  <div class="phase-head">
+    <div class="phase-letter">B</div>
+    <h2>Persistent agent session + memory</h2>
+    <span class="eff">the multiplier - ~3-5 days</span>
+  </div>
+  <p class="sub">One change fixes latency (G3), enables memory (G1), enables in-loop spoken approvals (D2), and simplifies the barge-in channel logic.</p>
+  <div class="tblwrap"><table>
+    <thead><tr><th>#</th><th>Change</th><th>Detail</th></tr></thead>
+    <tbody>
+      <tr><td>B1</td><td>Long-lived agent process</td><td>Replace per-turn spawning with one resident <code>agent/serve.ts</code> speaking JSONL over the existing stdio pair: requests {run, approve, cancel, reset}, events {text, tool, result, approval, final, error} tagged by turn. Respawn on crash with backoff; per-turn watchdog. MCP connections stay warm; turn overhead drops from seconds to ~nothing</td></tr>
+      <tr><td>B2</td><td>Conversation memory</td><td>Claude: stable cwd + session resume, or one query() held open in streaming-input mode (preferred - keeps canUseTool in-loop for D2). OpenAI-compat: retained messages array. New conversation on ~10min idle (setting) + explicit "new conversation" action. persistSession:false under strict privacy modes</td></tr>
+      <tr><td>B3</td><td>Real turn cancel</td><td>Barge-in / cancel aborts the in-flight turn (SDK abort; AbortController in the OpenAI loop). Removes unbounded background token spend</td></tr>
+      <tr><td>B4</td><td>Long-term memory</td><td>User-editable june-memory.md injected into the system prompt; writes via the memory-tool pattern, file-backed and path-contained like mcp/files. Settings surface: "what June remembers" + clear. No vector store</td></tr>
+      <tr><td>B5</td><td>Latency instrumentation</td><td>Per-turn: capture end &rarr; transcript, &rarr; first token, &rarr; first audio, total. P50/P95 in Diagnostics against the 800ms target</td></tr>
+    </tbody>
+  </table></div>
+  <div class="accept"><b>Accept</b> "open two claude agents" then "now two codex ones as well" works as a follow-up;
+  second-turn overhead &lt; 300ms before first token; barge-in provably stops token streaming; June recalls a preference stated yesterday.</div>
+</section>
+
+<section id="phase-c">
+  <div class="phase-head">
+    <div class="phase-letter">C</div>
+    <h2>Local voice stack</h2>
+    <span class="eff">makes "local-first" true - ~1-2 weeks</span>
+  </div>
+  <p class="sub">All inference in the existing Rust process via ONNX Runtime - one dependency, no Python. Models downloaded on demand per stage, not bundled in the installer. C1/C2 are small and ship value early.</p>
+  <div class="flow">
+    <div class="step"><b>C1</b><span>Silero VAD v5 replaces RMS gate</span></div><span class="arr">&rarr;</span>
+    <div class="step"><b>C2</b><span>openWakeWord "Hey June" local</span></div><span class="arr">&rarr;</span>
+    <div class="step"><b>C3</b><span>Moonshine v2 streaming STT</span></div><span class="arr">&rarr;</span>
+    <div class="step"><b>C4</b><span>Kokoro TTS in Rust</span></div><span class="arr">&rarr;</span>
+    <div class="step"><b>C5</b><span>smart-turn-v3 endpointing</span></div><span class="arr">&rarr;</span>
+    <div class="step"><b>C6</b><span>Live interim transcript</span></div>
+  </div>
+  <ul class="tight">
+    <li><strong>C1</strong> - Silero in the Rust audio thread for endpointing and barge-in; interruption fires on N consecutive speech-probability frames, not an energy threshold.</li>
+    <li><strong>C2</strong> - Train "Hey June" on synthetic speech (openWakeWord; A/B LiveKit trainer); run gated by Silero. Kills cloud phrase-spotting: wake becomes offline-safe and the per-burst Whisper spend disappears.</li>
+    <li><strong>C3</strong> - SttProvider impl #2: Moonshine v2 medium streaming (partials); Parakeet v3 int8 as the accuracy toggle. Registry flips to available:true; the fake STT setting becomes real.</li>
+    <li><strong>C4</strong> - TtsProvider impl #2: Kokoro via Kokoros/kokoro-onnx, reusing the sentence streamer unchanged. Verify the phonemizer license path; evaluate Supertonic if CPU RTF or multilingual matters.</li>
+    <li><strong>C5</strong> - Silero flags a silence candidate, smart-turn classifies complete vs mid-thought; incomplete extends the window.</li>
+    <li><strong>C6</strong> - Live interim transcript in the UI; optionally pre-warm the brain prompt on the interim and discard on change.</li>
+  </ul>
+  <div class="accept"><b>Accept</b> Strict-offline completes a full spoken round-trip (wake &rarr; STT &rarr; Ollama brain &rarr; TTS)
+  with zero network; privacy tiers describe real configurations; P50 voice-to-voice under ~1s with a fast brain.</div>
+</section>
+
+<section id="phase-d">
+  <div class="phase-head">
+    <div class="phase-letter">D</div>
+    <h2>Hands-free &amp; conversational UX</h2>
+    <span class="eff">~3-5 days</span>
+  </div>
+  <div class="tblwrap"><table>
+    <thead><tr><th>#</th><th>Change</th><th>Detail</th></tr></thead>
+    <tbody>
+      <tr><td>D1</td><td>Auto-accept with countdown</td><td>Setting (default: manual stays). Review card shows the transcript with a ~3s auto-send countdown; any interaction pauses it. Fixes hands-free while keeping the review principle. Can ship any time after A</td></tr>
+      <tr><td>D2</td><td>Spoken approvals</td><td>June speaks the repeat-back with exact parameters ("Spawn five claude agents, paid, uses network - yes or no?"). Reply matched by a strict local phrase matcher - never the LLM, never satisfiable by tool output. ~8s timeout = deny, announced aloud. Tiering: expensive = spoken yes OK; destructive/external = click required. Rides on B1's in-loop gate</td></tr>
+      <tr><td>D3</td><td>Follow-up mode</td><td>Reopen the mic ~5-8s after each reply, no wake word (opt-in). The most-requested missing feature in comparable assistants; with session memory this turns June into a conversation</td></tr>
+      <tr><td>D4</td><td>Backchannel acknowledgement</td><td>Speak a brief "on it" when a turn starts tool calls - long tool calls stop feeling dead</td></tr>
+      <tr><td>D5</td><td>Interruption polish</td><td>Barge-in on Silero speech probability (C1); June never interrupts the user mid-pause (C5)</td></tr>
+    </tbody>
+  </table></div>
+  <div class="accept"><b>Accept</b> Wake word &rarr; command &rarr; spoken approval &rarr; execution &rarr; follow-up question with zero
+  keyboard or mouse; a denied spoken approval provably blocks the action.</div>
+</section>
+
+<section id="phase-e">
+  <div class="phase-head">
+    <div class="phase-letter">E</div>
+    <h2>Capability expansion</h2>
+    <span class="eff">ongoing, mostly config</span>
+  </div>
+  <p class="sub">Every server rides the existing MCP seam plus Phase A's fail-closed policy: unknown tools ask.</p>
+  <div class="tblwrap"><table>
+    <thead><tr><th>#</th><th>Capability</th><th>Server</th><th>Risk notes</th></tr></thead>
+    <tbody>
+      <tr><td>E1</td><td>Web search / fetch</td><td>SDK built-in WebSearch/WebFetch (Claude); Brave Search MCP (OpenAI-compat)</td><td>Network - blocked under strict-offline; fetched content is untrusted input</td></tr>
+      <tr><td>E2</td><td>saple-memory</td><td>Already promised in PLAN Phase 3 - a config entry</td><td>Mutating tools classified or default-gated by A1</td></tr>
+      <tr><td>E3</td><td>Calendar / email</td><td>taylorwilsdon/google_workspace_mcp</td><td>send-class tools = gated external effect. The canonical injection threat; D2's tool-output-never-approves rule is the defense</td></tr>
+      <tr><td>E4</td><td>Home automation</td><td>Official Home Assistant MCP (HA 2025.2+)</td><td>Intent-scoped, only exposed entities - naturally sandboxed. Safest high-wow. Skip admin-level ha-mcp initially</td></tr>
+      <tr><td>E5</td><td>Media</td><td>Lightweight Spotify MCP</td><td>Low blast radius; needs Premium + OAuth</td></tr>
+      <tr><td>E6</td><td>Browser control</td><td>microsoft/playwright-mcp - attached on demand only</td><td>~100k+ tokens/task; never in the default voice tool surface</td></tr>
+      <tr><td>E7</td><td>Capability manager UI</td><td>The PLAN &sect;4 promise</td><td>Per-server enable/health/tool inspector, per-capability class overrides and scopes, pinned versions (npx supply-chain vetting)</td></tr>
+    </tbody>
+  </table></div>
+  <p><strong>Skip for now:</strong> generic Windows input control (raw input injection + prompt injection = worst case) and
+  screenshot computer-use (slow, expensive, top injection amplifier).</p>
+</section>
+
+<section id="phase-f">
+  <div class="phase-head">
+    <div class="phase-letter">F</div>
+    <h2>Trust, ops &amp; packaging</h2>
+    <span class="eff">~1-2 weeks</span>
+  </div>
+  <div class="tblwrap"><table>
+    <thead><tr><th>#</th><th>Change</th><th>Detail</th></tr></thead>
+    <tbody>
+      <tr><td>F1</td><td>Bridge-side approval tokens</td><td>Mint on June-side approval; bridge verifies action+args+nonce+expiry before executing gated commands. Closes S3; companion to the deferred Rust authority migration</td></tr>
+      <tr><td>F2</td><td>observe() resume</td><td>On startup / bridge restart, resume from the last acknowledged sequence and restore the roster. Acceptance step 6 + the recovery-drill matrix</td></tr>
+      <tr><td>F3</td><td>Audit log</td><td>Every tool call: name, params, class, gate decision, approver, timestamp. Structured, redacted. Cheap - worth pulling into Phase B. Future "what did you do today?" voice query</td></tr>
+      <tr><td>F4</td><td>Injection hardening</td><td>Tool results untrusted (never satisfy approvals - keep structural); full-parameter display/speech before dangerous acts; pinned MCP versions</td></tr>
+      <tr><td>F5</td><td>Sidecar packaging</td><td>Tauri externalBin: prefer Bun --compile, fall back to node.exe + esbuild bundle as resources. Gate: verify the Agent SDK's subprocess spawn from the compiled binary first. CREATE_NO_WINDOW on Windows</td></tr>
+      <tr><td>F6</td><td>Ship it</td><td>Installer, auto-update, diagnostics export, accessibility pass, structured logs</td></tr>
+      <tr><td>F7</td><td>Latency dashboard</td><td>P50/P95 voice-to-voice against the 800ms target, per-stage breakdown from B5</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<!-- ============================ WRAP UP ============================ -->
+<section id="sequencing">
+  <h2><span class="idx">4</span>Sequencing rationale &amp; risks</h2>
+  <ul class="tight">
+    <li><strong>A before everything:</strong> small diffs, closes real command-execution holes, fixes the most visible bugs. Nothing in A blocks on research.</li>
+    <li><strong>B is the multiplier:</strong> it fixes latency, enables memory, enables in-loop spoken approvals, and simplifies barge-in - do it before C so local-voice wins aren't masked by spawn overhead.</li>
+    <li><strong>C makes the product match its name;</strong> C1/C2 are small - land them first within the phase.</li>
+    <li><strong>D depends on B</strong> (in-loop gate) and benefits from C (local wake/VAD); D1 can ship any time after A.</li>
+    <li><strong>E is config-driven</strong> and interleaves with C/D; each server is an afternoon plus classification and testing.</li>
+    <li><strong>F last</strong>, except the audit log (F3) which is cheap and worth pulling into B.</li>
+  </ul>
+  <h3>Top risks</h3>
+  <ol class="tight">
+    <li><strong>Agent SDK inside a compiled sidecar:</strong> the SDK spawns its bundled CLI as a subprocess; bundlers can break this silently. Prove query() from a compiled binary in a spike before Phase F; node.exe-as-resource always works.</li>
+    <li><strong>Session resume cwd-keying:</strong> resume silently starts fresh if cwd differs. Pin cwd explicitly; test across restarts.</li>
+    <li><strong>Kokoro phonemizer licensing:</strong> espeak-ng is GPL. Use a binding with a clean G2P path, or Supertonic.</li>
+    <li><strong>Wake-word false-trigger quality:</strong> synthetic-trained models vary. A/B two trainers against a recorded test set; keep the sensitivity slider; Silero gating.</li>
+    <li><strong>Voice E2E test flakiness:</strong> decide the strategy now - recorded-audio fixtures feeding the Rust pipeline directly plus golden transcripts; live-mic checks stay manual but scripted.</li>
+  </ol>
+</section>
+
+<section id="acceptance">
+  <h2><span class="idx">5</span>Acceptance scenario (upgraded)</h2>
+  <ol class="tight">
+    <li>"Hey June" (fully local) &rarr; "open five claude agents and four codex agents" &rarr; June repeats counts and cost class aloud &rarr; user says "yes" &rarr; executed once, counts reported from bridge results.</li>
+    <li>Follow-up within 8s, no wake word: "assign the third codex agent to fix the auth tests" &rarr; resolved by stable id, done.</li>
+    <li>Switch to strict-offline in settings (no restart) &rarr; full spoken round-trip via local STT/TTS and an Ollama brain, zero network.</li>
+    <li>Pull the network cable mid-turn &rarr; June reports the failure honestly; restart June &rarr; roster restored via observe() resume; the audit log shows every action and who approved it.</li>
+    <li>P50 voice-to-voice &lt; 1s, P95 &lt; 2s on the latency dashboard.</li>
+  </ol>
+</section>
+
+<footer>
+  June - Improvement Plan #1 - generated 2026-07-19 from a full code review (all automated gates verified green) and two
+  mid-2026 research passes. Companion file: improvement-1.md.
+</footer>
+</main>
+</body>
+</html>
