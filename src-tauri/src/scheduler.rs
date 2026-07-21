@@ -53,18 +53,43 @@ enum Kind {
     Once,
 }
 
-/// Whether a schedule should fire at `now`, given when it last fired. Pure so the
-/// due rule is unit-tested without a live clock. Dispatches on kind: a `daily`
-/// schedule fires at most once per calendar day within the catch-up window; an
-/// `every` schedule fires once its interval has elapsed since the last fire; a
+/// Whether a schedule should fire at `now`, given when it last fired and the `now`
+/// of the previous LIVE tick (`last_tick`, `None` on the first tick after launch).
+/// Pure so the due rule is unit-tested without a live clock. Dispatches on kind: a
+/// `daily` schedule fires at most once per calendar day within the catch-up window;
+/// an `every` schedule fires once its interval has elapsed since the last fire; a
 /// `once` reminder fires a single time at its absolute `at`, within the catch-up
 /// window, and never again.
-fn is_due(now: NaiveDateTime, sc: &Schedule, last_fired: Option<NaiveDateTime>) -> bool {
+///
+/// `last_tick` closes the starvation window (5.1): `fire()` runs whole agent turns
+/// inline in the tick thread, so a 30+ minute run can blow past the fixed catch-up
+/// window before a sibling schedule ever gets a live tick inside its window. A
+/// schedule whose fire moment fell in the unobserved gap `(last_tick, now]` is
+/// still honoured even though the fixed catch-up has since closed. On a fresh
+/// launch (`last_tick` None) only the fixed catch-up applies, so an evening launch
+/// never replays the morning's 9am run.
+fn is_due(
+    now: NaiveDateTime,
+    sc: &Schedule,
+    last_fired: Option<NaiveDateTime>,
+    last_tick: Option<NaiveDateTime>,
+) -> bool {
     match sc.kind {
-        Kind::Daily => daily_due(now, &sc.time, &sc.days, last_fired.map(|d| d.date())),
+        Kind::Daily => daily_due(now, &sc.time, &sc.days, last_fired.map(|d| d.date()), last_tick),
         Kind::Every => interval_due(now, sc.every_minutes, last_fired),
-        Kind::Once => once_due(now, &sc.at, last_fired),
+        Kind::Once => once_due(now, &sc.at, last_fired, last_tick),
     }
+}
+
+/// True when a past-due fire moment `scheduled` should fire at `now`: either within
+/// the fixed catch-up window, or (5.1) it came due during the unobserved gap since
+/// the previous live tick - a long blocking run ate its window. `scheduled` is
+/// assumed already `<= now` (past due). Pure.
+fn in_catchup_or_gap(now: NaiveDateTime, scheduled: NaiveDateTime, last_tick: Option<NaiveDateTime>) -> bool {
+    if now - scheduled < chrono::Duration::minutes(CATCHUP_MINUTES) {
+        return true;
+    }
+    matches!(last_tick, Some(lt) if scheduled > lt)
 }
 
 /// Parse a `once` reminder's absolute local fire time "YYYY-MM-DDTHH:MM" (no
@@ -80,21 +105,26 @@ fn parse_at(s: &str) -> Option<NaiveDateTime> {
 /// a busy-period reminder on time without replaying a long-stale one on a much
 /// later launch (the app-open constraint means a reminder scheduled while closed is
 /// simply missed). Pure so the rule is unit-tested.
-fn once_due(now: NaiveDateTime, at: &str, last_fired: Option<NaiveDateTime>) -> bool {
+fn once_due(now: NaiveDateTime, at: &str, last_fired: Option<NaiveDateTime>, last_tick: Option<NaiveDateTime>) -> bool {
     if last_fired.is_some() {
         return false; // a one-shot fires exactly once
     }
     let Some(fire_at) = parse_at(at) else {
         return false;
     };
-    let elapsed = now - fire_at;
-    elapsed >= chrono::Duration::zero() && elapsed < chrono::Duration::minutes(CATCHUP_MINUTES)
+    now >= fire_at && in_catchup_or_gap(now, fire_at, last_tick)
 }
 
 /// The daily rule (Phase 18.1): fires at most once per calendar day, only on a
 /// matching weekday (empty `days` = every day), within the catch-up window after
 /// the scheduled time. `days` are 0=Sun..6=Sat, matching src/lib/schedules.ts.
-fn daily_due(now: NaiveDateTime, time: &str, days: &[u32], last_fired: Option<NaiveDate>) -> bool {
+fn daily_due(
+    now: NaiveDateTime,
+    time: &str,
+    days: &[u32],
+    last_fired: Option<NaiveDate>,
+    last_tick: Option<NaiveDateTime>,
+) -> bool {
     let today = now.date();
     let weekday = today.weekday().num_days_from_sunday();
     if !days.is_empty() && !days.contains(&weekday) {
@@ -107,8 +137,7 @@ fn daily_due(now: NaiveDateTime, time: &str, days: &[u32], last_fired: Option<Na
         return false;
     };
     let scheduled = today.and_time(t);
-    let elapsed = now - scheduled;
-    elapsed >= chrono::Duration::zero() && elapsed < chrono::Duration::minutes(CATCHUP_MINUTES)
+    now >= scheduled && in_catchup_or_gap(now, scheduled, last_tick)
 }
 
 /// The interval rule (improvement-5 P1.1/P1.2): fires when it has never fired, or
@@ -600,6 +629,11 @@ pub fn start(app: AppHandle, session: AgentSession, runner: MissionRunner) {
         // automation MCP server writes schedules/watches straight to settings.json,
         // which can't emit a Tauri event itself).
         let mut settings_mtime: Option<std::time::SystemTime> = None;
+        // The `now` of the previous live tick, to close the schedule-starvation
+        // window (5.1): a schedule whose fire moment fell in the gap since we last
+        // looked - a gap a long blocking `fire()` can stretch past the fixed
+        // catch-up - is still honoured. `None` until the first tick completes.
+        let mut last_tick: Option<NaiveDateTime> = None;
 
         loop {
             std::thread::sleep(TICK);
@@ -653,7 +687,7 @@ pub fn start(app: AppHandle, session: AgentSession, runner: MissionRunner) {
                 if !sc.enabled {
                     continue;
                 }
-                if !is_due(now, &sc, fired.get(&sc.id).copied()) {
+                if !is_due(now, &sc, fired.get(&sc.id).copied(), last_tick) {
                     // Any half-spent retry budget is void once the window closes
                     // (or the interval passes), so it can't bleed into the next fire.
                     attempts.remove(&sc.id);
@@ -779,6 +813,12 @@ pub fn start(app: AppHandle, session: AgentSession, runner: MissionRunner) {
                     }
                 }
             }
+
+            // Record this tick's clock as the boundary for the next tick's gap check
+            // (5.1). Set from `now` (the tick's START), so a tick whose `fire()`
+            // blocked for 30+ minutes still reports the moment it began looking - a
+            // sibling that came due during the block falls in the next tick's gap.
+            last_tick = Some(now);
         }
     });
 }
@@ -849,49 +889,49 @@ mod tests {
     fn fires_once_in_window_then_not_again_today() {
         // 2026-07-20 is a Monday.
         let at_time = dt("2026-07-20 09:00");
-        assert!(is_due(at_time, &daily("09:00", &[]), None));
+        assert!(is_due(at_time, &daily("09:00", &[]), None, None));
         // Already fired today -> no re-fire (even at a different time that day).
-        assert!(!is_due(at_time, &daily("09:00", &[]), Some(dt("2026-07-20 09:00"))));
+        assert!(!is_due(at_time, &daily("09:00", &[]), Some(dt("2026-07-20 09:00")), None));
     }
 
     #[test]
     fn respects_the_catch_up_window() {
         // 20 min late still fires (within the 30-min catch-up)...
-        assert!(is_due(dt("2026-07-20 09:20"), &daily("09:00", &[]), None));
+        assert!(is_due(dt("2026-07-20 09:20"), &daily("09:00", &[]), None, None));
         // ...an hour late does not (missed for today).
-        assert!(!is_due(dt("2026-07-20 10:00"), &daily("09:00", &[]), None));
+        assert!(!is_due(dt("2026-07-20 10:00"), &daily("09:00", &[]), None, None));
         // Before the scheduled time never fires.
-        assert!(!is_due(dt("2026-07-20 08:59"), &daily("09:00", &[]), None));
+        assert!(!is_due(dt("2026-07-20 08:59"), &daily("09:00", &[]), None, None));
     }
 
     #[test]
     fn interval_schedules_fire_once_per_interval() {
         // Never fired -> due now.
-        assert!(is_due(dt("2026-07-20 09:00"), &every(30), None));
+        assert!(is_due(dt("2026-07-20 09:00"), &every(30), None, None));
         // 29 min after the last fire -> not yet.
-        assert!(!is_due(dt("2026-07-20 09:29"), &every(30), Some(dt("2026-07-20 09:00"))));
+        assert!(!is_due(dt("2026-07-20 09:29"), &every(30), Some(dt("2026-07-20 09:00")), None));
         // Exactly 30 min later -> due again.
-        assert!(is_due(dt("2026-07-20 09:30"), &every(30), Some(dt("2026-07-20 09:00"))));
+        assert!(is_due(dt("2026-07-20 09:30"), &every(30), Some(dt("2026-07-20 09:00")), None));
         // A garbled 0-minute interval is clamped to at least 1, so the same minute
         // doesn't busy-fire, but a minute later does.
-        assert!(!is_due(dt("2026-07-20 09:00"), &every(0), Some(dt("2026-07-20 09:00"))));
-        assert!(is_due(dt("2026-07-20 09:01"), &every(0), Some(dt("2026-07-20 09:00"))));
+        assert!(!is_due(dt("2026-07-20 09:00"), &every(0), Some(dt("2026-07-20 09:00")), None));
+        assert!(is_due(dt("2026-07-20 09:01"), &every(0), Some(dt("2026-07-20 09:00")), None));
     }
 
     #[test]
     fn once_reminder_fires_once_within_the_window_then_never_again() {
         // Due exactly at the fire time...
-        assert!(is_due(dt("2026-07-21 14:30"), &once("2026-07-21T14:30"), None));
+        assert!(is_due(dt("2026-07-21 14:30"), &once("2026-07-21T14:30"), None, None));
         // ...still due 20 min late (within the catch-up window)...
-        assert!(is_due(dt("2026-07-21 14:50"), &once("2026-07-21T14:30"), None));
+        assert!(is_due(dt("2026-07-21 14:50"), &once("2026-07-21T14:30"), None, None));
         // ...but not an hour late (stale reminder, not replayed).
-        assert!(!is_due(dt("2026-07-21 15:31"), &once("2026-07-21T14:30"), None));
+        assert!(!is_due(dt("2026-07-21 15:31"), &once("2026-07-21T14:30"), None, None));
         // Before the fire time -> not yet.
-        assert!(!is_due(dt("2026-07-21 14:29"), &once("2026-07-21T14:30"), None));
+        assert!(!is_due(dt("2026-07-21 14:29"), &once("2026-07-21T14:30"), None, None));
         // Already fired -> never again, even inside the window.
-        assert!(!is_due(dt("2026-07-21 14:31"), &once("2026-07-21T14:30"), Some(dt("2026-07-21 14:30"))));
+        assert!(!is_due(dt("2026-07-21 14:31"), &once("2026-07-21T14:30"), Some(dt("2026-07-21 14:30")), None));
         // A malformed absolute time never fires (rather than firing at a wrong time).
-        assert!(!is_due(dt("2026-07-21 14:30"), &once("not-a-time"), None));
+        assert!(!is_due(dt("2026-07-21 14:30"), &once("not-a-time"), None, None));
     }
 
     #[test]
@@ -985,10 +1025,31 @@ mod tests {
     #[test]
     fn honours_weekday_filter() {
         // 2026-07-20 is Monday (weekday 1). Restrict to Sundays (0) -> no fire.
-        assert!(!is_due(dt("2026-07-20 09:00"), &daily("09:00", &[0]), None));
+        assert!(!is_due(dt("2026-07-20 09:00"), &daily("09:00", &[0]), None, None));
         // Restrict to Mondays (1) -> fires.
-        assert!(is_due(dt("2026-07-20 09:00"), &daily("09:00", &[1]), None));
+        assert!(is_due(dt("2026-07-20 09:00"), &daily("09:00", &[1]), None, None));
         // Empty day list = every day.
-        assert!(is_due(dt("2026-07-20 09:00"), &daily("09:00", &[]), None));
+        assert!(is_due(dt("2026-07-20 09:00"), &daily("09:00", &[]), None, None));
+    }
+
+    #[test]
+    fn honours_a_schedule_that_came_due_during_a_blocked_gap() {
+        // 5.1: a sibling schedule fired inline for 30+ min, so the next live tick
+        // lands well past this schedule's fixed catch-up window. Scenario: last live
+        // tick at 09:00, a long run blocked until 09:40, this daily is at 09:05.
+        let now = dt("2026-07-20 09:40");
+        let sched = daily("09:05", &[]);
+        // 35 min late: past the fixed 30-min catch-up, so WITHOUT the gap it's lost.
+        assert!(!is_due(now, &sched, None, None));
+        // But its 09:05 fire moment fell in the gap (09:00, 09:40] since the last
+        // live tick, so it is honoured.
+        assert!(is_due(now, &sched, None, Some(dt("2026-07-20 09:00"))));
+        // A schedule whose moment predates the last live tick (already handled, or
+        // genuinely stale) is NOT resurrected by the gap.
+        assert!(!is_due(now, &daily("08:30", &[]), None, Some(dt("2026-07-20 09:00"))));
+        // The gap never fires a not-yet-due schedule (fire moment still ahead).
+        assert!(!is_due(dt("2026-07-20 09:00"), &daily("09:05", &[]), None, Some(dt("2026-07-20 08:59"))));
+        // A `once` reminder is honoured through the same gap.
+        assert!(is_due(now, &once("2026-07-20T09:05"), None, Some(dt("2026-07-20 09:00"))));
     }
 }

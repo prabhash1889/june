@@ -616,11 +616,24 @@ round-trip + legacy migration (1.9).
 
 ## Phase 5 - Missions and scheduling grow up
 
-5.1 **Fix the schedule-starvation window** | P2 | M
+5.1 **Fix the schedule-starvation window** | P2 | M - DONE
     `fire()` runs whole agent turns inline in the tick thread; a 30+ minute run pushes a
     sibling schedule past `CATCHUP_MINUTES` and its day is silently skipped. Snapshot
     due-ness at window entry and honor it after the window closes (or at least notify).
     `src-tauri/src/scheduler.rs`.
+    The tick thread now tracks `last_tick` (the `now` of the previous LIVE tick,
+    `None` until the first tick completes) and threads it into `is_due`. A schedule
+    whose fire moment fell in the unobserved gap `(last_tick, now]` - a gap a long
+    inline `fire()` can stretch far past the fixed 30-min catch-up - is still
+    honoured even though the fixed window has since closed. New pure
+    `in_catchup_or_gap(now, scheduled, last_tick)` is the shared rule for both
+    `daily_due` and `once_due` (`every` is interval-based, so it never starves).
+    On a fresh launch (`last_tick` None) only the fixed catch-up applies, so an
+    evening launch still never replays the morning's 9am run, and a schedule whose
+    moment predates the last live tick is not resurrected. Pinned: a new
+    `honours_a_schedule_that_came_due_during_a_blocked_gap` test (35-min-late daily
+    lost without the gap, honoured with it; stale/not-yet-due not fired; once
+    honoured through the same gap). 13 scheduler tests + clippy `-D warnings` green.
 
 5.2 **"Retry failed tasks" on a finished board** | P2 | S
     A failed mission offers only "Clear" - the user re-types everything even though the
