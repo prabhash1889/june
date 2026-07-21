@@ -44,7 +44,7 @@ const MAX_CAPTURE_MS = 15_000;
 const WAVE_BARS = 28;
 
 // Hands-free timings (Phase 14). Small, fixed constants - not settings knobs.
-const AUTO_ACCEPT_SECONDS = 3; // 14.1: review-card countdown before auto-send
+const AUTO_ACCEPT_SECONDS = 2; // 14.1: review-card countdown before auto-send
 const FOLLOWUP_WINDOW_MS = 6_000; // 14.3: how long the mic stays armed after a reply
 const SPOKEN_APPROVAL_MS = 8_000; // 14.2: how long to listen for a spoken yes/no
 const DICTATED_CONFIRM_MS = 2_500; // 15.4: how long the "sent to your app" note lingers
