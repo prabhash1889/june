@@ -400,10 +400,13 @@ fn register_hotkeys(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Er
                         return; // a stale registration edge; ignore
                     }
                 };
-                let name = match event.state() {
-                    ShortcutState::Pressed => format!("{kind}://down"),
-                    ShortcutState::Released => format!("{kind}://up"),
-                };
+                let pressed = matches!(event.state(), ShortcutState::Pressed);
+                // 7.10: arm/disarm the inject_text gate on the PTT edges so dictation
+                // injection is only permitted during a real push-to-talk session.
+                if kind == "ptt" {
+                    dictation::note_ptt_edge(pressed);
+                }
+                let name = format!("{kind}://{}", if pressed { "down" } else { "up" });
                 let _ = app.emit(&name, ());
             })
             .build(),
