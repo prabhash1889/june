@@ -1,0 +1,43 @@
+name: E2E smoke (manual)
+
+# improvement-8 1.1. Runs the tauri-driver + WebdriverIO smoke path against the real
+# Tauri shell. MANUAL ONLY for now (workflow_dispatch) - it is not yet proven green
+# on a runner, so it must not gate PRs. Move it onto pull_request once it is stable
+# (see e2e/README.md).
+on:
+  workflow_dispatch:
+
+jobs:
+  e2e:
+    name: E2E smoke (windows + WebView2)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install tauri-driver
+        run: cargo install tauri-driver --locked
+
+      - name: Install app dependencies
+        run: npm ci
+
+      - name: Install E2E dependencies
+        working-directory: e2e
+        run: npm install
+
+      - name: Run smoke suite
+        working-directory: e2e
+        run: npm test

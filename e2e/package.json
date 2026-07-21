@@ -1,0 +1,14 @@
+{
+  "name": "june-e2e",
+  "private": true,
+  "description": "End-to-end smoke harness for June (tauri-driver + WebdriverIO). See README.md.",
+  "scripts": {
+    "test": "wdio run ./wdio.conf.js"
+  },
+  "devDependencies": {
+    "@wdio/cli": "^9.0.0",
+    "@wdio/local-runner": "^9.0.0",
+    "@wdio/mocha-framework": "^9.0.0",
+    "@wdio/spec-reporter": "^9.0.0"
+  }
+}
