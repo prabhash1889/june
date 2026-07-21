@@ -20,7 +20,7 @@
 // blocks in serve.ts until `resolve_approval` writes a decision back.
 
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -1434,19 +1434,59 @@ pub fn read_runs(app: AppHandle) -> Vec<serde_json::Value> {
     let Ok(dir) = app.path().app_data_dir() else {
         return vec![];
     };
-    let mut out: Vec<serde_json::Value> = Vec::new();
-    for name in ["june-runs.jsonl.1", "june-runs.jsonl"] {
-        if let Ok(text) = std::fs::read_to_string(dir.join(name)) {
-            for line in text.lines() {
-                if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
-                    out.push(v);
-                }
-            }
-        }
+    const KEEP: usize = 200;
+    // The current file is newest; only touch the rolled generation if the current
+    // one holds fewer than KEEP records (7.6 - avoid parsing a full 4MB).
+    let cur = read_tail_lines(&dir.join("june-runs.jsonl"), KEEP);
+    let mut lines: Vec<String> = Vec::new();
+    if cur.len() < KEEP {
+        lines = read_tail_lines(&dir.join("june-runs.jsonl.1"), KEEP - cur.len());
     }
+    lines.extend(cur); // [older generation tail ++ current tail], oldest-first
+    let mut out: Vec<serde_json::Value> =
+        lines.iter().filter_map(|l| serde_json::from_str(l).ok()).collect();
     out.reverse(); // newest first
-    out.truncate(200);
+    out.truncate(KEEP);
     out
+}
+
+/// Read only the tail of a JSONL ledger, not the whole (up to 2MB) file (7.6):
+/// seek to the last WINDOW bytes, drop the (likely truncated) first line when the
+/// window didn't reach the start, and keep the last `keep` lines - returned
+/// oldest-first (append order) as owned strings ready to JSON-parse.
+fn read_tail_lines(path: &std::path::Path, keep: usize) -> Vec<String> {
+    // 512KB comfortably holds 200 records (prompt+reply are each capped at 2000
+    // chars, and redact to a short marker under on-device modes).
+    // ponytail: window, not full file. If 200 maxed records ever exceed 512KB the
+    // Runs tab shows slightly fewer - widen WINDOW then.
+    const WINDOW: u64 = 512 * 1024;
+    let Ok(mut f) = std::fs::File::open(path) else {
+        return vec![];
+    };
+    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+    let partial = len > WINDOW;
+    let start = if partial { len - WINDOW } else { 0 };
+    if f.seek(SeekFrom::Start(start)).is_err() {
+        return vec![];
+    }
+    let mut bytes = Vec::new();
+    if f.read_to_end(&mut bytes).is_err() {
+        return vec![];
+    }
+    tail_lines_from_bytes(&bytes, keep, partial)
+}
+
+/// Pure tail extraction (unit-tested without a filesystem): lossy-decode the bytes,
+/// drop a leading partial line when `partial` (we seeked mid-record), and keep the
+/// last `keep` lines.
+fn tail_lines_from_bytes(bytes: &[u8], keep: usize, partial: bool) -> Vec<String> {
+    let text = String::from_utf8_lossy(bytes);
+    let mut lines: Vec<&str> = text.lines().collect();
+    if partial && !lines.is_empty() {
+        lines.remove(0);
+    }
+    let start = lines.len().saturating_sub(keep);
+    lines[start..].iter().map(|s| s.to_string()).collect()
 }
 
 /// Absolute path to the current mission board (improvement-4 Phase 19.1),
@@ -1543,6 +1583,23 @@ mod tests {
         // Oldest five dropped; the buffer keeps the newest window.
         assert_eq!(buf[0]["total"].as_u64(), Some(5));
         assert_eq!(buf[MAX_LATENCY - 1]["total"].as_u64(), Some(MAX_LATENCY as u64 + 4));
+    }
+
+    // Tail parsing (7.6): keep only the last `keep` lines, and when we seeked into
+    // the middle of the file (partial=true) the first line is a truncated record
+    // that must be dropped, not parsed.
+    #[test]
+    fn tail_lines_keeps_last_and_drops_partial_leader() {
+        let full = b"a\nb\nc\nd\ne\n";
+        // Whole file (partial=false): last 3 lines, leader kept.
+        assert_eq!(tail_lines_from_bytes(full, 3, false), vec!["c", "d", "e"]);
+        // Fewer lines than requested: return them all.
+        assert_eq!(tail_lines_from_bytes(full, 99, false), vec!["a", "b", "c", "d", "e"]);
+        // Seeked mid-record: the first (truncated) line is dropped before taking the tail.
+        let windowed = b"lf-record\nb\nc\nd\ne\n";
+        assert_eq!(tail_lines_from_bytes(windowed, 3, true), vec!["c", "d", "e"]);
+        // Empty file is empty, either way.
+        assert!(tail_lines_from_bytes(b"", 3, true).is_empty());
     }
 
     // Run-ledger redaction (2.9): the "on-device prompts never land on disk" rule was
