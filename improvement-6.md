@@ -181,12 +181,23 @@ round-trip + legacy migration (1.9).
     pinning the "broken keychain is not an empty key" rule and the provider->service
     mapping.
 
-2.9 **Test the untested trust paths** | P1-P2 | M
+2.9 **Test the untested trust paths** | P1-P2 | M - DONE
     (a) serve.ts protocol seam: turn framing, cancel, approval round-trip, malformed input
     (every turn crosses it, zero tests). (b) Run-ledger redaction + rotation: the
     "local-voice prompts never land on disk" rule is uncovered - extract the record
     builder as a pure function and test both privacy modes. `agent/serve.ts`,
     `src-tauri/src/agent_runner.rs`.
+    (a) Extracted the trust-critical seam from serve.ts into new `agent/protocol.ts`
+    (`parseRequest`, `withRecalledLessons`, `parseMcpServers`, and an `ApprovalHub`
+    class owning the gate / approval round-trip / cancel / unattended-block logic with
+    `emit` + timeout injected). serve.ts is now a thin wrapper constructing an
+    `ApprovalHub` over stdout `emit`. `agent/protocol.test.ts` (13 tests) pins malformed
+    input, turn framing/fencing, the approval round-trip (click allow/deny, cancel
+    self-deny, timeout expiry), and the unattended leash (gated blocked before any
+    override, networked observe blocked). (b) Extracted `build_run_record` as a pure
+    function; 4 new agent_runner tests pin on-device redaction (content never reaches
+    disk), standard-mode retention + capping, and usage riding verbatim under both
+    modes. Full suite: 230 vitest + 40 cargo tests green.
 
 ---
 

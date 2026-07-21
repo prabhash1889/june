@@ -87,6 +87,48 @@ pub(crate) fn cap_chars(s: &str, max: usize) -> String {
     out
 }
 
+/// Build one run-ledger record (P1.3), redacting prompt/reply to a length marker
+/// under any on-device privacy mode so a headless run's content never lands on
+/// disk (mirrors the audit redaction, policy.ts); standard mode keeps the text,
+/// capped so one line can't bloat. Per-run token/cost (2.6) rides verbatim under
+/// every mode - tokens aren't content. Pure, so both privacy modes are unit-tested
+/// without touching the filesystem or app state (2.9).
+#[allow(clippy::too_many_arguments)]
+fn build_run_record(
+    on_device: bool,
+    id: u64,
+    source: &str,
+    prompt: &str,
+    started: &str,
+    ended: &str,
+    reply: &str,
+    is_error: bool,
+    blocked: &[String],
+    usage: Option<&serde_json::Value>,
+) -> serde_json::Value {
+    let redact = |s: &str| -> String {
+        if on_device {
+            format!("[redacted {} chars]", s.chars().count())
+        } else {
+            cap_chars(s, 2000)
+        }
+    };
+    let mut record = serde_json::json!({
+        "id": id,
+        "source": source,
+        "prompt": redact(prompt),
+        "started": started,
+        "ended": ended,
+        "reply": redact(reply),
+        "isError": is_error,
+        "blocked": blocked,
+    });
+    if let Some(u) = usage {
+        record["usage"] = u.clone();
+    }
+    record
+}
+
 /// Append one record to the run ledger (improvement-5 P1.3): what one unattended
 /// run did, to `<app_data_dir>/june-runs.jsonl`, read back by the Runs tab. The
 /// prompt/reply text is redacted to a length marker under any on-device privacy
@@ -110,29 +152,8 @@ pub(crate) fn append_run(
         crate::settings::read_settings(app).get("privacyMode").and_then(|v| v.as_str()),
         Some("local-voice") | Some("strict-offline")
     );
-    let redact = |s: &str| -> String {
-        if on_device {
-            format!("[redacted {} chars]", s.chars().count())
-        } else {
-            cap_chars(s, 2000)
-        }
-    };
     let ended = Local::now().naive_local().format("%Y-%m-%dT%H:%M:%S").to_string();
-    let mut record = serde_json::json!({
-        "id": id,
-        "source": source,
-        "prompt": redact(prompt),
-        "started": started,
-        "ended": ended,
-        "reply": redact(reply),
-        "isError": is_error,
-        "blocked": blocked,
-    });
-    // Per-run token/cost (2.6), when the brain reported it. Tokens aren't content,
-    // so they're recorded verbatim under every privacy mode (unlike prompt/reply).
-    if let Some(u) = usage {
-        record["usage"] = u.clone();
-    }
+    let record = build_run_record(on_device, id, source, prompt, started, &ended, reply, is_error, blocked, usage);
     let Ok(dir) = app.path().app_data_dir() else {
         return;
     };
@@ -1522,6 +1543,72 @@ mod tests {
         // Oldest five dropped; the buffer keeps the newest window.
         assert_eq!(buf[0]["total"].as_u64(), Some(5));
         assert_eq!(buf[MAX_LATENCY - 1]["total"].as_u64(), Some(MAX_LATENCY as u64 + 4));
+    }
+
+    // Run-ledger redaction (2.9): the "on-device prompts never land on disk" rule was
+    // uncovered. build_run_record is the pure record builder; pin both privacy modes.
+    #[test]
+    fn ledger_record_redacts_content_on_device() {
+        let rec = build_run_record(
+            true, // on-device (local-voice / strict-offline)
+            42,
+            "schedule: Briefing",
+            "my secret prompt",
+            "2026-07-21T09:00:00",
+            "2026-07-21T09:00:03",
+            "the secret reply",
+            false,
+            &[],
+            None,
+        );
+        // Neither the prompt nor the reply text survives to disk - only a length marker.
+        assert_eq!(rec["prompt"], "[redacted 16 chars]");
+        assert_eq!(rec["reply"], "[redacted 16 chars]");
+        assert!(!rec.to_string().contains("secret"));
+        // Non-content fields are kept verbatim so the Runs tab still shows the run.
+        assert_eq!(rec["source"], "schedule: Briefing");
+        assert_eq!(rec["id"].as_u64(), Some(42));
+    }
+
+    #[test]
+    fn ledger_record_keeps_content_under_standard_mode() {
+        let rec = build_run_record(
+            false, // standard mode
+            1,
+            "schedule: Briefing",
+            "my prompt",
+            "2026-07-21T09:00:00",
+            "2026-07-21T09:00:03",
+            "my reply",
+            true,
+            &["add_schedule".to_string()],
+            None,
+        );
+        assert_eq!(rec["prompt"], "my prompt");
+        assert_eq!(rec["reply"], "my reply");
+        assert_eq!(rec["isError"], true);
+        assert_eq!(rec["blocked"][0], "add_schedule");
+    }
+
+    #[test]
+    fn ledger_record_caps_long_text_but_still_redacts_it_on_device() {
+        let long = "x".repeat(5000);
+        let standard = build_run_record(false, 1, "s", &long, "t0", "t1", &long, false, &[], None);
+        // Standard mode caps at 2000 chars + the ellipsis marker, never the full 5000.
+        assert_eq!(standard["prompt"].as_str().unwrap().chars().count(), 2001);
+        let on_device = build_run_record(true, 1, "s", &long, "t0", "t1", &long, false, &[], None);
+        assert_eq!(on_device["prompt"], "[redacted 5000 chars]");
+    }
+
+    #[test]
+    fn ledger_record_rides_usage_verbatim_under_every_mode() {
+        let usage = serde_json::json!({ "inputTokens": 100, "outputTokens": 20, "costUsd": 0.01 });
+        for on_device in [false, true] {
+            let rec = build_run_record(on_device, 1, "s", "p", "t0", "t1", "r", false, &[], Some(&usage));
+            // Tokens aren't content, so they're recorded even when prompt/reply are redacted.
+            assert_eq!(rec["usage"]["inputTokens"].as_u64(), Some(100));
+            assert_eq!(rec["usage"]["costUsd"].as_f64(), Some(0.01));
+        }
     }
 
     /// A long-lived child so a test can prove the resident survives (or is killed).
