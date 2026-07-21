@@ -48,7 +48,8 @@ it("synthesize routes local TTS to on-device Kokoro and reports wav", async () =
   const { bytes, mime } = await synthesize("hi", { provider: "kokoro", model: "onnx-community/Kokoro-82M-v1.0-ONNX", voice: "af_heart" });
   expect(mime).toBe("audio/wav");
   expect(bytes).toEqual(new Uint8Array([9, 9]));
-  expect(synthesizeLocal).toHaveBeenCalledWith("hi", "af_heart", "onnx-community/Kokoro-82M-v1.0-ONNX");
+  // 4th arg is the optional barge-in AbortSignal (3.11), undefined for a one-off call.
+  expect(synthesizeLocal).toHaveBeenCalledWith("hi", "af_heart", "onnx-community/Kokoro-82M-v1.0-ONNX", undefined);
   expect(invoke).not.toHaveBeenCalled();
 });
 
