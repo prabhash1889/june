@@ -840,9 +840,19 @@ round-trip + legacy migration (1.9).
     ref) so the 90ms `setLevel` re-renders only the meter, not the whole SttCard.
     Typecheck + eslint + 294 vitest + vite build all green.
 
-7.6 **`read_runs`: parse the tail, not 4MB** | P2 | S
+7.6 **`read_runs`: parse the tail, not 4MB** | P2 | S - DONE
     Both ledger generations are fully read and every line JSON-parsed to keep 200 records.
     Take the last 200 raw lines first, parse only those. `src-tauri/src/agent_runner.rs`.
+    New `read_tail_lines(path, keep)` seeks to the last 512KB of a ledger file (each
+    generation caps at 2MB), drops the truncated leading line when the window didn't
+    reach byte 0, and returns the last `keep` lines - so `read_runs` JSON-parses at
+    most 200 lines instead of every line of up to 4MB across both generations. The
+    current file is read first; the rolled generation is only touched when the current
+    holds fewer than 200 records. Pure `tail_lines_from_bytes` pins the keep-last +
+    drop-partial-leader logic without a filesystem. ponytail: 512KB comfortably holds
+    200 records (prompt/reply capped at 2000 chars, redacted to a marker on-device) -
+    widen the window if 200 maxed records ever exceed it. 45 cargo tests + clippy
+    `-D warnings` green.
 
 7.7 **Single writer for settings.json** (x2: rust + reliability) | P2 | M
     Rust `save_settings` (whole-bag, last-writer-wins) races the automation server's
