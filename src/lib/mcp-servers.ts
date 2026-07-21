@@ -154,15 +154,36 @@ export type McpServerConfigLike =
   | { command: string; args: string[]; env: Record<string, string>; alwaysLoad: true }
   | { type: "http"; url: string; headers: Record<string, string>; alwaysLoad: true };
 
+/** Brain-provider secrets the resident carries in its own env (ANTHROPIC_API_KEY for
+ *  Claude, JUNE_BRAIN_API_KEY for the other brains; OPENAI_API_KEY defensively). No
+ *  MCP child server ever needs them, but the Claude Agent SDK spawns MCP children with
+ *  the resident's FULL env (its bundle has no inherit-allowlist, unlike the standalone
+ *  MCP SDK the OpenAI brain uses), so a hostile or buggy server could read the key
+ *  straight out of process.env. Blank them in every server's config env (7.9): under a
+ *  full-env spawner the "" overrides the real secret; under an allowlist spawner it's a
+ *  harmless empty var. Blank, never DELETE - deleting would also strip PATH/APPDATA and
+ *  break `npx`. */
+export const SCRUBBED_BRAIN_ENV: Readonly<Record<string, string>> = {
+  ANTHROPIC_API_KEY: "",
+  OPENAI_API_KEY: "",
+  JUNE_BRAIN_API_KEY: "",
+};
+
+/** A server's config env with the brain secrets blanked underneath it (7.9); the
+ *  server's own vars win over the blanks. */
+export function scrubbedEnv(delta: Record<string, string> = {}): Record<string, string> {
+  return { ...SCRUBBED_BRAIN_ENV, ...delta };
+}
+
 /** Map one entry to its MCP server config. `alwaysLoad` keeps the tools in the
  *  prompt (like June's built-in servers) so a brain with no tool-search can still
- *  call them. */
+ *  call them. The stdio env is scrubbed of brain secrets (7.9). */
 export function toMcpServerConfig(entry: McpServerEntry): McpServerConfigLike {
   const t = entry.transport;
   if (t.kind === "http") {
     return { type: "http", url: t.url, headers: t.headers, alwaysLoad: true };
   }
-  return { command: t.command, args: t.args, env: t.env, alwaysLoad: true };
+  return { command: t.command, args: t.args, env: scrubbedEnv(t.env), alwaysLoad: true };
 }
 
 /** The generic servers as an id -> config map, ready to merge into the agent's

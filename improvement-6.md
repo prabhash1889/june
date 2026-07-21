@@ -893,10 +893,29 @@ round-trip + legacy migration (1.9).
     `src-tauri/src/agent_runner.rs`, `settings.rs`, `scheduler.rs`, `missions.rs`,
     `keychain.rs`.
 
-7.9 **Scrub brain API keys from MCP child env** | P1 | M
+7.9 **Scrub brain API keys from MCP child env** | P1 | M - DONE
     All five built-in servers inherit `process.env` including `ANTHROPIC_API_KEY`; whether
     user-added generic stdio servers also receive it is unverified. Scrubbed base env for
     every MCP config; verify + pin with a test. `agent/core.ts`, `src/lib/mcp-servers.ts`.
+    VERIFIED the leak first: the OpenAI-brain path (standalone MCP SDK's
+    `StdioClientTransport`) is already safe - it spawns children with
+    `{...getDefaultEnvironment(), ...cfg.env}`, an allowlist (PATH/APPDATA/...) that never
+    includes an API key. But the Claude-brain path uses `@anthropic-ai/claude-agent-sdk`,
+    whose `bridge.mjs` bundle has NO such allowlist and spawns MCP children with the
+    resident's FULL env (confirmed empirically: the built-ins pass minimal delta envs and
+    still resolve `npx`, which only works if the child inherits process.env) - so
+    ANTHROPIC_API_KEY / JUNE_BRAIN_API_KEY reached every MCP child, built-in AND
+    user-added. Fix: new shared `SCRUBBED_BRAIN_ENV` + `scrubbedEnv(delta)` in
+    `mcp-servers.ts` that BLANKS (not deletes - deleting would strip PATH and break npx)
+    ANTHROPIC_API_KEY / OPENAI_API_KEY / JUNE_BRAIN_API_KEY under each server's own env.
+    Under a full-env spawner the "" overrides the real secret; under the allowlist spawner
+    it's a harmless empty var - SDK-agnostic. Applied to every built-in config in core.ts
+    (files/memory/lessons/automation/system/saple-bridge-control) and to `toMcpServerConfig`
+    so every user-added stdio server is scrubbed too; a same-named server delta still wins.
+    Pinned: new `agent/core.test.ts` (every built-in blanks all three keys AND still passes
+    its own delta var; `@vitest-environment node` since core resolves paths via
+    import.meta.url) + mcp-servers.test (scrubbedEnv blanks/lets-delta-win, user stdio
+    server scrubbed). 298 vitest + typecheck + eslint green.
 
 7.10 **Bind `inject_text` to a live PTT session** | P2 | S
     The command types into whatever has OS focus and is invokable by any webview script -

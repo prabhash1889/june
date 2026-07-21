@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 
 import { type McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 
-import { genericMcpServers, type McpServerEntry } from "../src/lib/mcp-servers.ts";
+import { genericMcpServers, type McpServerEntry, scrubbedEnv } from "../src/lib/mcp-servers.ts";
 import { type Brain, type TurnHooks, type TurnResult } from "./brain.ts";
 import { ClaudeBrain } from "./claude-brain.ts";
 import { OpenAiCompatBrain } from "./openai-brain.ts";
@@ -54,11 +54,12 @@ export function filesMcpServer(root: string): Record<string, McpServerConfig> {
       command: "npx",
       args: ["tsx", filesServerPath()],
       alwaysLoad: true,
-      // ponytail: pass ONLY the delta var, not ...process.env. The whole config is
-      // JSON-serialized into one `--mcp-config` CLI arg; N servers x a full Windows
-      // env blows past the 32767-char command-line limit (spawn ENAMETOOLONG). The
-      // MCP stdio transport already inherits PATH/APPDATA/etc via getDefaultEnvironment.
-      env: { JUNE_FILES_ROOT: root },
+      // ponytail: pass the delta var plus the blanked brain secrets (7.9), never
+      // ...process.env. The whole config is JSON-serialized into one `--mcp-config`
+      // CLI arg; N servers x a full Windows env blows past the 32767-char command-line
+      // limit (spawn ENAMETOOLONG). The stdio transport inherits PATH/APPDATA/etc, and
+      // scrubbedEnv nulls ANTHROPIC_API_KEY/etc so a child can't read the brain key.
+      env: scrubbedEnv({ JUNE_FILES_ROOT: root }),
     },
   };
 }
@@ -74,7 +75,7 @@ export function memoryMcpServer(file: string): Record<string, McpServerConfig> {
       // Keep the tool in the prompt (like the other servers) so the model with no
       // built-in tool-search can actually call `remember`.
       alwaysLoad: true,
-      env: { JUNE_MEMORY_FILE: file }, // see filesMcpServer: only the delta var (ENAMETOOLONG)
+      env: scrubbedEnv({ JUNE_MEMORY_FILE: file }), // see filesMcpServer: delta + scrubbed brain secrets (7.9)
     },
   };
 }
@@ -92,7 +93,7 @@ export function lessonsMcpServer(file: string): Record<string, McpServerConfig> 
       // Keep the tool in the prompt (like the other servers) so the model with no
       // built-in tool-search can actually call `record_lesson`.
       alwaysLoad: true,
-      env: { JUNE_LESSONS_FILE: file }, // see filesMcpServer: only the delta var (ENAMETOOLONG)
+      env: scrubbedEnv({ JUNE_LESSONS_FILE: file }), // see filesMcpServer: delta + scrubbed brain secrets (7.9)
     },
   };
 }
@@ -110,7 +111,7 @@ export function automationMcpServer(settingsFile: string): Record<string, McpSer
       // Keep the tools in the prompt (like the other built-ins) so a brain with no
       // tool-search can actually call add_schedule / add_watch.
       alwaysLoad: true,
-      env: { JUNE_SETTINGS_FILE: settingsFile }, // see filesMcpServer: only the delta var (ENAMETOOLONG)
+      env: scrubbedEnv({ JUNE_SETTINGS_FILE: settingsFile }), // see filesMcpServer: delta + scrubbed brain secrets (7.9)
     },
   };
 }
@@ -128,6 +129,9 @@ export function systemMcpServer(): Record<string, McpServerConfig> {
       // Keep the tools in the prompt (like the other built-ins) so a brain with no
       // tool-search can actually call list_processes / process_running.
       alwaysLoad: true,
+      // No config of its own, but still scrub the brain secrets (7.9) so this child
+      // can't read ANTHROPIC_API_KEY out of the inherited env.
+      env: scrubbedEnv(),
     },
   };
 }
@@ -142,7 +146,9 @@ export function defaultMcpServers(workspaceId?: string): Record<string, McpServe
       // with no built-in tools the model has no search tool to discover them,
       // so without this it hallucinates tool names instead of calling ours.
       alwaysLoad: true,
-      ...(workspaceId ? { env: { JUNE_WORKSPACE_ID: workspaceId } } : {}), // only the delta var (ENAMETOOLONG)
+      // Scrub the brain secrets (7.9), plus the workspace id when set (ENAMETOOLONG:
+      // delta only, never ...process.env).
+      env: scrubbedEnv(workspaceId ? { JUNE_WORKSPACE_ID: workspaceId } : {}),
     },
   };
 }

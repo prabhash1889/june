@@ -7,6 +7,7 @@ import {
   mcpServerAllowed,
   type McpServerEntry,
   resolveMcpEntries,
+  scrubbedEnv,
   serverDefaults,
   slugify,
   toMcpServerConfig,
@@ -129,7 +130,13 @@ describe("policy + config mapping", () => {
   });
 
   it("toMcpServerConfig maps stdio and http, always keeping tools in the prompt", () => {
-    expect(toMcpServerConfig(stdio())).toEqual({ command: "npx", args: ["-y", "server"], env: {}, alwaysLoad: true });
+    // The stdio env now carries the blanked brain secrets (7.9) under any server env.
+    expect(toMcpServerConfig(stdio())).toEqual({
+      command: "npx",
+      args: ["-y", "server"],
+      env: { ANTHROPIC_API_KEY: "", OPENAI_API_KEY: "", JUNE_BRAIN_API_KEY: "" },
+      alwaysLoad: true,
+    });
     expect(
       toMcpServerConfig(stdio({ transport: { kind: "http", url: "https://x/mcp", headers: { A: "b" } } })),
     ).toEqual({ type: "http", url: "https://x/mcp", headers: { A: "b" }, alwaysLoad: true });
@@ -138,6 +145,24 @@ describe("policy + config mapping", () => {
   it("genericMcpServers keys configs by server id", () => {
     const map = genericMcpServers([stdio({ id: "github" }), stdio({ id: "brave" })]);
     expect(Object.keys(map).sort()).toEqual(["brave", "github"]);
+  });
+
+  // 7.9: no MCP child should ever receive the brain API key. The Claude Agent SDK
+  // spawns MCP children with the resident's full env (no allowlist), so every stdio
+  // config blanks the known brain-key vars - a user's own env delta wins over the
+  // blanks but can't accidentally leave a real key inherited.
+  it("scrubs brain secrets from a user stdio server's env", () => {
+    const cfg = toMcpServerConfig(stdio({ transport: { kind: "stdio", command: "npx", args: [], env: { FOO: "bar" } } }));
+    expect(cfg).toMatchObject({
+      env: { FOO: "bar", ANTHROPIC_API_KEY: "", OPENAI_API_KEY: "", JUNE_BRAIN_API_KEY: "" },
+    });
+  });
+
+  it("scrubbedEnv blanks the brain keys and lets the server's own vars win", () => {
+    expect(scrubbedEnv()).toEqual({ ANTHROPIC_API_KEY: "", OPENAI_API_KEY: "", JUNE_BRAIN_API_KEY: "" });
+    // A same-named delta var (unusual, but must win rather than be forced blank).
+    expect(scrubbedEnv({ JUNE_MEMORY_FILE: "/m", OPENAI_API_KEY: "x" }).OPENAI_API_KEY).toBe("x");
+    expect(scrubbedEnv({ JUNE_MEMORY_FILE: "/m" }).ANTHROPIC_API_KEY).toBe("");
   });
 });
 
