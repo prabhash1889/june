@@ -92,6 +92,12 @@ const ACTION_CLASS: Record<string, SafetyClass> = {
   // metadata (title + process), no display capture, local-only - so it is observe
   // like the rest of the pack, safe to auto-run and usable unattended.
   get_active_context: "observe",
+  // App/URL launcher (improvement-6 4.6): opening a file/URL/app in its default
+  // handler is `reversible` (auto-runs with the user present - the same class as
+  // open_browser, the conservative-but-not-paranoid case), NOT observe - so it is
+  // still blocked on an UNATTENDED run, keeping an injected trigger from silently
+  // launching apps or opening exfiltration URLs.
+  open_path: "reversible",
 };
 
 /**
@@ -295,6 +301,8 @@ export function summarize(action: string, input: Record<string, unknown>): strin
       return "Read system stats";
     case "get_active_context":
       return "Read active window context";
+    case "open_path":
+      return `Open ${s("target") || "?"}`;
     default: {
       // An unknown gated tool (a generic server's action) still fails closed to
       // destructive, so the user WILL be asked to approve it - and must see what

@@ -12,6 +12,7 @@ import {
   parseMemCell,
   parseTasklistCsv,
   summarizeStats,
+  validateOpenTarget,
   type ProcessInfo,
 } from "./parse.ts";
 
@@ -106,6 +107,35 @@ describe("parseActiveContext", () => {
       processName: null,
       pid: null,
     });
+  });
+});
+
+describe("validateOpenTarget", () => {
+  it("accepts http(s) URLs (query strings and all)", () => {
+    expect(validateOpenTarget("https://example.com/a?b=1&c=2")).toEqual({
+      kind: "url",
+      value: "https://example.com/a?b=1&c=2",
+    });
+    expect(validateOpenTarget("  http://x.test  ")).toEqual({ kind: "url", value: "http://x.test" });
+  });
+
+  it("accepts filesystem paths: drive, relative, and UNC", () => {
+    expect(validateOpenTarget("C:\\notes\\todo.md")).toEqual({ kind: "path", value: "C:\\notes\\todo.md" });
+    expect(validateOpenTarget("notes/todo.md")).toEqual({ kind: "path", value: "notes/todo.md" });
+    expect(validateOpenTarget("\\\\server\\share\\file")).toEqual({ kind: "path", value: "\\\\server\\share\\file" });
+  });
+
+  it("rejects custom URL schemes that could run code or launch an app", () => {
+    // The colon-scheme guard is the security-critical bit: javascript:/file:/data:
+    // and any registered-protocol launcher must be refused, only C:-style drives pass.
+    expect(() => validateOpenTarget("javascript:alert(1)")).toThrow(/custom URL schemes/);
+    expect(() => validateOpenTarget("file:///etc/passwd")).toThrow(/custom URL schemes/);
+    expect(() => validateOpenTarget("ms-calculator:")).toThrow(/custom URL schemes/);
+  });
+
+  it("rejects empty and control-character targets", () => {
+    expect(() => validateOpenTarget("   ")).toThrow(/No path or URL/);
+    expect(() => validateOpenTarget("https://x\ncalc")).toThrow(/control characters/);
   });
 });
 

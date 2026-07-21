@@ -502,10 +502,28 @@ round-trip + legacy migration (1.9).
     `.enabled` off the loosely-typed SettingsBag) via a typed `lists()` view. Full
     suite 269 vitest green, typecheck + eslint + `cargo clippy -D warnings` clean.
 
-4.6 **`open_path` / app launcher in `mcp/system`** | P2 | S
+4.6 **`open_path` / app launcher in `mcp/system`** | P2 | S - DONE
     Standalone June (no saple-bridge) cannot open a URL, file or app at all. `cmd /c start`
     node-side, classify `reversible`, validate the target is a plain path/URL before
     shelling out. `mcp/system/server.ts`, `agent/policy.ts`.
+    `open_path(target)` added to the system server, classified `reversible` in
+    `ACTION_CLASS` (same class as open_browser: auto-runs with the user present, still
+    blocked UNATTENDED so an injected trigger can't launch apps or open exfiltration
+    URLs). DEVIATION from the plan's `cmd /c start`: that routes the target through
+    cmd's parser, where a URL's `&` is a live command-injection vector (`start ""
+    "https://x?a=1&calc"` chains `calc`). Instead the target is handed to `explorer.exe`
+    via a spawned ARGS ARRAY (no shell), which opens files/folders/URLs in the default
+    handler with the argument passed by CreateProcess - injection-proof by construction,
+    so a URL's `&` or a path's spaces are inert. Detached + unref'd (June never waits on
+    the opened app; explorer's exit code is unreliable). Pure `validateOpenTarget`
+    gates the input as the security core: accepts http(s) URLs and filesystem paths
+    (drive/relative/UNC), REJECTS control characters and - critically - any `scheme:`
+    that isn't http(s) or a `C:`-style drive letter, blocking `javascript:`/`file:`/a
+    registered app-launcher scheme that could run code or launch an arbitrary app. A
+    path is existence-checked up front for a clean error instead of a flashing OS
+    window. Pinned: parse.test (URL-with-query, drive/relative/UNC paths, rejected
+    custom schemes, empty/control-char). Full suite 273 vitest green, typecheck +
+    eslint + clippy clean.
 
 4.7 **Clipboard capability** (x2) | P2 | S
     "What's on my clipboard?" via `Get-Clipboard`/`Set-Clipboard` in `mcp/system` - zero

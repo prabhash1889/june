@@ -110,6 +110,41 @@ export function parseActiveContext(stdout: string): ActiveContext {
   return { title, processName, pid };
 }
 
+/** A validated open_path target (improvement-6 4.6): either an http(s) URL or a
+ *  local filesystem path. The `kind` lets the server decide whether to existence-
+ *  check (paths) or not (URLs). */
+export interface OpenTarget {
+  kind: "url" | "path";
+  value: string;
+}
+
+/** Validate an open_path target before it is handed to the OS default handler.
+ *  Accepts an http(s) URL or a filesystem path (absolute, relative, or UNC), and
+ *  REJECTS anything else - control characters (injection/spoofing) and, crucially,
+ *  any `scheme:` prefix that is not http(s) or a `C:`-style drive letter. That last
+ *  rule blocks custom protocol handlers (`javascript:`, `file:`, a registered
+ *  app-launcher scheme) that could run code or launch an arbitrary app, while still
+ *  allowing normal Windows drive paths. Throws with a human-readable reason on a
+ *  bad target. Pure, so the whole allow/deny table is unit-tested without shelling
+ *  out. Note the caller opens the target via a spawned args array (no shell), so a
+ *  URL's `&` or a path's spaces cannot inject a command regardless. */
+export function validateOpenTarget(raw: string): OpenTarget {
+  const t = raw.trim();
+  if (!t) throw new Error("No path or URL to open.");
+  // eslint-disable-next-line no-control-regex
+  if (/[\x00-\x1f]/.test(t)) throw new Error("The target contains control characters.");
+  if (/^https?:\/\//i.test(t)) return { kind: "url", value: t };
+  const colon = t.indexOf(":");
+  if (colon >= 0) {
+    // A Windows drive path ("C:\...") has its only colon at index 1 after a letter.
+    const isDriveLetter = colon === 1 && /^[a-zA-Z]$/.test(t[0]!);
+    if (!isDriveLetter) {
+      throw new Error("Only http(s) links and file paths can be opened, not custom URL schemes.");
+    }
+  }
+  return { kind: "path", value: t };
+}
+
 /** Raw OS snapshot, so summarizeStats stays pure (the server passes node's `os`
  *  readings in; the test passes fixed numbers). */
 export interface StatsSnapshot {

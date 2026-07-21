@@ -10,7 +10,8 @@
 // stats, and a `tasklist` shell-out for the process list. Windows-first (June's
 // platform); the process tools degrade to an error on other OSes rather than lying.
 
-import { exec } from "node:child_process";
+import { exec, spawn } from "node:child_process";
+import { promises as fs } from "node:fs";
 import * as os from "node:os";
 import { promisify } from "node:util";
 
@@ -19,7 +20,14 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 
-import { countProcesses, parseActiveContext, parseTasklistCsv, summarizeStats, type ProcessInfo } from "./parse.ts";
+import {
+  countProcesses,
+  parseActiveContext,
+  parseTasklistCsv,
+  summarizeStats,
+  validateOpenTarget,
+  type ProcessInfo,
+} from "./parse.ts";
 
 const execAsync = promisify(exec);
 
@@ -164,6 +172,44 @@ server.registerTool(
       }
       const ctx = parseActiveContext(await runPwsh(ACTIVE_CONTEXT_PS));
       return ok(JSON.stringify(ctx));
+    } catch (e) {
+      return fail(msg(e));
+    }
+  },
+);
+
+server.registerTool(
+  "open_path",
+  {
+    title: "Open a path or URL",
+    description:
+      "Open a file, folder, or http(s) URL in the OS default handler (browser, editor, file explorer). Standalone June's way to 'open that link' or 'show me that file'. The target must be a plain path or an http(s) link.",
+    inputSchema: {
+      target: z.string().describe('A file/folder path or an http(s) URL, e.g. "C:\\\\notes\\\\todo.md" or "https://example.com"'),
+    },
+  },
+  async ({ target }) => {
+    try {
+      if (process.platform !== "win32") {
+        return fail("Opening paths is only supported on Windows.");
+      }
+      const { kind, value } = validateOpenTarget(target);
+      // Existence-check a path up front so a typo fails with a clear message rather
+      // than flashing an OS error window. URLs are handed straight to the browser.
+      if (kind === "path") {
+        await fs.access(value).catch(() => {
+          throw new Error(`No such file or folder: ${value}`);
+        });
+      }
+      // explorer.exe hands the target to its default handler and gets the argument
+      // via CreateProcess with NO shell parsing - so a URL's `&` or a path's spaces
+      // cannot inject a command, unlike `cmd /c start`. Detached + unref'd so June
+      // never waits on the opened app; explorer's success exit code is unreliable
+      // (it often returns 1 even on success), so we don't await it.
+      const child = spawn("explorer.exe", [value], { detached: true, stdio: "ignore" });
+      child.on("error", () => {}); // never let a spawn error crash the server
+      child.unref();
+      return ok(`Opening ${value}.`);
     } catch (e) {
       return fail(msg(e));
     }
