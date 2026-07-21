@@ -20,8 +20,9 @@ import {
   slugify,
 } from "../lib/mcp-servers.ts";
 import { PRIVACY_MODES, type PrivacyMode } from "../lib/privacy.ts";
-import { type FileTrigger, type Schedule, type WatchLoop } from "../lib/schedules.ts";
-import { runScheduleNow } from "../lib/session.ts";
+import { lastRunFor, relativeTime, type RunRecord } from "../lib/runs.ts";
+import { describeNext, type FileTrigger, type Schedule, type WatchLoop } from "../lib/schedules.ts";
+import { readRuns, runScheduleNow } from "../lib/session.ts";
 import {
   defaultVoiceFor,
   keyedProviders,
@@ -1409,8 +1410,43 @@ function RunNowButton({ id, disabled }: { id: string; disabled: boolean }) {
 const DAY_LABELS = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
 const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 
+/** The run ledger, for the automation cards' last-outcome line (6.2). Refreshes on
+ *  `runs://updated` so a run that just landed shows without reopening Settings. */
+function useRuns(): RunRecord[] {
+  const [runs, setRuns] = useState<RunRecord[]>([]);
+  useEffect(() => {
+    const load = () => void readRuns().then(setRuns);
+    load();
+    const unlisten = listen("runs://updated", load);
+    return () => void unlisten.then((f) => f());
+  }, []);
+  return runs;
+}
+
+/** Confirmation line under an automation card (6.2): the next fire time (schedules
+ *  only - triggers and watches have no clock the UI can anchor) and the last matching
+ *  ledger outcome, so a card is no longer write-only. */
+function CardStatus({ next, source, runs }: { next?: string; source: string; runs: RunRecord[] }) {
+  const last = lastRunFor(runs, source);
+  return (
+    <p className="card-status">
+      {next && <span className="card-next">{next}</span>}
+      {last ? (
+        <span className={`card-last ${last.isError ? "bad" : "ok"}`}>
+          {last.isError ? "✗" : "✓"} last ran {relativeTime(last.started)}
+          {last.blocked.length > 0 ? ` (${last.blocked.length} blocked)` : ""}
+        </span>
+      ) : (
+        <span className="card-last">no runs yet</span>
+      )}
+    </p>
+  );
+}
+
 function AutomationSection({ settings, update }: { settings: JuneSettings; update: (s: JuneSettings) => void }) {
   const { schedules, triggers, watches } = settings;
+  const runs = useRuns();
+  const now = new Date();
 
   const setSchedules = (next: Schedule[]) => update({ ...settings, schedules: next });
   const setTriggers = (next: FileTrigger[]) => update({ ...settings, triggers: next });
@@ -1542,6 +1578,7 @@ function AutomationSection({ settings, update }: { settings: JuneSettings; updat
             placeholder="Give me a short briefing of today's calendar and any unread priority mail."
             rows={2}
           />
+          <CardStatus next={describeNext(s, now)} source={`schedule: ${s.label}`} runs={runs} />
         </div>
       ))}
       <div className="settings-test">
@@ -1584,6 +1621,7 @@ function AutomationSection({ settings, update }: { settings: JuneSettings; updat
             placeholder="Summarize the newest error and suggest a likely cause."
             rows={2}
           />
+          <CardStatus source={`trigger: ${t.label}`} runs={runs} />
         </div>
       ))}
       <div className="settings-test">
@@ -1653,6 +1691,7 @@ function AutomationSection({ settings, update }: { settings: JuneSettings; updat
             />
             <span className="settings-hint">checks (blank = 30)</span>
           </div>
+          <CardStatus next={`Every ${w.everyMinutes} min`} source={`watch: ${w.label}`} runs={runs} />
         </div>
       ))}
       <div className="settings-test">

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 
-import { type RunRecord } from "../lib/runs.ts";
+import { relativeTime, type RunRecord } from "../lib/runs.ts";
 import { readRuns } from "../lib/session.ts";
 
 // The Runs tab (improvement-5 P1.3, extended in improvement-6 2.4). A reviewable
@@ -18,20 +18,6 @@ function absolute(ts: string): string {
   const d = new Date(ts);
   if (Number.isNaN(d.getTime())) return ts;
   return d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
-}
-
-/** A compact "just now / 5m ago / 3h ago / 2d ago" relative stamp (2.4). Falls back
- *  to the raw value for an unparseable timestamp. */
-function relative(ts: string): string {
-  const d = new Date(ts).getTime();
-  if (Number.isNaN(d)) return ts;
-  const secs = Math.max(0, Math.round((Date.now() - d) / 1000));
-  if (secs < 45) return "just now";
-  const mins = Math.round(secs / 60);
-  if (mins < 60) return `${mins}m ago`;
-  const hrs = Math.round(mins / 60);
-  if (hrs < 24) return `${hrs}h ago`;
-  return `${Math.round(hrs / 24)}d ago`;
 }
 
 export function RunsPanel() {
@@ -75,7 +61,7 @@ export function RunsPanel() {
               <div className="run-item-head">
                 <span className="run-source">{r.source}</span>
                 <span className="run-time" title={absolute(r.started)}>
-                  {relative(r.started)}
+                  {relativeTime(r.started)}
                 </span>
                 {r.isError && <span className="run-badge bad">error</span>}
                 {r.blocked.length > 0 && <span className="run-badge warn">{r.blocked.length} blocked</span>}

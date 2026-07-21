@@ -1551,6 +1551,25 @@ kbd {
   white-space: pre-wrap;
 }
 
+/* Confirmation line under an automation card (6.2): next fire + last outcome. */
+.card-status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1) var(--sp-3);
+  margin: 0;
+  font-size: var(--fs-s);
+  color: var(--dim);
+}
+.card-status .card-next {
+  color: var(--ink);
+}
+.card-status .card-last.ok {
+  color: var(--blue);
+}
+.card-status .card-last.bad {
+  color: var(--warm);
+}
+
 /* Unseen-runs dot on the Runs tab (2.4). */
 .tab-badge {
   display: inline-block;

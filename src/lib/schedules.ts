@@ -255,6 +255,68 @@ export function coerceTriggers(v: unknown): FileTrigger[] {
   return out;
 }
 
+// --- Next-fire description (6.2) ------------------------------------------
+// A human "when does this fire next" string for the automation cards, so a card
+// is no longer write-only: the user can confirm their config parses into what
+// they meant. A forward-looking TS mirror of the Rust `is_due` clock (which owns
+// the authoritative firing); pure so it is unit-tested against a fixed `now`.
+
+const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+function pad2(n: number): string {
+  return String(n).padStart(2, "0");
+}
+
+/** Calendar-day difference (ignoring time of day) between two local dates. */
+function dayDiff(now: Date, then: Date): number {
+  const a = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const b = new Date(then.getFullYear(), then.getMonth(), then.getDate()).getTime();
+  return Math.round((b - a) / 86_400_000);
+}
+
+/** "today 09:00" / "tomorrow 14:30" / "Mon 09:00" / "Aug 3 09:00" for a fire time. */
+function formatWhen(d: Date, now: Date): string {
+  const hhmm = `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+  const diff = dayDiff(now, d);
+  if (diff <= 0) return `today ${hhmm}`;
+  if (diff === 1) return `tomorrow ${hhmm}`;
+  if (diff <= 6) return `${WEEKDAYS[d.getDay()]} ${hhmm}`;
+  return `${MONTHS[d.getMonth()]} ${d.getDate()} ${hhmm}`;
+}
+
+/** The next local fire time for a daily schedule at/after `now`: the earliest
+ *  future "HH:MM" on a matching weekday (empty `days` = every day). */
+function nextDaily(now: Date, time: string, days: number[]): Date | null {
+  const m = HHMM.exec(time);
+  if (!m) return null;
+  const h = Number(m[1]);
+  const min = Number(m[2]);
+  for (let i = 0; i <= 7; i++) {
+    const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() + i, h, min, 0, 0);
+    if (d.getTime() <= now.getTime()) continue; // already passed
+    if (days.length === 0 || days.includes(d.getDay())) return d;
+  }
+  return null;
+}
+
+/** A short human description of when `s` fires next, given `now` (6.2). `daily`
+ *  and `once` resolve to a concrete time; `every` has no clock anchor the UI can
+ *  know (it depends on the last unattended fire), so it reports its interval. A
+ *  malformed/unfireable config says so, mirroring the coercer that would drop it. */
+export function describeNext(s: Schedule, now: Date): string {
+  if (s.kind === "once") {
+    if (!isValidAt(s.at)) return "no valid time set";
+    const at = new Date(`${s.at}:00`); // local, matching the Rust NaiveDateTime
+    return at.getTime() > now.getTime() ? `Reminder ${formatWhen(at, now)}` : "already fired or missed";
+  }
+  if (s.kind === "every") {
+    return `Every ${s.everyMinutes} min`;
+  }
+  const next = nextDaily(now, s.time, s.days);
+  return next ? `Next ${formatWhen(next, now)}` : "no valid time set";
+}
+
 /** Cap on how much untrusted payload rides into the prompt, so a huge watched file
  *  can't blow up the context (and the token bill) of an unattended run. */
 const MAX_PAYLOAD = 4000;

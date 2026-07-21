@@ -56,3 +56,30 @@ export function coerceRuns(raw: unknown): RunRecord[] {
   }
   return out;
 }
+
+/** The most recent run matching an automation card's ledger source (6.2). A card's
+ *  source is "schedule: <label>" / "trigger: <label>" / "watch: <label>"; a
+ *  "Run now" fire appends a suffix ("schedule: X (run now)"), so match the exact
+ *  source or that source followed by a space. `runs` is newest-first, so the first
+ *  match is the latest. Pure. */
+export function lastRunFor(runs: RunRecord[], source: string): RunRecord | null {
+  for (const r of runs) {
+    if (r.source === source || r.source.startsWith(`${source} `)) return r;
+  }
+  return null;
+}
+
+/** Compact "just now / 5m ago / 3h ago / 2d ago" relative stamp (2.4 / 6.2), shared
+ *  by the Runs panel and the automation cards. Falls back to the raw value for an
+ *  unparseable timestamp. */
+export function relativeTime(ts: string): string {
+  const d = new Date(ts).getTime();
+  if (Number.isNaN(d)) return ts;
+  const secs = Math.max(0, Math.round((Date.now() - d) / 1000));
+  if (secs < 45) return "just now";
+  const mins = Math.round(secs / 60);
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.round(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  return `${Math.round(hrs / 24)}d ago`;
+}

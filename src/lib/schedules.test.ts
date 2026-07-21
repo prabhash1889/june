@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { coerceSchedules, coerceTriggers, coerceWatches, fenceUntrusted, frameUnattended } from "./schedules.ts";
+import { coerceSchedules, coerceTriggers, coerceWatches, describeNext, fenceUntrusted, frameUnattended, type Schedule } from "./schedules.ts";
 
 describe("coerceSchedules", () => {
   it("keeps a valid daily schedule and defaults missing fields", () => {
@@ -104,6 +104,34 @@ describe("coerceWatches (P1.2)", () => {
     // A huge value is clamped rather than left effectively unbounded.
     const [huge] = coerceWatches([{ label: "B", everyMinutes: 10, maxChecks: 1e9 }]);
     expect(huge.maxChecks).toBe(10_000);
+  });
+});
+
+describe("describeNext (6.2)", () => {
+  const base: Schedule = { id: "s", label: "S", prompt: "", kind: "daily", time: "09:00", days: [], everyMinutes: 60, at: "", enabled: true };
+  // A fixed local reference: Tue 2026-07-21 08:00.
+  const now = new Date(2026, 6, 21, 8, 0, 0);
+
+  it("shows today's upcoming daily time", () => {
+    expect(describeNext({ ...base, time: "09:00" }, now)).toBe("Next today 09:00");
+  });
+
+  it("rolls a passed daily time to tomorrow", () => {
+    expect(describeNext({ ...base, time: "07:00" }, now)).toBe("Next tomorrow 07:00");
+  });
+
+  it("honors the weekday list, naming the next matching day", () => {
+    // Only Fridays (day 5); from Tue that is 3 days out.
+    expect(describeNext({ ...base, time: "07:00", days: [5] }, now)).toBe("Next Fri 07:00");
+  });
+
+  it("reports the interval for an every schedule", () => {
+    expect(describeNext({ ...base, kind: "every", everyMinutes: 15 }, now)).toBe("Every 15 min");
+  });
+
+  it("describes a future once reminder and flags a past one", () => {
+    expect(describeNext({ ...base, kind: "once", at: "2026-07-21T15:00" }, now)).toBe("Reminder today 15:00");
+    expect(describeNext({ ...base, kind: "once", at: "2026-07-20T15:00" }, now)).toBe("already fired or missed");
   });
 });
 
