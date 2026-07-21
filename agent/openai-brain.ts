@@ -29,6 +29,7 @@ import { type Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { type McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 
 import { type Brain, type TurnHooks, type TurnResult } from "./brain.ts";
+import { friendlyApiError } from "./errors.ts";
 import { actionOf, classify, serverOf, summarize } from "./policy.ts";
 
 export interface OpenAiCompatBrainConfig {
@@ -268,7 +269,10 @@ export class OpenAiCompatBrain implements Brain {
     });
     if (!resp.ok) {
       const body = await resp.text().catch(() => "");
-      throw new Error(`the model API returned ${resp.status}: ${body.slice(0, 300).trim()}`);
+      // Keep the raw body in the log (piped into june.log, 2.1); speak only a
+      // short mapped sentence so TTS never reads a JSON error blob aloud (2.5).
+      console.error(`[june] model API ${resp.status}: ${body.slice(0, 500).trim()}`);
+      throw new Error(friendlyApiError(resp.status) ?? `the model API returned ${resp.status}.`);
     }
     const json = (await resp.json()) as { choices?: { message?: OpenAiMessage }[] };
     const message = json.choices?.[0]?.message;

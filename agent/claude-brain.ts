@@ -26,6 +26,7 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 
 import { type Brain, type TurnHooks, type TurnResult } from "./brain.ts";
+import { friendlyApiError, statusFromMessage } from "./errors.ts";
 import { actionOf, classify, serverOf, summarize } from "./policy.ts";
 
 // Bound the agentic tool loop so a runaway model can't spin forever (1.6).
@@ -233,6 +234,15 @@ export class ClaudeBrain implements Brain {
           break;
         }
       }
+    } catch (e) {
+      // The SDK surfaces API failures (bad key, rate limit) as thrown errors whose
+      // message can carry the raw status/body. Keep the raw text in the log and
+      // speak only a short mapped sentence (2.5), never the raw blob.
+      const raw = e instanceof Error ? e.message : String(e);
+      console.error(`[june] claude brain error: ${raw}`);
+      const status = statusFromMessage(raw);
+      finalText = (status && friendlyApiError(status)) || "I hit an error talking to the model. Try again in a moment.";
+      isError = true;
     } finally {
       this.#hooks = null;
     }

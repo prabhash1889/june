@@ -734,6 +734,20 @@ fn spawn_reader(session: AgentSession, app: AppHandle, stdout: std::process::Chi
                         );
                     }
                 }
+                Some("error") => {
+                    // serve.ts failed to START (main() threw before `ready`): it emits
+                    // this then exits (2.5). Without this arm the only signal was the
+                    // EOF path's generic "stopped unexpectedly" - deliver the REAL
+                    // reason to any awaiting turn and record it. The child still exits
+                    // next, so the EOF handler runs backoff afterward.
+                    let text = str_at("text");
+                    let text = if text.is_empty() { "June's agent failed to start.".to_string() } else { text };
+                    crate::logf::log(&app, &format!("[serve] {text}"));
+                    let mut turns = session.turns.lock().unwrap();
+                    for (_, tx) in turns.drain() {
+                        let _ = tx.send(TurnMsg::Done(Err(text.clone())));
+                    }
+                }
                 Some("audit") => append_audit(&app, &v),
                 Some("blocked") => {
                     // Phase 18.2: an unattended run hit a gated action and blocked it

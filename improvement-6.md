@@ -126,12 +126,19 @@ round-trip + legacy migration (1.9).
     `fired` bookkeeping untouched); a "Run now" button per schedule card in
     `SettingsPanel` drives it.
 
-2.5 **Spoken-friendly error messages** | P2
+2.5 **Spoken-friendly error messages** | P2 - DONE
     Raw API JSON bodies are read aloud by TTS ("the model API returned 401: {...}").
     Map 401/403/429/404 to short sentences, keep the raw body in the log. Also add the
     missing `"error"` arm in `spawn_reader` so serve.ts startup failures reach the UI
     instead of the generic "stopped unexpectedly". `agent/openai-brain.ts`,
     `agent/claude-brain.ts`, `src-tauri/src/agent_runner.rs`.
+    New `agent/errors.ts`: `friendlyApiError(status)` maps 401/403/429/404/5xx to one
+    short spoken sentence, `statusFromMessage` pulls a status out of an SDK error
+    string. openai-brain's `#complete` now logs the raw body (piped into june.log)
+    and throws the mapped sentence; claude-brain wraps its turn loop in a catch that
+    logs the raw error and speaks the mapped line. `spawn_reader` gained an `"error"`
+    arm that logs the real startup failure and delivers it to awaiting turns instead
+    of the generic "stopped unexpectedly". Pinned by `agent/errors.test.ts`.
 
 2.6 **Token/cost accounting** | P2 | M
     Both brains drop `usage`/`total_cost_usd`. Extend `TurnResult`, ride it on the `final`
