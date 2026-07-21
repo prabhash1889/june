@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { WakeModel, type WakeRunners } from "./wakeword.ts";
+import { WakeFeedGate, WakeModel, type WakeRunners } from "./wakeword.ts";
 
 // A chunk of raw 16kHz audio (1280 samples = 80ms) is openWakeWord's accumulation
 // unit. Fakes stand in for the ONNX sessions: the melspec model returns exactly 8
@@ -96,5 +96,48 @@ describe("WakeModel streaming", () => {
     await Promise.all(pending);
     expect(overlap).toBe(false);
     expect(mel).toHaveBeenCalledTimes(5); // one per whole chunk, none dropped or doubled
+  });
+});
+
+// 7.2 - the wake chain runs only during speech; silent frames are held as pre-roll
+// and replayed at speech start so the phrase onset (which precedes Silero's
+// confirmation) is still scored.
+describe("WakeFeedGate", () => {
+  const f = (v: number) => new Float32Array([v]);
+
+  it("buffers silent frames instead of feeding them", () => {
+    const gate = new WakeFeedGate(3);
+    expect(gate.frame(f(1))).toBe(false); // silence -> no inference
+    expect(gate.frame(f(2))).toBe(false);
+  });
+
+  it("caps the pre-roll ring and replays it oldest-first at speech start", () => {
+    const gate = new WakeFeedGate(3);
+    for (const v of [1, 2, 3, 4, 5]) gate.frame(f(v)); // 5 frames, cap 3
+    const replay = gate.speechStart();
+    expect(replay.map((x) => x[0])).toEqual([3, 4, 5]); // oldest dropped, order kept
+  });
+
+  it("feeds live frames while speech is active and stops buffering", () => {
+    const gate = new WakeFeedGate(3);
+    gate.speechStart();
+    expect(gate.frame(f(1))).toBe(true); // active -> score it
+    gate.speechEnd();
+    expect(gate.frame(f(2))).toBe(false); // back to buffering
+  });
+
+  it("copies frames so a reused vad buffer can't corrupt the pre-roll", () => {
+    const gate = new WakeFeedGate(3);
+    const buf = f(1);
+    gate.frame(buf);
+    buf[0] = 99; // vad reuses the same array for the next frame
+    expect(gate.speechStart()[0][0]).toBe(1); // pre-roll kept the original value
+  });
+
+  it("drops pending pre-roll when the utterance ends without a fresh start", () => {
+    const gate = new WakeFeedGate(3);
+    gate.frame(f(1));
+    gate.speechEnd();
+    expect(gate.speechStart()).toEqual([]); // nothing stale to replay
   });
 });

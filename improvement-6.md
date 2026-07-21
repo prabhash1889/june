@@ -781,11 +781,25 @@ round-trip + legacy migration (1.9).
     cargo test runs under the dev/test profile (unwinding), so the 43 cargo tests are
     untouched.
 
-7.2 **Gate wake-word inference behind VAD** | P1 | M
+7.2 **Gate wake-word inference behind VAD** | P1 | M - DONE
     The 3-model ONNX chain runs on every 80ms frame 24/7 even in silence - the dominant
     idle-CPU cost. Feed the wake model only while `speechActive`, replaying a small
     pre-roll on speech start so the phrase onset isn't lost. `src/lib/wakeword.ts`,
     `src/lib/vad.ts`.
+    New pure `WakeFeedGate` in wakeword.ts: while Silero reports silence it buffers
+    each frame into a small pre-roll ring (default 24 frames ≈ 0.75s, frames COPIED
+    since vad-web may reuse its buffer) and runs no inference; on `onSpeechStart` it
+    drains the ring and those frames are replayed into the model so the wake phrase's
+    onset - which precedes Silero's `minSpeechMs` confirmation - is still scored, not
+    clipped. `startLocalWake` now feeds the ONNX chain ONLY through the gate, and
+    builds a FRESH `WakeModel` per utterance (each speech segment gets a clean
+    streaming context now that silence no longer bridges them); the `WakeGate` speech
+    arg is simply `true` since we only ever feed during speech. No vad.ts change
+    needed - the existing `onSpeechStart`/`onSpeechEnd`/`onFrame` callbacks already
+    carry the speech state. Pinned: wakeword.test WakeFeedGate cases (buffers silence,
+    caps + replays oldest-first, feeds live during speech, copies frames, drops stale
+    pre-roll on end). 10 wakeword tests + typecheck + eslint green. The idle-CPU win
+    itself wants a device run to measure.
 
 7.3 **Lazy-load the window faces** | P2 | S
     The 88x88 widget parses SettingsPanel/MissionBoard/RunsPanel code it never renders

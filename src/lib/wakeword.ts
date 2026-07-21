@@ -151,6 +151,47 @@ export interface WakeHandle {
   stop: () => void;
 }
 
+/** Gates which Silero frames reach the wake model so the 3-model ONNX chain runs
+ *  only while there is speech (7.2 - continuous inference on every 80ms frame,
+ *  silence included, is the dominant idle-CPU cost). Silent frames are held in a
+ *  small pre-roll ring instead of scored; at speech start the ring is drained and
+ *  replayed so the wake phrase's onset - which precedes Silero's confirmation by up
+ *  to `minSpeechMs` - is still scored, not clipped. Frames are copied on the way in
+ *  because vad-web may reuse its frame buffer between callbacks. Pure (no ONNX, no
+ *  audio device) so it is unit-testable. */
+export class WakeFeedGate {
+  #preroll: Float32Array[] = [];
+  #active = false;
+
+  /** @param prerollFrames how many recent silent frames to retain (512 samples /
+   *  ~32ms each); ~24 ≈ 0.75s, comfortably covering `minSpeechMs` onset + warmup. */
+  constructor(private readonly prerollFrames = 24) {}
+
+  /** Speech confirmed. Returns the buffered pre-roll frames to replay into the
+   *  wake model (oldest first) before live frames resume. */
+  speechStart(): Float32Array[] {
+    this.#active = true;
+    const replay = this.#preroll;
+    this.#preroll = [];
+    return replay;
+  }
+
+  /** Utterance ended - stop feeding and drop any pre-roll. */
+  speechEnd(): void {
+    this.#active = false;
+    this.#preroll = [];
+  }
+
+  /** One Silero frame. Returns true if it should be scored now (speech active);
+   *  false if it was buffered as pre-roll (silence - no inference this frame). */
+  frame(f: Float32Array): boolean {
+    if (this.#active) return true;
+    this.#preroll.push(f.slice());
+    if (this.#preroll.length > this.prerollFrames) this.#preroll.shift();
+    return false;
+  }
+}
+
 /** Build the three onnxruntime-web sessions from the locally-staged models. The
  *  classifier path is the only per-phrase name here - swap in a trained
  *  "hey_june" model and nothing else changes. Loaded lazily (dynamic import) so
@@ -199,20 +240,33 @@ export async function startLocalWake(opts: {
   runners?: WakeRunners; // injectable for tests
 }): Promise<WakeHandle> {
   const runners = opts.runners ?? (await createWakeRunners());
-  const model = new WakeModel(runners);
+  // Reassigned per utterance: each speech segment gets a fresh streaming context
+  // (7.2) since we no longer feed the model continuously through the silence gaps.
+  let model = new WakeModel(runners);
   const gate = new WakeGate(wakeThreshold(opts.sensitivity));
-  let speechActive = false;
+  const feedGate = new WakeFeedGate();
   let stopped = false;
+
+  const score = (frame: Float32Array) => {
+    if (stopped) return;
+    void model.feed(frame).then((s) => {
+      // Speech is guaranteed active here (we only feed during speech), so the
+      // Silero gate arg is simply true.
+      if (!stopped && s !== null && gate.push(s, true)) opts.onWake();
+    });
+  };
 
   const { startSilero } = await import("./vad.ts");
   const silero = await startSilero(opts.stream, {
-    onSpeechStart: () => (speechActive = true),
-    onSpeechEnd: () => (speechActive = false),
-    onFrame: (isSpeech, frame) => {
+    onSpeechStart: () => {
       if (stopped) return;
-      void model.feed(frame).then((score) => {
-        if (!stopped && score !== null && gate.push(score, speechActive || isSpeech > 0.5)) opts.onWake();
-      });
+      model = new WakeModel(runners); // fresh streaming buffers for this utterance
+      for (const f of feedGate.speechStart()) score(f); // replay pre-roll onset
+    },
+    onSpeechEnd: () => feedGate.speechEnd(),
+    onFrame: (_isSpeech, frame) => {
+      if (stopped) return;
+      if (feedGate.frame(frame)) score(frame); // scored only while speech is active
     },
   });
 
