@@ -32,10 +32,21 @@ export interface TurnHooks {
   onToolResult?: (action: string, result: unknown, isError: boolean) => void;
 }
 
+/** Token/cost accounting for one turn (2.6). Both brains report tokens; only the
+ *  Claude SDK reports a dollar cost, so `costUsd` is optional. Undefined when the
+ *  provider returns no usage block (some local servers omit it). */
+export interface TokenUsage {
+  inputTokens: number;
+  outputTokens: number;
+  costUsd?: number;
+}
+
 export interface TurnResult {
   /** June's final reply text, derived only from tool results, never intent. */
   text: string;
   isError: boolean;
+  /** Tokens (and cost, Claude only) this turn spent, when the provider reports it. */
+  usage?: TokenUsage;
 }
 
 export interface Brain {

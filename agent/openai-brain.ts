@@ -28,7 +28,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { type Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { type McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 
-import { type Brain, type TurnHooks, type TurnResult } from "./brain.ts";
+import { type Brain, type TokenUsage, type TurnHooks, type TurnResult } from "./brain.ts";
 import { friendlyApiError } from "./errors.ts";
 import { actionOf, classify, serverOf, summarize } from "./policy.ts";
 
@@ -152,8 +152,15 @@ export class OpenAiCompatBrain implements Brain {
       };
 
       let finalText = "";
+      // Sum usage across every completion this turn makes - a tool loop can take
+      // several round-trips, and only the total is meaningful for the ledger (2.6).
+      const usage: TokenUsage = { inputTokens: 0, outputTokens: 0 };
       for (let step = 0; step < MAX_STEPS; step++) {
-        const reply = await this.#complete(history, tools, abort.signal);
+        const { message: reply, usage: u } = await this.#complete(history, tools, abort.signal);
+        if (u) {
+          usage.inputTokens += u.inputTokens;
+          usage.outputTokens += u.outputTokens;
+        }
         history.push(reply);
         if (reply.content) {
           finalText = reply.content;
@@ -171,7 +178,7 @@ export class OpenAiCompatBrain implements Brain {
       // Trim retained history so it can't grow without bound across turns (B4.5);
       // no-op if a reset() swapped `#messages` mid-turn (leave the fresh one).
       this.#trimHistory(history);
-      return { text: finalText || "I didn't produce a reply.", isError: !finalText };
+      return { text: finalText || "I didn't produce a reply.", isError: !finalText, usage };
     } catch (e) {
       // Roll back the CAPTURED array (B4.4). If a reset swapped the field mid-turn,
       // this rewinds the now-discarded old array and leaves the fresh one intact.
@@ -251,9 +258,15 @@ export class OpenAiCompatBrain implements Brain {
     }
   }
 
-  /** One chat-completions round-trip. Returns the assistant message. The abort
-   *  signal lets a barge-in/cancel stop token spend mid-flight. */
-  async #complete(messages: OpenAiMessage[], tools: OpenAiTool[], signal?: AbortSignal): Promise<OpenAiMessage> {
+  /** One chat-completions round-trip. Returns the assistant message plus this
+   *  call's token usage (when the server reports it - some local servers omit the
+   *  usage block, hence optional). The abort signal lets a barge-in/cancel stop
+   *  token spend mid-flight. */
+  async #complete(
+    messages: OpenAiMessage[],
+    tools: OpenAiTool[],
+    signal?: AbortSignal,
+  ): Promise<{ message: OpenAiMessage; usage?: TokenUsage }> {
     const headers: Record<string, string> = { "content-type": "application/json" };
     if (this.#apiKey) headers.authorization = `Bearer ${this.#apiKey}`;
 
@@ -274,10 +287,21 @@ export class OpenAiCompatBrain implements Brain {
       console.error(`[june] model API ${resp.status}: ${body.slice(0, 500).trim()}`);
       throw new Error(friendlyApiError(resp.status) ?? `the model API returned ${resp.status}.`);
     }
-    const json = (await resp.json()) as { choices?: { message?: OpenAiMessage }[] };
+    const json = (await resp.json()) as {
+      choices?: { message?: OpenAiMessage }[];
+      usage?: { prompt_tokens?: number; completion_tokens?: number };
+    };
     const message = json.choices?.[0]?.message;
     if (!message) throw new Error("the model API returned no message.");
-    return { role: "assistant", content: message.content ?? null, tool_calls: message.tool_calls };
+    // OpenAI-compatible usage: {prompt_tokens, completion_tokens}. No cost - the
+    // API doesn't price the call, so costUsd stays undefined for this brain (2.6).
+    const usage = json.usage
+      ? { inputTokens: json.usage.prompt_tokens ?? 0, outputTokens: json.usage.completion_tokens ?? 0 }
+      : undefined;
+    return {
+      message: { role: "assistant", content: message.content ?? null, tool_calls: message.tool_calls },
+      usage,
+    };
   }
 
   /** Connect to every configured MCP capability server as a client, once, and

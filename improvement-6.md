@@ -140,11 +140,20 @@ round-trip + legacy migration (1.9).
     arm that logs the real startup failure and delivers it to awaiting turns instead
     of the generic "stopped unexpectedly". Pinned by `agent/errors.test.ts`.
 
-2.6 **Token/cost accounting** | P2 | M
+2.6 **Token/cost accounting** | P2 | M - DONE
     Both brains drop `usage`/`total_cost_usd`. Extend `TurnResult`, ride it on the `final`
     event into `append_run`, show a cumulative session readout in Diagnostics next to the
     latency percentiles. `agent/brain.ts`, both brains, `agent/serve.ts`,
     `src-tauri/src/agent_runner.rs`.
+    New `TokenUsage` on `TurnResult`. The OpenAI brain sums `prompt_tokens`/
+    `completion_tokens` across every completion in the tool loop (no cost - the API
+    doesn't price it); the Claude brain reads the SDK result's `usage` (folding cache
+    tokens into inputTokens) + `total_cost_usd`. serve.ts rides `usage` on the `final`
+    event. The reader accumulates a session-wide `UsageTotals` (input/output/cost/
+    turns) and stamps per-run usage into the ledger via a new `append_run` arg. New
+    `usage_total` command + `usageTotal()` client + a "Session usage" readout in the
+    Diagnostics panel. Mission tasks count toward the session total but carry no
+    per-ledger usage (dispatch returns only text) - noted with a ponytail comment.
 
 2.7 **Surface silent VAD/wake degradation** | P2
     Silero/openWakeWord load failures are swallowed - broken assets permanently downgrade

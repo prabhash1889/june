@@ -126,6 +126,7 @@ pub fn run() {
             scheduler::run_schedule_now,
             agent_runner::record_latency,
             agent_runner::latency_samples,
+            agent_runner::usage_total,
             show_app,
             set_widget_expanded,
         ])

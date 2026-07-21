@@ -104,6 +104,7 @@ pub(crate) fn append_run(
     reply: &str,
     is_error: bool,
     blocked: &[String],
+    usage: Option<&serde_json::Value>,
 ) {
     let on_device = matches!(
         crate::settings::read_settings(app).get("privacyMode").and_then(|v| v.as_str()),
@@ -117,7 +118,7 @@ pub(crate) fn append_run(
         }
     };
     let ended = Local::now().naive_local().format("%Y-%m-%dT%H:%M:%S").to_string();
-    let record = serde_json::json!({
+    let mut record = serde_json::json!({
         "id": id,
         "source": source,
         "prompt": redact(prompt),
@@ -127,6 +128,11 @@ pub(crate) fn append_run(
         "isError": is_error,
         "blocked": blocked,
     });
+    // Per-run token/cost (2.6), when the brain reported it. Tokens aren't content,
+    // so they're recorded verbatim under every privacy mode (unlike prompt/reply).
+    if let Some(u) = usage {
+        record["usage"] = u.clone();
+    }
     let Ok(dir) = app.path().app_data_dir() else {
         return;
     };
@@ -200,6 +206,24 @@ pub struct TurnReply {
     pub(crate) text: String,
     #[serde(rename = "isError")]
     pub(crate) is_error: bool,
+    /// This turn's token/cost usage from the `final` event (2.6), when the brain
+    /// reported it. Carried so the caller can write it into the run ledger.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) usage: Option<serde_json::Value>,
+}
+
+/// Cumulative token/cost totals across the whole app session (2.6), read back by
+/// the Diagnostics panel next to the latency percentiles. Both brains report
+/// tokens; only Claude reports a dollar cost, so `cost_usd` may stay 0.
+#[derive(Default, Clone, serde::Serialize)]
+pub struct UsageTotals {
+    #[serde(rename = "inputTokens")]
+    input_tokens: u64,
+    #[serde(rename = "outputTokens")]
+    output_tokens: u64,
+    #[serde(rename = "costUsd")]
+    cost_usd: f64,
+    turns: u64,
 }
 
 /// One turn's outcome delivered to the awaiting caller: the reply, or a
@@ -246,6 +270,10 @@ pub struct AgentSession {
     /// records them and the full-app Diagnostics panel reads them back - separate
     /// webviews, so this shared, capped, in-memory buffer is their common ground.
     latency: Arc<Mutex<Vec<serde_json::Value>>>,
+    /// Cumulative token/cost usage across this app session (2.6), summed from each
+    /// turn's `final` event and read back by Diagnostics. In-memory like `latency`;
+    /// resets when the app restarts.
+    usage: Arc<Mutex<UsageTotals>>,
     /// A config change (settings/memory/lessons edit) arrived while a turn was in
     /// flight (B2.1). The resident reads its env once at spawn, so it must respawn -
     /// but killing it now would abort the running turn (the exact "The agent stopped
@@ -768,6 +796,16 @@ fn spawn_reader(session: AgentSession, app: AppHandle, stdout: std::process::Chi
                 Some("final") => {
                     let text = str_at("text");
                     let is_error = v.get("isError").and_then(|b| b.as_bool()).unwrap_or(false);
+                    // Accumulate this turn's token/cost into the session total (2.6)
+                    // and hold the per-turn block to ride into the run ledger.
+                    let usage = v.get("usage").filter(|u| u.is_object()).cloned();
+                    if let Some(u) = &usage {
+                        let mut totals = session.usage.lock().unwrap();
+                        totals.input_tokens += u.get("inputTokens").and_then(|x| x.as_u64()).unwrap_or(0);
+                        totals.output_tokens += u.get("outputTokens").and_then(|x| x.as_u64()).unwrap_or(0);
+                        totals.cost_usd += u.get("costUsd").and_then(|x| x.as_f64()).unwrap_or(0.0);
+                        totals.turns += 1;
+                    }
                     record(
                         &session,
                         &app,
@@ -785,7 +823,7 @@ fn spawn_reader(session: AgentSession, app: AppHandle, stdout: std::process::Chi
                         // The reply carries `is_error` alongside the text (B3.4): the
                         // voice path still speaks it (pre-11 behaviour), but a mission
                         // run can now count a brain-flagged task as failed.
-                        let _ = tx.send(TurnMsg::Done(Ok(TurnReply { text, is_error })));
+                        let _ = tx.send(TurnMsg::Done(Ok(TurnReply { text, is_error, usage })));
                     }
                     // B2.1: a config change deferred mid-turn can land now the turn is done.
                     apply_pending_respawn(&session);
@@ -1153,11 +1191,21 @@ pub fn run_unattended(
     let blocked = drain_blocked(session, turn);
     match outcome {
         Ok(Ok(reply)) => {
-            append_run(app, turn, &source_rec, &prompt_rec, &started, &reply.text, reply.is_error, &blocked);
+            append_run(
+                app,
+                turn,
+                &source_rec,
+                &prompt_rec,
+                &started,
+                &reply.text,
+                reply.is_error,
+                &blocked,
+                reply.usage.as_ref(),
+            );
             Ok(Some(reply.text))
         }
         Ok(Err(msg)) => {
-            append_run(app, turn, &source_rec, &prompt_rec, &started, &msg, true, &blocked);
+            append_run(app, turn, &source_rec, &prompt_rec, &started, &msg, true, &blocked, None);
             Err(msg)
         }
         Err(()) => {
@@ -1170,7 +1218,7 @@ pub fn run_unattended(
                 "agent://final",
                 serde_json::json!({ "turn": turn, "text": msg, "isError": true }),
             );
-            append_run(app, turn, &source_rec, &prompt_rec, &started, &msg, true, &blocked);
+            append_run(app, turn, &source_rec, &prompt_rec, &started, &msg, true, &blocked, None);
             Err(msg)
         }
     }
@@ -1259,6 +1307,13 @@ fn push_capped(buf: &mut Vec<serde_json::Value>, item: serde_json::Value, cap: u
 #[tauri::command]
 pub fn latency_samples(session: State<'_, AgentSession>) -> Vec<serde_json::Value> {
     session.latency.lock().unwrap().clone()
+}
+
+/// Cumulative token/cost usage this app session (2.6), for the Diagnostics panel
+/// next to the latency percentiles. In-memory, so a restart zeroes it.
+#[tauri::command]
+pub fn usage_total(session: State<'_, AgentSession>) -> UsageTotals {
+    session.usage.lock().unwrap().clone()
 }
 
 /// Start a fresh conversation on demand (Phase 11.2 "new conversation", from
@@ -1523,7 +1578,7 @@ mod tests {
                 std::thread::sleep(Duration::from_millis(60)); // each gap < idle
                 let _ = tx.send(TurnMsg::Activity);
             }
-            let _ = tx.send(TurnMsg::Done(Ok(TurnReply { text: "hi".into(), is_error: false })));
+            let _ = tx.send(TurnMsg::Done(Ok(TurnReply { text: "hi".into(), is_error: false, usage: None })));
         });
         let out = await_turn(&rx, idle).expect("activity should extend the deadline");
         assert_eq!(out.unwrap().text, "hi");

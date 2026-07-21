@@ -10,7 +10,7 @@ import {
   testBrain,
 } from "../lib/diagnostics.ts";
 import { chordFromKeyEvent, hotkeyLabel } from "../lib/hotkey.ts";
-import { type LatencySample, latencySamples, percentile } from "../lib/latency.ts";
+import { type LatencySample, latencySamples, percentile, type UsageTotals, usageTotal } from "../lib/latency.ts";
 import {
   MCP_CATALOG,
   type McpClass,
@@ -1514,6 +1514,7 @@ function AutomationSection({ settings, update }: { settings: JuneSettings; updat
 function DiagnosticsSection() {
   const [health, setHealth] = useState<BridgeHealth | null>(null);
   const [latency, setLatency] = useState<LatencySample[]>([]);
+  const [usage, setUsage] = useState<UsageTotals | null>(null);
   const [busy, setBusy] = useState(false);
 
   const refresh = async () => {
@@ -1525,10 +1526,13 @@ function DiagnosticsSection() {
     } finally {
       setBusy(false);
     }
-    // Latency is best-effort and independent of the bridge probe: no backend
-    // (plain browser / tests) just leaves the readout empty.
+    // Latency and usage are best-effort and independent of the bridge probe: no
+    // backend (plain browser / tests) just leaves the readouts empty.
     await latencySamples()
       .then(setLatency)
+      .catch(() => {});
+    await usageTotal()
+      .then(setUsage)
       .catch(() => {});
   };
 
@@ -1566,6 +1570,7 @@ function DiagnosticsSection() {
         </button>
       </div>
       <LatencyReadout samples={latency} />
+      <UsageReadout usage={usage} />
       <div className="diag-row">
         <button onClick={exportReport}>Export diagnostics</button>
         <span className="settings-hint">Redacted JSON (versions + latency, no keys or transcript) for support.</span>
@@ -1603,6 +1608,27 @@ function LatencyReadout({ samples }: { samples: LatencySample[] }) {
         Median stages: speech-to-text {stage((s) => s.stt)} ms · brain {stage((s) => s.brain)} ms · text-to-speech{" "}
         {stage((s) => s.tts)} ms
       </p>
+    </div>
+  );
+}
+
+// Cumulative token/cost for the session (2.6): both brains report tokens; only
+// Claude prices the call, so the cost line shows only when a dollar figure landed.
+function UsageReadout({ usage }: { usage: UsageTotals | null }) {
+  if (!usage || usage.turns === 0) {
+    return <p className="settings-hint">Token usage: no turns this session yet.</p>;
+  }
+  const fmt = (n: number) => n.toLocaleString();
+  return (
+    <div className="diag-row">
+      <span className="stage-label">Session usage</span>
+      <span className="test-result">
+        {fmt(usage.inputTokens)} in · {fmt(usage.outputTokens)} out
+      </span>
+      {usage.costUsd > 0 && <span className="test-result">${usage.costUsd.toFixed(4)}</span>}
+      <span className="settings-hint">
+        {usage.turns} turn{usage.turns === 1 ? "" : "s"} this session
+      </span>
     </div>
   );
 }

@@ -25,7 +25,7 @@ import {
   type SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
 
-import { type Brain, type TurnHooks, type TurnResult } from "./brain.ts";
+import { type Brain, type TokenUsage, type TurnHooks, type TurnResult } from "./brain.ts";
 import { friendlyApiError, statusFromMessage } from "./errors.ts";
 import { actionOf, classify, serverOf, summarize } from "./policy.ts";
 
@@ -184,6 +184,7 @@ export class ClaudeBrain implements Brain {
 
     let finalText = "";
     let isError = false;
+    let usage: TokenUsage | undefined;
     // Correlate a tool_result back to the tool_use it answers: results arrive on a
     // later synthetic user turn carrying only `tool_use_id`, so without this map
     // every result reported as an empty action and batch counts (spawn_agents)
@@ -224,6 +225,18 @@ export class ClaudeBrain implements Brain {
                   block.is_error === true,
                 );
         } else if (msg.type === "result") {
+          // The SDK's terminal result carries this turn's token usage and its
+          // dollar cost (2.6). Fold the cache-token counts into inputTokens so the
+          // readout reflects everything billed. Present on every subtype, not just
+          // success, so a maxed-out or errored turn still records what it spent.
+          usage = {
+            inputTokens:
+              (msg.usage?.input_tokens ?? 0) +
+              (msg.usage?.cache_read_input_tokens ?? 0) +
+              (msg.usage?.cache_creation_input_tokens ?? 0),
+            outputTokens: msg.usage?.output_tokens ?? 0,
+            costUsd: msg.total_cost_usd,
+          };
           isError = msg.subtype !== "success";
           if (msg.subtype === "success") finalText = msg.result;
           else if (msg.subtype === "error_max_turns")
@@ -247,7 +260,7 @@ export class ClaudeBrain implements Brain {
       this.#hooks = null;
     }
 
-    return { text: finalText, isError };
+    return { text: finalText, isError, usage };
   }
 
   cancel(): void {

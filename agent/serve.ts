@@ -21,7 +21,7 @@
 //     {"t":"approval","turn":N,"id":M,"action":...,"cls":...,"summary":...}
 //     {"t":"approval-expired","turn":N,"id":M}
 //     {"t":"audit","turn":N,...}          one per tool call (10.7)
-//     {"t":"final","turn":N,"text":...,"isError":...}
+//     {"t":"final","turn":N,"text":...,"isError":...,"usage":{...}?}
 //
 // The approval gate still lives here in June's execution layer (PLAN.md §5), not
 // in any brain: the single canUseTool/gate choke point audits every call and
@@ -330,7 +330,7 @@ async function main(): Promise<void> {
         onToolUse: (c) => emit({ t: "tool", turn, action: c.action, input: c.input }),
         onToolResult: (action, res, isError) => emit({ t: "result", turn, action, res, isError }),
       });
-      emit({ t: "final", turn, text: result.text, isError: result.isError });
+      emit({ t: "final", turn, text: result.text, isError: result.isError, usage: result.usage });
     } catch (e) {
       emit({
         t: "final",

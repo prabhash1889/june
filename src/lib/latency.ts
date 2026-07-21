@@ -82,3 +82,17 @@ export function recordLatency(sample: LatencySample): Promise<void> {
 export function latencySamples(): Promise<LatencySample[]> {
   return invoke<LatencySample[]>("latency_samples");
 }
+
+/** Cumulative token/cost this app session (2.6). `costUsd` is 0 for brains that
+ *  don't price the call (OpenAI-compatible / local); Claude reports real dollars. */
+export interface UsageTotals {
+  inputTokens: number;
+  outputTokens: number;
+  costUsd: number;
+  turns: number;
+}
+
+/** Read the session's cumulative token/cost for the Diagnostics readout (2.6). */
+export function usageTotal(): Promise<UsageTotals> {
+  return invoke<UsageTotals>("usage_total");
+}

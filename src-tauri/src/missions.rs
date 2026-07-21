@@ -390,6 +390,10 @@ fn run_board(app: &AppHandle, session: &AgentSession, runner: &MissionRunner, mu
         // task dispatched - monotonic in the mission band, so a stable unique id.
         let ledger_reply = if ok { reply.clone().unwrap_or_default() } else { note.clone().unwrap_or_default() };
         let run_id = runner.active_turn.load(Ordering::Relaxed);
+        // ponytail: mission `dispatch` returns only text/error, not the TurnReply,
+        // so no per-task usage rides into the ledger here. The session-wide total
+        // (2.6) still counts these turns via the `final` accumulator; thread a
+        // TurnReply through run_task only if per-mission-task cost is ever wanted.
         append_run(
             app,
             run_id,
@@ -399,6 +403,7 @@ fn run_board(app: &AppHandle, session: &AgentSession, runner: &MissionRunner, mu
             &ledger_reply,
             !ok,
             &[],
+            None,
         );
         if ok {
             if let Some(r) = reply {
