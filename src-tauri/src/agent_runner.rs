@@ -780,25 +780,34 @@ fn spawn_reader(session: AgentSession, app: AppHandle, stdout: std::process::Chi
             }
         }
 
-        // EOF: the child exited. If we are still the current incarnation, drop it,
-        // record the crash for backoff, and fail every in-flight turn so no
-        // command hangs waiting for a `final` that will never come.
-        let mut guard = session.resident.lock();
-        if matches!(guard.as_ref(), Some(r) if r.gen == gen) {
-            *guard = None;
-            drop(guard);
-            {
-                let mut b = session.backoff.lock();
-                b.fails = b.fails.saturating_add(1);
-                b.last_exit = Some(Instant::now());
-            }
-            *session.pending.lock() = None;
-            let mut turns = session.turns.lock();
-            for (_, tx) in turns.drain() {
-                let _ = tx.send(TurnMsg::Done(Err("The agent stopped unexpectedly.".to_string())));
-            }
-        }
+        // EOF: the child exited. Hand off to the (AppHandle-free) lifecycle handler.
+        handle_reader_eof(&session, gen);
     });
+}
+
+/// The reader's EOF path (extracted for a direct test, 1.3): the child exited, so
+/// if we are STILL the current incarnation (`gen` matches - a respawn may already
+/// have replaced a crashed one, B4.3/B4.4), drop it, advance the crash backoff, and
+/// fail every in-flight turn so no command hangs waiting for a `final` that will
+/// never come. A stale generation is a no-op: the live resident and its turn must
+/// not be torn down by a dead reader thread. AppHandle-free, so the crash/drain
+/// contract is unit-tested without a live process or a Tauri app.
+fn handle_reader_eof(session: &AgentSession, gen: u64) {
+    let mut guard = session.resident.lock();
+    if matches!(guard.as_ref(), Some(r) if r.gen == gen) {
+        *guard = None;
+        drop(guard);
+        {
+            let mut b = session.backoff.lock();
+            b.fails = b.fails.saturating_add(1);
+            b.last_exit = Some(Instant::now());
+        }
+        *session.pending.lock() = None;
+        let mut turns = session.turns.lock();
+        for (_, tx) in turns.drain() {
+            let _ = tx.send(TurnMsg::Done(Err("The agent stopped unexpectedly.".to_string())));
+        }
+    }
 }
 
 /// Tear down the resident serve.ts and its ENTIRE process tree (1.10). On Windows
@@ -1629,6 +1638,43 @@ mod tests {
         *session.resident.lock() = Some(dummy_resident());
         session.request_respawn();
         assert!(session.resident.lock().is_none(), "idle: respawn should be immediate");
+    }
+
+    #[test]
+    fn reader_eof_drops_the_current_resident_and_drains_in_flight_turns() {
+        // A serve.ts crash (reader hits EOF) while a turn is in flight (1.3, B4.3/B4.4).
+        let session = AgentSession::default();
+        *session.resident.lock() = Some(dummy_resident()); // gen 1
+        let (tx, rx) = std::sync::mpsc::channel();
+        session.turns.lock().insert(7, tx);
+
+        handle_reader_eof(&session, 1);
+
+        // The crashed incarnation is cleared so the next run respawns fresh.
+        assert!(session.resident.lock().is_none(), "crashed resident should be dropped");
+        // Backoff advanced so a crash-looping serve.ts is throttled, not spun.
+        assert_eq!(session.backoff.lock().fails, 1);
+        // The in-flight turn is failed, so no command hangs on a `final` that never comes.
+        let msg = rx.recv_timeout(Duration::from_millis(200)).expect("in-flight turn should be failed");
+        assert!(matches!(msg, TurnMsg::Done(Err(_))));
+        assert!(session.turns.lock().is_empty(), "turn slot should be drained");
+    }
+
+    #[test]
+    fn reader_eof_ignores_a_stale_generation() {
+        // The crashed reader belonged to an OLD incarnation; a respawn already put a
+        // newer resident (gen 1) in place. The dead reader must not tear it down.
+        let session = AgentSession::default();
+        *session.resident.lock() = Some(dummy_resident()); // the live resident, gen 1
+        let (tx, rx) = std::sync::mpsc::channel();
+        session.turns.lock().insert(7, tx);
+
+        handle_reader_eof(&session, 0); // stale gen
+
+        assert!(session.resident.lock().is_some(), "live resident must survive a stale EOF");
+        assert_eq!(session.backoff.lock().fails, 0, "a stale EOF must not touch backoff");
+        assert!(rx.try_recv().is_err(), "the live turn must not be failed");
+        session.resident.lock().take(); // drop the dummy child
     }
 
     #[test]
