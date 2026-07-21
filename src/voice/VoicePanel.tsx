@@ -15,7 +15,7 @@ import { followBottom } from "../lib/scroll.ts";
 import { DEFAULT_SETTINGS, type HandsFreeConfig, type JuneSettings, loadSettings, saveSettings, voiceAllowed, voiceNeedsOpenAiKey, type WakeConfig } from "../lib/settings.ts";
 import { captureCorrections, cleanTranscript } from "../lib/transcript.ts";
 import { recordLatency, TurnTimer } from "../lib/latency.ts";
-import { CANNED_PHRASES, SentenceBuffer, setOutputVolume, SpeechQueue } from "../lib/tts.ts";
+import { CANNED_PHRASES, SentenceBuffer, setOutputDevice, setOutputVolume, SpeechQueue } from "../lib/tts.ts";
 import { LEVEL_GAIN, startBargeMonitor, startCapture, type CaptureError, type CaptureHandle } from "../lib/voice-capture.ts";
 import { startWakeListener } from "../lib/wake.ts";
 
@@ -171,6 +171,7 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
     settingsRef.current = s;
     setPttLabel(hotkeyLabel(s.pttHotkey));
     setOutputVolume(s.outputVolume);
+    setOutputDevice(s.outputDeviceId);
     // Keep the previous object identity when the value is unchanged (B2.3) so the
     // wake / hands-free effects don't needlessly re-arm the mic on every save.
     setWake((prev) => (sameWake(prev, s.wake) ? prev : s.wake));

@@ -80,6 +80,10 @@ export interface JuneSettings {
   /** Preferred microphone deviceId (improvement-5 P2 6.5); "" = system default.
    *  Passed as an `ideal` constraint, so an unplugged device falls back. */
   micDeviceId: string;
+  /** Preferred audio output (speaker/headset) deviceId (3.9); "" = system default.
+   *  Applied via HTMLAudioElement.setSinkId so TTS plays on the same device the
+   *  echo-cancelled mic monitors, instead of fighting a different default. */
+  outputDeviceId: string;
   /** Speech output volume, 0..1 (improvement-5 P2 6.5). */
   outputVolume: number;
   /** Start a fresh conversation after this many idle minutes (Phase 11.2).
@@ -108,6 +112,7 @@ export const DEFAULT_SETTINGS: JuneSettings = {
   brainBaseUrl: "",
   pttHotkey: "ctrl+shift+space",
   micDeviceId: "",
+  outputDeviceId: "",
   outputVolume: 1,
   conversationIdleMinutes: 10,
   privacyMode: "standard",
@@ -185,6 +190,7 @@ function coerce(raw: RawSettings): JuneSettings {
     brainBaseUrl: str(raw.brainBaseUrl, d.brainBaseUrl),
     pttHotkey: str(raw.pttHotkey, d.pttHotkey),
     micDeviceId: typeof raw.micDeviceId === "string" ? raw.micDeviceId : d.micDeviceId,
+    outputDeviceId: typeof raw.outputDeviceId === "string" ? raw.outputDeviceId : d.outputDeviceId,
     outputVolume: unit(raw.outputVolume, d.outputVolume),
     conversationIdleMinutes: nonNegInt(raw.conversationIdleMinutes, d.conversationIdleMinutes),
     privacyMode: modes.includes(mode as PrivacyMode) ? (mode as PrivacyMode) : d.privacyMode,

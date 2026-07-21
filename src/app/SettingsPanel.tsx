@@ -74,10 +74,13 @@ function brainBaseUrl(s: JuneSettings): string {
   return p?.baseUrl ?? "";
 }
 
-async function playBytes(bytes: Uint8Array, mime: string, volume = 1): Promise<void> {
+async function playBytes(bytes: Uint8Array, mime: string, volume = 1, sinkId = ""): Promise<void> {
   const url = URL.createObjectURL(new Blob([bytes], { type: mime }));
   const el = new Audio(url);
   el.volume = Math.min(1, Math.max(0, volume));
+  // Route the Test sample to the chosen speaker (3.9) so the test exercises the
+  // same device real speech will use; ignore an unsupported/failed sink.
+  if (sinkId && typeof el.setSinkId === "function") await el.setSinkId(sinkId).catch(() => {});
   await new Promise<void>((resolve) => {
     el.onended = () => resolve();
     el.onerror = () => resolve();
@@ -273,26 +276,36 @@ function TestControl({ run }: { run: () => Promise<ProbeResult> }) {
   );
 }
 
-/** The audio input devices, refreshed on plug/unplug. Labels are empty until the
+/** An audio device picker, refreshed on plug/unplug. `kind` selects input
+ *  (microphone, 6.5) or output (speaker/headset, 3.9). Labels are empty until the
  *  mic permission has been granted once - fall back to a numbered name. */
-function MicPicker({ value, onChange }: { value: string; onChange: (id: string) => void }) {
+function DevicePicker({
+  kind,
+  value,
+  onChange,
+}: {
+  kind: "audioinput" | "audiooutput";
+  value: string;
+  onChange: (id: string) => void;
+}) {
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
   useEffect(() => {
     const refresh = () =>
       void navigator.mediaDevices
         ?.enumerateDevices()
-        .then((ds) => setDevices(ds.filter((d) => d.kind === "audioinput" && d.deviceId)))
+        .then((ds) => setDevices(ds.filter((d) => d.kind === kind && d.deviceId)))
         .catch(() => {});
     refresh();
     navigator.mediaDevices?.addEventListener?.("devicechange", refresh);
     return () => navigator.mediaDevices?.removeEventListener?.("devicechange", refresh);
-  }, []);
+  }, [kind]);
+  const noun = kind === "audioinput" ? "Microphone" : "Speaker";
   return (
-    <select value={value} aria-label="Microphone" onChange={(e) => onChange(e.target.value)}>
+    <select value={value} aria-label={noun} onChange={(e) => onChange(e.target.value)}>
       <option value="">System default</option>
       {devices.map((d, i) => (
         <option key={d.deviceId} value={d.deviceId}>
-          {d.label || `Microphone ${i + 1}`}
+          {d.label || `${noun} ${i + 1}`}
         </option>
       ))}
     </select>
@@ -366,7 +379,7 @@ function SttCard({ settings, update }: { settings: JuneSettings; update: (s: Jun
       </div>
       <div className="stage-row">
         <span className="stage-label">Microphone</span>
-        <MicPicker value={settings.micDeviceId} onChange={(id) => update({ ...settings, micDeviceId: id })} />
+        <DevicePicker kind="audioinput" value={settings.micDeviceId} onChange={(id) => update({ ...settings, micDeviceId: id })} />
       </div>
       <div className="settings-test">
         <button onClick={runTest} disabled={busy}>
@@ -442,7 +455,7 @@ function TtsCard({ settings, update }: { settings: JuneSettings; update: (s: Jun
     const { bytes, mime } = await synthesize(TEST_SAMPLE, settings.tts);
     const ms = Math.round(performance.now() - t0);
     if (bytes.length === 0) return { ok: false, detail: "No audio returned.", ms };
-    await playBytes(bytes, mime, settings.outputVolume);
+    await playBytes(bytes, mime, settings.outputVolume, settings.outputDeviceId);
     return { ok: true, detail: `Spoke a sample in the ${settings.tts.voice} voice.`, ms };
   };
 
@@ -464,6 +477,10 @@ function TtsCard({ settings, update }: { settings: JuneSettings; update: (s: Jun
             </option>
           ))}
         </select>
+      </div>
+      <div className="stage-row">
+        <span className="stage-label">Speaker</span>
+        <DevicePicker kind="audiooutput" value={settings.outputDeviceId} onChange={(id) => update({ ...settings, outputDeviceId: id })} />
       </div>
       <div className="stage-row">
         <span className="stage-label">Volume</span>

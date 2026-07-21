@@ -35,6 +35,16 @@ export function setOutputVolume(v: number): void {
   outputVolume = Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : 1;
 }
 
+// Output device (3.9): the speaker/headset TTS plays on. "" = system default.
+// Applied via HTMLAudioElement.setSinkId so June speaks on the same device its
+// echo-cancelled monitor mic listens to. Set from settings by the voice surface.
+let outputSinkId = "";
+
+/** Route all subsequent speech to this output deviceId ("" = system default). */
+export function setOutputDevice(id: string): void {
+  outputSinkId = id;
+}
+
 /** Fixed backchannel/approval phrases June speaks constantly. These - and only
  *  these - are memoized by `synthesize` (3.5): re-running the cloud round-trip or a
  *  Kokoro pass for "On it." on every turn is pure waste. Callers reference these
@@ -218,6 +228,13 @@ export class SpeechQueue {
       const url = URL.createObjectURL(new Blob([bytes], { type: mime }));
       const el = new Audio(url);
       el.volume = outputVolume;
+      // Route to the chosen output device (3.9). setSinkId is async and unsupported
+      // on some engines; a failure or absent API falls back to the system default
+      // rather than dropping the sentence. Playback below doesn't await it - WebView2
+      // applies the sink before audio actually starts.
+      if (outputSinkId && typeof el.setSinkId === "function") {
+        void el.setSinkId(outputSinkId).catch(() => {});
+      }
       this.#audio = el;
       const done = () => {
         URL.revokeObjectURL(url);

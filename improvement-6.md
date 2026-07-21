@@ -310,10 +310,20 @@ round-trip + legacy migration (1.9).
     poisoned trigger payload can't spoof the clock. Computed per turn so a long-lived
     resident never reads a stale time.
 
-3.9 **Audio output device picker** | P2 | S
+3.9 **Audio output device picker** | P2 | S - DONE
     Mic picker shipped (6.5) but TTS speaks on system default - headset users get AEC
     fighting a different device. `outputDeviceId` setting + `setSinkId()` in
     `SpeechQueue.#play`. `src/lib/tts.ts`, `settings.ts`, `SettingsPanel.tsx`.
+    New `outputDeviceId` setting ("" = system default, round-tripped through
+    `parseSettings`). `tts.ts` gained module-level `setOutputDevice`/`outputSinkId`
+    (mirroring the existing volume knob); `SpeechQueue.#play` calls
+    `el.setSinkId(outputSinkId)` before playback, guarded on API presence and
+    failing back to the default on an unsupported engine or a stale device id.
+    `VoicePanel.refreshSettings` pushes the setting live on `settings://changed`.
+    The `MicPicker` was generalized to a `DevicePicker` (kind = audioinput |
+    audiooutput); the TtsCard gained a "Speaker" row and its Test button now routes
+    the sample through the chosen sink (`playBytes` takes a `sinkId`) so the test
+    exercises the real device. settings.test pins the new default.
 
 3.10 **Train and ship the real "hey june" wake model** | P2 | M
     The local wake phrase is literally "hey jarvis" (openWakeWord stand-in). Train
