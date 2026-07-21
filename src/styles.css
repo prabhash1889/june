@@ -689,6 +689,8 @@ button {
   background: var(--accent);
   color: #fff;
   border-bottom-right-radius: 4px;
+  /* Keep the newlines a Shift+Enter draft sent (6.3) - otherwise they collapse. */
+  white-space: pre-wrap;
 }
 
 .turn.june {
@@ -751,6 +753,9 @@ button {
 .app-composer textarea {
   flex: 1;
   resize: none;
+  /* Grow with content (6.3): a Shift+Enter second line was hidden in the fixed box.
+     field-sizing grows the textarea to fit, bounded by min/max-height. */
+  field-sizing: content;
   min-height: 38px;
   max-height: 120px;
   padding: var(--sp-2) var(--sp-3);

@@ -299,9 +299,12 @@ export function AppWindow() {
  *  working preempts the active turn, exactly like barging in by voice. */
 function Composer({ onError }: { onError: (m: string) => void }) {
   const [text, setText] = useState("");
+  // Last sent command, for ArrowUp recall (6.3) - the raw text (newlines kept).
+  const lastSent = useRef("");
   const send = () => {
     const t = text.trim();
     if (!t) return;
+    lastSent.current = text;
     setText("");
     void runAgent(t, allocTurn()).catch((e) => onError(e instanceof Error ? e.message : String(e)));
   };
@@ -317,6 +320,11 @@ function Composer({ onError }: { onError: (m: string) => void }) {
           if (e.key === "Enter" && !e.shiftKey) {
             e.preventDefault();
             send();
+          } else if (e.key === "ArrowUp" && text === "" && lastSent.current) {
+            // Recall the last command only from an empty box, so ArrowUp still
+            // navigates lines within a draft.
+            e.preventDefault();
+            setText(lastSent.current);
           }
         }}
       />
