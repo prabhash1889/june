@@ -585,11 +585,32 @@ round-trip + legacy migration (1.9).
     request_id), policy.test (observe + auto-run + unattended-allowed + summary). Full
     contract + policy suites green, typecheck + eslint clean.
 
-4.10 **Start missions by voice** | P2 | M
+4.10 **Start missions by voice** | P2 | M - DONE
     The flagship autonomy feature still starts from a textarea (deferred twice). Add a
     gated `start_mission` tool to the automation server writing a pending-mission request;
     the scheduler tick picks it up and calls the same path as the `start_mission` command.
     Classify `expensive`. `mcp/automation/`, `src-tauri/src/missions.rs`, `scheduler.rs`.
+    New `start_mission(outcome, tasks[], toolsetIds?, verify?)` tool on the automation
+    server: the brain decomposes the goal into ordered task titles and the tool pushes a
+    validated request onto a `pendingMissions` queue in settings.json (pure
+    `coercePendingMission` + `withPendingMission` in store.ts - trims/drops empty tasks,
+    defaults verify=true, rejects an empty goal/plan up front). Classified `expensive` in
+    policy, so it is GATED (spoken-approvable - June never silently starts a paid run)
+    AND, being expensive, blocked on any UNATTENDED run (18.2) - a scheduled/watch/trigger
+    run can never spawn a mission. summarize renders "Start a mission: <goal> (N tasks,
+    paid)". The Rust `start_mission` command body was extracted into a `State`-free
+    `start_mission_from(...)` so the command (webview plan-confirm) and the new voice path
+    share the exact same build-and-spawn logic. New `settings::take_pending_mission` pops
+    ONE request FIFO per tick (atomic read-modify-write; a write failure leaves it queued
+    rather than looping). The scheduler thread now takes the `MissionRunner` (wired in
+    lib.rs) and, each tick when neither the session nor the runner is busy, dequeues and
+    starts one queued mission via `start_mission_from` (a busy tick leaves it queued to
+    retry; a malformed entry is dropped with a notify, never re-parsed into a loop). A new
+    `MissionRunner::running()` accessor backs the busy check. Pinned: store.test (coerce
+    trim/defaults/reject + queue append preserving keys), policy.test (expensive + gated +
+    unattended-blocked + summary), settings.rs test (FIFO head-pop persists the rest and
+    preserves other keys). Full suite: 283 vitest + 43 cargo green, typecheck + eslint +
+    clippy `-D warnings` clean.
 
 ---
 

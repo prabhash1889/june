@@ -161,6 +161,22 @@ describe("gate policy", () => {
     );
   });
 
+  it("starting a mission by voice is expensive: gated and blocked unattended (4.10)", () => {
+    // Expensive -> gated (spoken-approvable), so June never silently starts a paid
+    // multi-step run...
+    expect(classify("start_mission", "automation")).toBe("expensive");
+    expect(isGated(classify("start_mission", "automation"))).toBe(true);
+    // ...and an unattended (possibly injected) run can't launch one at all, so a
+    // scheduled/watch/trigger run can never spawn a mission.
+    expect(unattendedBlockReason({ cls: "expensive", action: "start_mission", server: "automation" }, new Set())).toBe(
+      "needs approval",
+    );
+    // The card states the goal and the task count the user authorizes.
+    expect(summarize("start_mission", { outcome: "Triage failing tests", tasks: ["a", "b", "c"] })).toBe(
+      "Start a mission: Triage failing tests (3 tasks, paid)",
+    );
+  });
+
   it("read_terminal is an observe read that auto-runs and is safe unattended (4.9)", () => {
     expect(classify("read_terminal", "saple-bridge-control")).toBe("observe");
     expect(isGated(classify("read_terminal", "saple-bridge-control"))).toBe(false);

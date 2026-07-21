@@ -27,12 +27,14 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 
 import {
+  coercePendingMission,
   removeAutomation,
   setAutomationEnabled,
   type SettingsBag,
   summarizeAutomations,
   validateSchedule,
   validateWatch,
+  withPendingMission,
   withSchedule,
   withWatch,
 } from "./store.ts";
@@ -197,6 +199,40 @@ server.registerTool(
         if (!result) return fail(`I couldn't find an automation called "${input.idOrLabel}".`);
         await writeBag(bag);
         return ok(`Removed the ${result.kind} "${result.label}".`);
+      } catch (e) {
+        return fail(e instanceof Error ? e.message : String(e));
+      }
+    }),
+);
+
+server.registerTool(
+  "start_mission",
+  {
+    title: "Start a mission",
+    description:
+      "Start an autonomous multi-step mission by voice - June works through a confirmed task list on its own, one task at a time, and reports back. Use for 'start a mission to <goal>'. Decompose the goal into a short ordered list of concrete task titles yourself and pass them as 'tasks'. This is a paid, long-running action, so it is confirmed before it starts and cannot be launched by an unattended run.",
+    inputSchema: {
+      outcome: z.string().min(1).describe("The overall goal in one line, e.g. 'Triage today's failing tests'."),
+      tasks: z
+        .array(z.string().min(1))
+        .min(1)
+        .describe("Ordered concrete task titles the mission runs one at a time, e.g. ['Read the CI log', 'Group the failures', 'Draft fixes']."),
+      toolsetIds: z
+        .array(z.string())
+        .optional()
+        .describe("Optional ids of the MCP servers the mission may use; omit for the defaults."),
+      verify: z.boolean().optional().describe("Verify each task before moving on (default true)."),
+    },
+  },
+  (input): Promise<CallToolResult> =>
+    serialize(async () => {
+      try {
+        const mission = coercePendingMission(input);
+        if (!mission) return fail("I need a goal and at least one task to start a mission.");
+        await writeBag(withPendingMission(await readBag(), mission));
+        return ok(
+          `Starting a mission to ${mission.outcome} with ${mission.tasks.length} task${mission.tasks.length === 1 ? "" : "s"}. I'll work through them and report back.`,
+        );
       } catch (e) {
         return fail(e instanceof Error ? e.message : String(e));
       }

@@ -44,6 +44,45 @@ export function withWatch(bag: SettingsBag, watch: WatchLoop): SettingsBag {
   return { ...bag, watches: coerceWatches([...existing, watch]) };
 }
 
+/** A voice-started mission request (improvement-6 4.10). The brain decomposes the
+ *  outcome into confirmed task titles; the scheduler tick picks this up and starts
+ *  it through the same path as the start_mission command. Written to settings.json
+ *  so the always-running Rust scheduler (not a webview) consumes it. */
+export interface PendingMission {
+  outcome: string;
+  tasks: string[];
+  /** Which enabled MCP servers the mission may use (5.4); empty = the defaults. */
+  toolsetIds: string[];
+  verify: boolean;
+}
+
+/** Coerce a raw start_mission input into a clean PendingMission, or null if it has
+ *  no outcome or no non-empty task (a mission with nothing to do is rejected up
+ *  front rather than written and later dropped Rust-side). Pure. */
+export function coercePendingMission(input: unknown): PendingMission | null {
+  if (typeof input !== "object" || input === null) return null;
+  const r = input as Record<string, unknown>;
+  const outcome = typeof r.outcome === "string" ? r.outcome.trim() : "";
+  if (!outcome) return null;
+  const tasks = (Array.isArray(r.tasks) ? r.tasks : [])
+    .filter((t): t is string => typeof t === "string")
+    .map((t) => t.trim())
+    .filter(Boolean);
+  if (tasks.length === 0) return null;
+  const toolsetIds = (Array.isArray(r.toolsetIds) ? r.toolsetIds : []).filter(
+    (t): t is string => typeof t === "string",
+  );
+  return { outcome, tasks, toolsetIds, verify: r.verify !== false };
+}
+
+/** Append a validated mission request to the bag's pending-mission queue. Pure:
+ *  returns a new bag preserving every other settings key. The scheduler pops the
+ *  head of this list and clears it as it starts each mission. */
+export function withPendingMission(bag: SettingsBag, mission: PendingMission): SettingsBag {
+  const existing = Array.isArray(bag.pendingMissions) ? bag.pendingMissions : [];
+  return { ...bag, pendingMissions: [...existing, mission] };
+}
+
 /** Which automation list an entry lives in (improvement-6 4.2). */
 export type AutomationKind = "schedule" | "watch" | "trigger";
 

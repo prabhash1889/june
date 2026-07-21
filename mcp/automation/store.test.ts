@@ -1,12 +1,14 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  coercePendingMission,
   removeAutomation,
   type SettingsBag,
   setAutomationEnabled,
   summarizeAutomations,
   validateSchedule,
   validateWatch,
+  withPendingMission,
   withSchedule,
   withWatch,
 } from "./store.ts";
@@ -73,6 +75,38 @@ describe("withSchedule / withWatch (P1.5)", () => {
     const w = validateWatch({ label: "Build", prompt: "check", everyMinutes: 5 })!;
     const next = withWatch({}, w) as { watches: { id: string }[] };
     expect(next.watches).toHaveLength(1);
+  });
+});
+
+describe("coercePendingMission / withPendingMission (4.10)", () => {
+  it("coerces a valid request, trimming and dropping empty tasks", () => {
+    expect(
+      coercePendingMission({ outcome: "  Triage tests  ", tasks: ["Read log", "  ", "Fix"], toolsetIds: ["files"] }),
+    ).toEqual({ outcome: "Triage tests", tasks: ["Read log", "Fix"], toolsetIds: ["files"], verify: true });
+  });
+
+  it("defaults verify to true unless explicitly false, and toolsetIds to empty", () => {
+    expect(coercePendingMission({ outcome: "x", tasks: ["a"] })).toEqual({
+      outcome: "x",
+      tasks: ["a"],
+      toolsetIds: [],
+      verify: true,
+    });
+    expect(coercePendingMission({ outcome: "x", tasks: ["a"], verify: false })?.verify).toBe(false);
+  });
+
+  it("rejects a request with no outcome or no non-empty task", () => {
+    expect(coercePendingMission({ outcome: "", tasks: ["a"] })).toBeNull();
+    expect(coercePendingMission({ outcome: "x", tasks: ["  "] })).toBeNull();
+    expect(coercePendingMission({ outcome: "x", tasks: [] })).toBeNull();
+    expect(coercePendingMission(null)).toBeNull();
+  });
+
+  it("appends to the pending queue, preserving other settings keys", () => {
+    const m = coercePendingMission({ outcome: "goal", tasks: ["t1"] })!;
+    const bag = withPendingMission({ voiceEnabled: true, pendingMissions: [{ outcome: "old", tasks: ["x"] }] }, m);
+    expect((bag.pendingMissions as unknown[]).length).toBe(2);
+    expect(bag.voiceEnabled).toBe(true);
   });
 });
 

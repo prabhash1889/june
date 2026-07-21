@@ -91,6 +91,11 @@ const ACTION_CLASS: Record<string, SafetyClass> = {
   // prompt can't silently disable June's own safety watches.
   set_automation_enabled: "reversible",
   remove_automation: "reversible",
+  // Starting a mission by voice (improvement-6 4.10) is EXPENSIVE - it commits June
+  // to a run of paid, multi-step unattended-style tasks - so it is gated (spoken-
+  // approvable) and, being expensive, an UNATTENDED run can't launch one (18.2), so
+  // a scheduled/watch/trigger run can never spawn a mission.
+  start_mission: "expensive",
   // system observe pack (improvement-6 4.3): reading the process list, checking a
   // process, and machine stats are all LOCAL read-only observes - they touch no
   // network and change nothing, so they auto-run and are safe on an unattended
@@ -313,6 +318,12 @@ export function summarize(action: string, input: Record<string, unknown>): strin
       return `Remove automation ${s("idOrLabel") || "?"}`;
     case "list_automations":
       return "List automations";
+    case "start_mission": {
+      // Expensive + spoken-approvable (14.2): state the goal and the task count the
+      // user is authorizing, since it commits June to a multi-step paid run.
+      const tasks = Array.isArray(input.tasks) ? input.tasks.length : 0;
+      return `Start a mission: ${s("outcome") || "?"} (${tasks} task${tasks === 1 ? "" : "s"}, paid)`;
+    }
     case "list_processes":
       return "List running processes";
     case "process_running":

@@ -23,6 +23,7 @@ use chrono::{Datelike, Local, NaiveDate, NaiveDateTime, NaiveTime};
 use tauri::{AppHandle, Emitter, State};
 
 use crate::agent_runner::{run_unattended, AgentSession};
+use crate::missions::{MissionRunner, PendingMission};
 
 /// How often the scheduler wakes to check for due runs. 30s is fine granularity
 /// for minute-resolution schedules without busy-spinning.
@@ -578,7 +579,7 @@ pub fn run_schedule_now(app: AppHandle, session: State<'_, AgentSession>, id: St
 /// added/edited schedules and triggers take effect on the next tick with no restart.
 /// A busy session (an interactive turn or a pending approval) defers this tick's
 /// fires so an unattended run never barges in on the user.
-pub fn start(app: AppHandle, session: AgentSession) {
+pub fn start(app: AppHandle, session: AgentSession, runner: MissionRunner) {
     std::thread::spawn(move || {
         // Scheduler bookkeeping is persisted (june-scheduler.json, improvement-5
         // P0.4 + 1.9) so a restart can't re-fire a schedule that already ran, nor
@@ -616,6 +617,35 @@ pub fn start(app: AppHandle, session: AgentSession) {
                         let _ = app.emit("settings://changed", ());
                     }
                     settings_mtime = Some(m);
+                }
+            }
+
+            // Voice-started missions (4.10): the automation server pushed a request
+            // to `pendingMissions` (already user-approved - start_mission is gated).
+            // Start it via the SAME path as the start_mission command. Only when
+            // neither the session nor the runner is busy - otherwise leave it queued
+            // and retry next tick (take_pending_mission dequeues only when we act, so
+            // a busy tick never drops the request). One per tick keeps it simple.
+            if !session.is_busy() && !runner.running() {
+                if let Some(v) = crate::settings::take_pending_mission(&app) {
+                    match serde_json::from_value::<PendingMission>(v) {
+                        Ok(req) => {
+                            if let Err(e) = crate::missions::start_mission_from(
+                                app.clone(),
+                                session.clone(),
+                                runner.clone(),
+                                req.outcome.clone(),
+                                req.tasks,
+                                req.toolset_ids,
+                                req.verify,
+                            ) {
+                                notify(&app, "June couldn't start the mission", &e);
+                            }
+                        }
+                        // A malformed request is dropped (already dequeued) with a
+                        // note, never re-parsed into a loop.
+                        Err(e) => notify(&app, "June couldn't start a queued mission", &e.to_string()),
+                    }
                 }
             }
 

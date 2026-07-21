@@ -95,6 +95,30 @@ pub struct MissionRunner {
     active_turn: Arc<AtomicU64>,
 }
 
+impl MissionRunner {
+    /// Whether a mission is currently running (the double-start guard, read-only).
+    /// The scheduler checks this before consuming a voice-started mission request
+    /// (4.10) so it never drops one against an already-busy runner.
+    pub fn running(&self) -> bool {
+        self.running.load(Ordering::SeqCst)
+    }
+}
+
+/// A voice-started mission request (improvement-6 4.10), the shape the automation
+/// MCP server writes to settings.json (`pendingMissions`). camelCase to match the
+/// TS-written JSON (toolsetIds). The scheduler pops one per tick and starts it via
+/// the same path as the `start_mission` command.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingMission {
+    pub outcome: String,
+    pub tasks: Vec<String>,
+    #[serde(default)]
+    pub toolset_ids: Vec<String>,
+    #[serde(default = "default_verify")]
+    pub verify: bool,
+}
+
 // --- Pure board logic (ported from missions.ts, unit-tested below) ----------
 
 fn active_index(m: &Mission) -> Option<usize> {
@@ -461,6 +485,31 @@ pub fn start_mission(
     toolset_ids: Vec<String>,
     verify: bool,
 ) -> Result<(), String> {
+    start_mission_from(
+        app,
+        session.inner().clone(),
+        runner.inner().clone(),
+        outcome,
+        tasks,
+        toolset_ids,
+        verify,
+    )
+}
+
+/// Build a board from a confirmed plan and drive it, without the Tauri `State`
+/// wrapper - so both the `start_mission` command (webview plan-confirm) and the
+/// scheduler's voice-started path (4.10) share the exact same start logic. Trims/
+/// caps the tasks and dedupes the toolset. Errs on an empty plan or a mission
+/// already running (spawn's double-start guard).
+pub(crate) fn start_mission_from(
+    app: AppHandle,
+    session: AgentSession,
+    runner: MissionRunner,
+    outcome: String,
+    tasks: Vec<String>,
+    toolset_ids: Vec<String>,
+    verify: bool,
+) -> Result<(), String> {
     let titles: Vec<String> = tasks
         .iter()
         .map(|t| t.trim().to_string())
@@ -494,7 +543,7 @@ pub fn start_mission(
         toolset_ids: ids,
         verify,
     };
-    spawn(app, session.inner().clone(), runner.inner().clone(), mission, true)
+    spawn(app, session, runner, mission, true)
 }
 
 /// Stop the running mission (B3.5, now Rust-side): flag the runner, abort the

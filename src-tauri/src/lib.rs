@@ -49,10 +49,12 @@ pub fn run() {
             {
                 use tauri::Manager;
                 let session = app.state::<agent_runner::AgentSession>().inner().clone();
-                scheduler::start(app.handle().clone(), session.clone());
+                // The scheduler now also starts voice-queued missions (4.10), so it
+                // needs the same runner the resume path uses.
+                let runner = app.state::<missions::MissionRunner>().inner().clone();
+                scheduler::start(app.handle().clone(), session.clone(), runner.clone());
                 // A mission left `active` by a previous app session resumes here
                 // (improvement-5 P2 5.2) - the runner outlives every webview now.
-                let runner = app.state::<missions::MissionRunner>().inner().clone();
                 missions::resume(app.handle().clone(), session, runner);
             }
             // Tray presence (Phase 0 exit criterion): an icon in the system tray for the

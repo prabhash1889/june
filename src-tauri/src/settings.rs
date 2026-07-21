@@ -92,6 +92,25 @@ pub(crate) fn disable_schedule(app: &tauri::AppHandle, id: &str) {
     }
 }
 
+/// Pop the head of the `pendingMissions` queue in settings.json (improvement-6
+/// 4.10), returning the popped request as raw JSON, or None if the queue is empty/
+/// absent. The automation MCP server pushes a voice-started mission here (already
+/// user-approved, since start_mission is gated); the scheduler consumes exactly one
+/// per tick with this. Atomic read-modify-write like `disable_schedule`; a write
+/// failure returns None (the request stays and retries next tick) rather than
+/// starting a mission it couldn't dequeue, which would loop it forever.
+pub(crate) fn take_pending_mission(app: &tauri::AppHandle) -> Option<Value> {
+    let path = settings_path(app).ok()?;
+    let mut settings = read_settings_file(&path).ok()?;
+    let queue = settings.get_mut("pendingMissions")?.as_array_mut()?;
+    if queue.is_empty() {
+        return None;
+    }
+    let head = queue.remove(0);
+    write_settings_file(&path, &settings).ok()?;
+    Some(head)
+}
+
 /// Read the settings bag from Rust (e.g. to resolve the chosen brain before
 /// spawning a turn). Missing/unreadable settings collapse to an empty object so
 /// callers get defaults rather than an error.
@@ -156,6 +175,40 @@ mod tests {
 
         write_settings_file(&path, &value).unwrap();
         assert_eq!(read_settings_file(&path).unwrap(), value);
+
+        fs::remove_file(&path).unwrap();
+    }
+
+    /// The pending-mission dequeue is FIFO, pops exactly one, persists the shortened
+    /// queue, and preserves other keys (4.10). Exercises the pure IO directly (the
+    /// public helper needs an AppHandle, but the head-pop + write is the logic).
+    #[test]
+    fn pending_missions_pop_head_and_persist_rest() {
+        let path = temp_path("pending.json");
+        let value = serde_json::json!({
+            "voiceEnabled": true,
+            "pendingMissions": [
+                { "outcome": "first", "tasks": ["a"] },
+                { "outcome": "second", "tasks": ["b"] }
+            ]
+        });
+        write_settings_file(&path, &value).unwrap();
+
+        // Mirror take_pending_mission's read-modify-write against the temp path.
+        let mut settings = read_settings_file(&path).unwrap();
+        let queue = settings
+            .get_mut("pendingMissions")
+            .unwrap()
+            .as_array_mut()
+            .unwrap();
+        let head = queue.remove(0);
+        write_settings_file(&path, &settings).unwrap();
+
+        assert_eq!(head["outcome"], "first");
+        let after = read_settings_file(&path).unwrap();
+        assert_eq!(after["pendingMissions"].as_array().unwrap().len(), 1);
+        assert_eq!(after["pendingMissions"][0]["outcome"], "second");
+        assert_eq!(after["voiceEnabled"], true); // other keys preserved
 
         fs::remove_file(&path).unwrap();
     }
