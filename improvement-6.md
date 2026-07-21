@@ -801,9 +801,15 @@ round-trip + legacy migration (1.9).
     pre-roll on end). 10 wakeword tests + typecheck + eslint green. The idle-CPU win
     itself wants a device run to measure.
 
-7.3 **Lazy-load the window faces** | P2 | S
+7.3 **Lazy-load the window faces** | P2 | S - DONE
     The 88x88 widget parses SettingsPanel/MissionBoard/RunsPanel code it never renders
     (302KB entry chunk). `React.lazy` per `getCurrentWindow().label`. `src/main.tsx`.
+    `main.tsx` now `React.lazy`-loads only the face for the current window label
+    (`.then(m => ({ default: m.AppWindow }))` since the faces are named exports),
+    wrapped in a `<Suspense fallback={null}>`. The build now emits `AppWindow` (56KB)
+    and `WidgetWindow` (23KB) as separate chunks - the widget window fetches only its
+    own, never the AppWindow slice with the settings/mission/runs panels. Typecheck
+    green; chunk split confirmed in the vite build output.
 
 7.4 **Scheduler: skip the 30s settings re-parse when mtime is unchanged** | P2 | S
     It already stats the mtime three lines later. Hoist the stat, reuse the last parsed

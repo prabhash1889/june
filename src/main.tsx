@@ -1,9 +1,7 @@
-import React from "react";
+import React, { Suspense } from "react";
 import ReactDOM from "react-dom/client";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
-import { WidgetWindow } from "./widget/WidgetWindow.tsx";
-import { AppWindow } from "./app/AppWindow.tsx";
 import { ErrorBoundary } from "./app/ErrorBoundary.tsx";
 import { installGlobalErrorHooks } from "./lib/errorlog.ts";
 import "./styles.css";
@@ -18,7 +16,14 @@ function currentLabel(): string {
   }
 }
 
-const Face = currentLabel() === "app" ? AppWindow : WidgetWindow;
+// 7.3: lazy-load only the face this window shows so the 88x88 widget never parses
+// AppWindow's SettingsPanel/MissionBoard/RunsPanel code (a large slice of the entry
+// chunk it never renders). React.lazy + a per-label dynamic import splits each face
+// into its own chunk; only the needed one is fetched.
+const Face =
+  currentLabel() === "app"
+    ? React.lazy(() => import("./app/AppWindow.tsx").then((m) => ({ default: m.AppWindow })))
+    : React.lazy(() => import("./widget/WidgetWindow.tsx").then((m) => ({ default: m.WidgetWindow })));
 
 // Catch async / event-handler / promise throws the ErrorBoundary can't (2.2).
 installGlobalErrorHooks();
@@ -26,7 +31,9 @@ installGlobalErrorHooks();
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <ErrorBoundary>
-      <Face />
+      <Suspense fallback={null}>
+        <Face />
+      </Suspense>
     </ErrorBoundary>
   </React.StrictMode>,
 );
