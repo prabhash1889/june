@@ -43,22 +43,51 @@ fn parse_hhmm(s: &str) -> Option<NaiveTime> {
     NaiveTime::from_hms_opt(h.parse().ok()?, m.parse().ok()?, 0)
 }
 
-/// How a schedule recurs (improvement-5 P1.1). Mirrors src/lib/schedules.ts.
+/// How a schedule recurs (improvement-5 P1.1 + improvement-6 4.1). Mirrors
+/// src/lib/schedules.ts.
 #[derive(Debug, PartialEq, Clone, Copy)]
 enum Kind {
     Daily,
     Every,
+    Once,
 }
 
 /// Whether a schedule should fire at `now`, given when it last fired. Pure so the
 /// due rule is unit-tested without a live clock. Dispatches on kind: a `daily`
 /// schedule fires at most once per calendar day within the catch-up window; an
-/// `every` schedule fires once its interval has elapsed since the last fire.
+/// `every` schedule fires once its interval has elapsed since the last fire; a
+/// `once` reminder fires a single time at its absolute `at`, within the catch-up
+/// window, and never again.
 fn is_due(now: NaiveDateTime, sc: &Schedule, last_fired: Option<NaiveDateTime>) -> bool {
     match sc.kind {
         Kind::Daily => daily_due(now, &sc.time, &sc.days, last_fired.map(|d| d.date())),
         Kind::Every => interval_due(now, sc.every_minutes, last_fired),
+        Kind::Once => once_due(now, &sc.at, last_fired),
     }
+}
+
+/// Parse a `once` reminder's absolute local fire time "YYYY-MM-DDTHH:MM" (no
+/// timezone), matching src/lib/schedules.ts. None if malformed or a non-existent
+/// date, so a garbled reminder simply never fires rather than firing at the wrong
+/// time.
+fn parse_at(s: &str) -> Option<NaiveDateTime> {
+    NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M").ok()
+}
+
+/// The one-shot rule (improvement-6 4.1): fire exactly once, at or shortly after
+/// the absolute `at`, and never again once it has fired. The catch-up window keeps
+/// a busy-period reminder on time without replaying a long-stale one on a much
+/// later launch (the app-open constraint means a reminder scheduled while closed is
+/// simply missed). Pure so the rule is unit-tested.
+fn once_due(now: NaiveDateTime, at: &str, last_fired: Option<NaiveDateTime>) -> bool {
+    if last_fired.is_some() {
+        return false; // a one-shot fires exactly once
+    }
+    let Some(fire_at) = parse_at(at) else {
+        return false;
+    };
+    let elapsed = now - fire_at;
+    elapsed >= chrono::Duration::zero() && elapsed < chrono::Duration::minutes(CATCHUP_MINUTES)
 }
 
 /// The daily rule (Phase 18.1): fires at most once per calendar day, only on a
@@ -98,6 +127,17 @@ pub(crate) fn notify(app: &AppHandle, title: &str, body: &str) {
     let _ = app.notification().builder().title(title).body(body).show();
 }
 
+/// Deliver a `once` reminder (improvement-6 4.1): a plain reminder needs no agent
+/// turn - it just surfaces its text. So this shows an OS notification AND emits
+/// `reminder://fired` with the text, which the voice widget speaks through TTS
+/// (mirroring the "On it" backchannel path). The reminder text is the `prompt`
+/// (the thing to be reminded about); an empty prompt falls back to the label.
+fn deliver_reminder(app: &AppHandle, sc: &Schedule) {
+    let text = if sc.prompt.trim().is_empty() { &sc.label } else { &sc.prompt };
+    notify(app, "June reminder", &truncate(text, 240));
+    let _ = app.emit("reminder://fired", text.clone());
+}
+
 /// A parsed schedule from settings.json. Mirrors src/lib/schedules.ts::Schedule; the
 /// TS side coerces/validates for the UI, this reads the same stored shape defensively.
 struct Schedule {
@@ -108,6 +148,8 @@ struct Schedule {
     time: String,
     days: Vec<u32>,
     every_minutes: u32,
+    /// Absolute local fire time "YYYY-MM-DDTHH:MM" for a `once` reminder (4.1).
+    at: String,
     enabled: bool,
 }
 
@@ -210,7 +252,11 @@ fn read_schedules(settings: &serde_json::Value) -> Vec<Schedule> {
                     id: s(v, "id"),
                     label: s(v, "label"),
                     prompt: s(v, "prompt"),
-                    kind: if s(v, "kind") == "every" { Kind::Every } else { Kind::Daily },
+                    kind: match s(v, "kind").as_str() {
+                        "every" => Kind::Every,
+                        "once" => Kind::Once,
+                        _ => Kind::Daily,
+                    },
                     time: s(v, "time"),
                     days: v
                         .get("days")
@@ -218,6 +264,7 @@ fn read_schedules(settings: &serde_json::Value) -> Vec<Schedule> {
                         .map(|a| a.iter().filter_map(|x| x.as_u64().map(|n| n as u32)).collect())
                         .unwrap_or_default(),
                     every_minutes: every_minutes(v),
+                    at: s(v, "at"),
                     enabled: v.get("enabled").and_then(|x| x.as_bool()).unwrap_or(false),
                 })
                 .collect()
@@ -583,7 +630,18 @@ pub fn start(app: AppHandle, session: AgentSession) {
                     continue;
                 }
                 if session.is_busy() {
-                    continue; // don't preempt an interactive turn; retry next tick
+                    continue; // don't preempt an interactive turn (or talk over it); retry next tick
+                }
+                // A `once` reminder (4.1) needs no agent turn: deliver it (speak +
+                // notify), record it fired, and retire it by disabling in settings so
+                // it neither re-fires this session nor re-arms on restart. Done inline,
+                // never through the retrying `fire()` agent path.
+                if sc.kind == Kind::Once {
+                    deliver_reminder(&app, &sc);
+                    fired.insert(sc.id.clone(), now);
+                    crate::settings::disable_schedule(&app, &sc.id);
+                    save_state(&app, &fired, &watch_fired, &watch_iters, &watch_done);
+                    continue;
                 }
                 // Mark fired only once the schedule is DONE for this cycle (B3.3 +
                 // improvement-5 P0.4): a spawn-race deferral retries next tick, and
@@ -713,6 +771,7 @@ mod tests {
             time: time.into(),
             days: days.to_vec(),
             every_minutes: 60,
+            at: String::new(),
             enabled: true,
         }
     }
@@ -727,6 +786,22 @@ mod tests {
             time: "09:00".into(),
             days: vec![],
             every_minutes: minutes,
+            at: String::new(),
+            enabled: true,
+        }
+    }
+
+    /// A `once` reminder for the one-shot tests (4.1).
+    fn once(at: &str) -> Schedule {
+        Schedule {
+            id: "s".into(),
+            label: "S".into(),
+            prompt: String::new(),
+            kind: Kind::Once,
+            time: "09:00".into(),
+            days: vec![],
+            every_minutes: 60,
+            at: at.into(),
             enabled: true,
         }
     }
@@ -771,6 +846,22 @@ mod tests {
         // doesn't busy-fire, but a minute later does.
         assert!(!is_due(dt("2026-07-20 09:00"), &every(0), Some(dt("2026-07-20 09:00"))));
         assert!(is_due(dt("2026-07-20 09:01"), &every(0), Some(dt("2026-07-20 09:00"))));
+    }
+
+    #[test]
+    fn once_reminder_fires_once_within_the_window_then_never_again() {
+        // Due exactly at the fire time...
+        assert!(is_due(dt("2026-07-21 14:30"), &once("2026-07-21T14:30"), None));
+        // ...still due 20 min late (within the catch-up window)...
+        assert!(is_due(dt("2026-07-21 14:50"), &once("2026-07-21T14:30"), None));
+        // ...but not an hour late (stale reminder, not replayed).
+        assert!(!is_due(dt("2026-07-21 15:31"), &once("2026-07-21T14:30"), None));
+        // Before the fire time -> not yet.
+        assert!(!is_due(dt("2026-07-21 14:29"), &once("2026-07-21T14:30"), None));
+        // Already fired -> never again, even inside the window.
+        assert!(!is_due(dt("2026-07-21 14:31"), &once("2026-07-21T14:30"), Some(dt("2026-07-21 14:30"))));
+        // A malformed absolute time never fires (rather than firing at a wrong time).
+        assert!(!is_due(dt("2026-07-21 14:30"), &once("not-a-time"), None));
     }
 
     #[test]

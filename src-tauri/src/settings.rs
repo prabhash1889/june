@@ -67,6 +67,31 @@ pub(crate) fn disable_watch(app: &tauri::AppHandle, id: &str) {
     }
 }
 
+/// Flip one schedule's `enabled` to false in settings.json (improvement-6 4.1).
+/// When a `once` reminder fires it retires itself so it neither re-fires this
+/// session nor re-arms on the next app restart. Same atomic read-modify-write as
+/// `disable_watch`; best-effort - a failed write only means the reminder stays
+/// enabled, and the scheduler's persisted `fired` map still stops the re-fire.
+pub(crate) fn disable_schedule(app: &tauri::AppHandle, id: &str) {
+    let Ok(path) = settings_path(app) else { return };
+    let Ok(mut settings) = read_settings_file(&path) else {
+        return;
+    };
+    let Some(schedules) = settings.get_mut("schedules").and_then(|v| v.as_array_mut()) else {
+        return;
+    };
+    let mut changed = false;
+    for sc in schedules.iter_mut() {
+        if sc.get("id").and_then(|x| x.as_str()) == Some(id) {
+            sc["enabled"] = Value::Bool(false);
+            changed = true;
+        }
+    }
+    if changed {
+        let _ = write_settings_file(&path, &settings);
+    }
+}
+
 /// Read the settings bag from Rust (e.g. to resolve the chosen brain before
 /// spawning a turn). Missing/unreadable settings collapse to an empty object so
 /// callers get defaults rather than an error.

@@ -76,6 +76,7 @@ export function summarizeAutomations(bag: SettingsBag): string {
 
 /** Human-readable recurrence for one schedule. */
 function describeSchedule(s: Schedule): string {
+  if (s.kind === "once") return `once at ${s.at}`;
   if (s.kind === "every") return `every ${s.everyMinutes} min`;
   const days = s.days.length === 0 ? "every day" : `on ${s.days.length} day${s.days.length === 1 ? "" : "s"}`;
   return `daily at ${s.time} ${days}`;

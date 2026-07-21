@@ -174,6 +174,11 @@ describe("gate policy", () => {
     expect(summarize("add_schedule", { label: "x", kind: "every", everyMinutes: 30 })).toBe(
       'Schedule "x" to run every 30 min (unattended)',
     );
+    // A once reminder (4.1) reads as a one-shot reminder, showing its absolute time
+    // and the prompt (still gated, so the payload must be visible).
+    expect(summarize("add_schedule", { label: "call mom", kind: "once", at: "2026-07-21T15:00", prompt: "call mom" })).toBe(
+      'Remind "call mom" once at 2026-07-21T15:00: "call mom"',
+    );
   });
 
   it("redacts string params under on-device privacy modes but keeps them under standard", () => {

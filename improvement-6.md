@@ -380,13 +380,31 @@ round-trip + legacy migration (1.9).
 
 ## Phase 4 - New capabilities (what June can do)
 
-4.1 **One-shot reminders and timers: `kind: "once"`** (x2: product + tools) | P0 | S
+4.1 **One-shot reminders and timers: `kind: "once"`** (x2: product + tools) | P0 | S - DONE
     "Remind me in 20 minutes" is daily-driver table stakes and only a schedule kind away.
     Add `once` with an absolute fire time to `Schedule`, teach `is_due` to fire-then-
     disable, extend the automation server's zod schema and `summarize()`. On fire, speak
     via TTS + OS notification - no agent turn needed for a plain reminder.
     `src/lib/schedules.ts`, `src-tauri/src/scheduler.rs`, `mcp/automation/server.ts`,
     `agent/policy.ts`.
+    New `once` ScheduleKind with an absolute local `at` ("YYYY-MM-DDTHH:MM", no tz,
+    read as local to match the Rust `NaiveDateTime`). `coerceSchedules` drops a once
+    entry whose `at` is malformed OR a non-existent date (Feb 30) via `isValidAt`, so a
+    reminder that would silently never fire is rejected up front. The scheduler's
+    `once_due` fires exactly once at/after `at` within the 30-min catch-up window and
+    never again; on fire the schedule loop takes a dedicated path - NO agent turn -
+    calling `deliver_reminder` (OS notification + a `reminder://fired` event the voice
+    widget speaks via TTS, mirroring the "On it" ack queue), records it fired, and
+    retires it with the new `settings::disable_schedule` (mirrors `disable_watch`) so it
+    neither re-fires this session nor re-arms on restart. The automation `add_schedule`
+    tool gained `once` in its kind enum + an `at` param and a reminder-phrased success
+    line; `policy.summarize` renders a once card as `Remind "x" once at <at>: "<prompt>"`
+    (still gated + prompt-visible, 1.2). A once schedule shows read-only in the Settings
+    automation list (voice-created, self-retiring) rather than as editable daily controls.
+    Pinned: schedules.test (valid/malformed/Feb-30/no-at coercion), scheduler
+    once_due (window/late/before/already-fired/malformed), store.test
+    (validate + summarize), policy.test (summarize once). Full suite: 251 vitest +
+    Rust scheduler tests green, clippy `-D warnings` + eslint clean.
 
 4.2 **Voice management verbs: remove / enable / disable automations** (x2) | P1 | S
     The automation server can create but never manage - "stop the build watch" is

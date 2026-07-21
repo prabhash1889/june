@@ -13,8 +13,20 @@ describe("coerceSchedules", () => {
       time: "09:00",
       days: [1, 2],
       everyMinutes: 60,
+      at: "",
       enabled: true,
     });
+  });
+
+  it("keeps a valid once reminder and drops one with an invalid absolute time (4.1)", () => {
+    const out = coerceSchedules([
+      { label: "Call mom", prompt: "call mom", kind: "once", at: "2026-07-21T15:00", enabled: true },
+      { label: "Bad", kind: "once", at: "3pm" }, // malformed
+      { label: "Feb30", kind: "once", at: "2026-02-30T09:00" }, // non-existent date
+      { label: "None", kind: "once" }, // no at at all
+    ]);
+    expect(out).toHaveLength(1);
+    expect(out[0]).toMatchObject({ kind: "once", at: "2026-07-21T15:00", prompt: "call mom" });
   });
 
   it("keeps an interval schedule and drops one with no valid interval (P1.1)", () => {

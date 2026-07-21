@@ -12,22 +12,27 @@
 // loop); this module owns the shapes, the coercion for the settings bag, and the
 // security-critical prompt framing (18.3: trigger payloads are untrusted input).
 
-/** How a schedule recurs (improvement-5 P1.1). `daily` fires once per day at
- *  `time` on the chosen `days`; `every` fires on a fixed minute interval, ignoring
- *  the clock time and weekday. */
-export type ScheduleKind = "daily" | "every";
+/** How a schedule recurs (improvement-5 P1.1 + improvement-6 4.1). `daily` fires
+ *  once per day at `time` on the chosen `days`; `every` fires on a fixed minute
+ *  interval, ignoring the clock time and weekday; `once` is a one-shot reminder/
+ *  timer that fires a single time at an absolute `at`, then retires itself. */
+export type ScheduleKind = "daily" | "every" | "once";
 
 /** A recurring headless run (18.1 + improvement-5 P1.1). A `daily` schedule fires
  *  `prompt` at `time` local on the chosen `days`; an `every` schedule fires every
- *  `everyMinutes`. The run is always UNATTENDED, so any tool call that needs
- *  approval is blocked, never auto-approved (18.2). Both fields are always present
- *  (defaulted) so the UI can flip `kind` without losing the other mode's values. */
+ *  `everyMinutes`; a `once` schedule fires a single reminder at the absolute `at`
+ *  time and then disables itself (improvement-6 4.1). A `daily`/`every` run is
+ *  always UNATTENDED, so any tool call that needs approval is blocked, never
+ *  auto-approved (18.2); a `once` reminder needs no agent turn at all - it is just
+ *  spoken + notified. Every mode's field is always present (defaulted) so the UI
+ *  can flip `kind` without losing the other modes' values. */
 export interface Schedule {
   id: string;
   label: string;
-  /** The task to run, e.g. "give me a short briefing of my calendar and inbox". */
+  /** The task to run, e.g. "give me a short briefing of my calendar and inbox".
+   *  For a `once` reminder this is the thing to be reminded about ("call mom"). */
   prompt: string;
-  /** "daily" (time+days) or "every" (everyMinutes). */
+  /** "daily" (time+days), "every" (everyMinutes), or "once" (at). */
   kind: ScheduleKind;
   /** 24h local time "HH:MM" - used when kind is "daily". */
   time: string;
@@ -35,6 +40,8 @@ export interface Schedule {
   days: number[];
   /** Fire interval in minutes - used when kind is "every". */
   everyMinutes: number;
+  /** Absolute local fire time "YYYY-MM-DDTHH:MM" - used when kind is "once". */
+  at: string;
   enabled: boolean;
 }
 
@@ -71,6 +78,22 @@ export interface FileTrigger {
 
 const SLUG = /^[a-z0-9][a-z0-9-]*$/;
 const HHMM = /^([01]\d|2[0-3]):([0-5]\d)$/;
+/** Absolute local fire time for a `once` reminder (improvement-6 4.1): a bare
+ *  "YYYY-MM-DDTHH:MM" with NO timezone, read as local time (matching the Rust
+ *  scheduler's `NaiveDateTime`). Well-formedness only - `isValidAt` also rejects a
+ *  non-existent calendar date (Feb 30). */
+const ISO_LOCAL = /^(\d{4})-(\d{2})-(\d{2})T([01]\d|2[0-3]):([0-5]\d)$/;
+
+/** True if `s` is a real local "YYYY-MM-DDTHH:MM" datetime - well-formed AND an
+ *  existing date (Feb 30 / month 13 rejected, which the regex alone allows). A
+ *  reminder whose time never resolves would silently never fire, so it's dropped. */
+function isValidAt(s: string): boolean {
+  const m = ISO_LOCAL.exec(s);
+  if (!m) return false;
+  const [, , mo, d] = m;
+  const dt = new Date(`${s}:00`); // no tz suffix -> parsed as local time
+  return !Number.isNaN(dt.getTime()) && dt.getMonth() === Number(mo) - 1 && dt.getDate() === Number(d);
+}
 
 /** Interval bounds for `every` schedules and watch loops (improvement-5 P1.1/P1.2):
  *  at least 1 minute (finer than a tick would busy-spin), at most a week (past that,
@@ -127,9 +150,10 @@ function uniqueId(raw: unknown, label: string, taken: Set<string>): string {
 }
 
 /** Coerce a raw settings value into a valid Schedule[]. A `daily` entry with no
- *  valid HH:MM time is dropped (nothing to fire), and an `every` entry with no
- *  usable interval is dropped; everything else falls back per-field so a partial/
- *  old file still loads. An old entry with no `kind` reads as `daily` (P1.1). */
+ *  valid HH:MM time is dropped (nothing to fire), an `every` entry with no usable
+ *  interval is dropped, and a `once` entry with no valid absolute `at` is dropped
+ *  (nothing to fire); everything else falls back per-field so a partial/old file
+ *  still loads. An old entry with no `kind` reads as `daily` (P1.1). */
 export function coerceSchedules(v: unknown): Schedule[] {
   if (!Array.isArray(v)) return [];
   const taken = new Set<string>();
@@ -137,22 +161,25 @@ export function coerceSchedules(v: unknown): Schedule[] {
   for (const raw of v) {
     if (typeof raw !== "object" || raw === null) continue;
     const r = raw as Record<string, unknown>;
-    const kind: ScheduleKind = r.kind === "every" ? "every" : "daily";
+    const kind: ScheduleKind = r.kind === "every" ? "every" : r.kind === "once" ? "once" : "daily";
     const time = str(r.time).trim();
     const every = everyMinutesOrNull(r.everyMinutes);
+    const at = str(r.at).trim();
     if (kind === "daily" && !HHMM.test(time)) continue; // no valid fire time
     if (kind === "every" && every === null) continue; // no valid interval
+    if (kind === "once" && !isValidAt(at)) continue; // no valid absolute fire time
     const label = str(r.label, "Scheduled run").trim() || "Scheduled run";
     out.push({
       id: uniqueId(r.id, label, taken),
       label,
       prompt: str(r.prompt).trim(),
       kind,
-      // Keep both modes' values valid so switching kind in the UI never yields a
+      // Keep every mode's value valid so switching kind in the UI never yields a
       // schedule the coercer would later drop.
       time: HHMM.test(time) ? time : "09:00",
       days: days(r.days),
       everyMinutes: every ?? DEFAULT_EVERY_MINUTES,
+      at: isValidAt(at) ? at : "",
       enabled: bool(r.enabled, false),
     });
   }

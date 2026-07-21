@@ -1314,7 +1314,7 @@ function AutomationSection({ settings, update }: { settings: JuneSettings; updat
   const addSchedule = () =>
     setSchedules([
       ...schedules,
-      { id: freshId("schedule", schedules), label: "New schedule", prompt: "", kind: "daily", time: "09:00", days: [], everyMinutes: 60, enabled: false },
+      { id: freshId("schedule", schedules), label: "New schedule", prompt: "", kind: "daily", time: "09:00", days: [], everyMinutes: 60, at: "", enabled: false },
     ]);
   const addTrigger = () =>
     setTriggers([
@@ -1359,19 +1359,29 @@ function AutomationSection({ settings, update }: { settings: JuneSettings; updat
             <RunNowButton id={s.id} disabled={!s.prompt.trim()} />
             <button onClick={() => setSchedules(schedules.filter((x) => x.id !== s.id))}>Remove</button>
           </div>
-          <div className="stage-row">
-            <span className="stage-label">Repeat</span>
-            <select
-              value={s.kind}
-              onChange={(e) => patchSchedule(s.id, { kind: e.target.value === "every" ? "every" : "daily" })}
-              title="How this schedule recurs"
-              aria-label="How this schedule recurs"
-            >
-              <option value="daily">Daily at a time</option>
-              <option value="every">Every N minutes</option>
-            </select>
-          </div>
-          {s.kind === "every" ? (
+          {/* A `once` reminder (improvement-6 4.1) is created by voice and retires
+              itself after firing, so it is read-only here - only its one-time fire
+              time is shown, not the recurring daily/every controls. */}
+          {s.kind === "once" ? (
+            <div className="stage-row">
+              <span className="stage-label">Reminder</span>
+              <span className="settings-hint">one-time at {s.at || "—"} (created by voice)</span>
+            </div>
+          ) : (
+            <div className="stage-row">
+              <span className="stage-label">Repeat</span>
+              <select
+                value={s.kind}
+                onChange={(e) => patchSchedule(s.id, { kind: e.target.value === "every" ? "every" : "daily" })}
+                title="How this schedule recurs"
+                aria-label="How this schedule recurs"
+              >
+                <option value="daily">Daily at a time</option>
+                <option value="every">Every N minutes</option>
+              </select>
+            </div>
+          )}
+          {s.kind === "once" ? null : s.kind === "every" ? (
             <div className="stage-row">
               <span className="stage-label">Every</span>
               <input

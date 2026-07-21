@@ -23,6 +23,15 @@ describe("validateSchedule (P1.5)", () => {
     expect(validateSchedule({ label: "x", kind: "daily", time: "nope" })).toBeNull();
     expect(validateSchedule({ label: "x", kind: "every" })).toBeNull();
   });
+
+  it("accepts a valid once reminder and rejects one with no valid absolute time (4.1)", () => {
+    expect(validateSchedule({ label: "Call mom", prompt: "call mom", kind: "once", at: "2026-07-21T15:00" })).toMatchObject({
+      kind: "once",
+      at: "2026-07-21T15:00",
+    });
+    expect(validateSchedule({ label: "x", kind: "once", at: "later" })).toBeNull();
+    expect(validateSchedule({ label: "x", kind: "once" })).toBeNull();
+  });
 });
 
 describe("validateWatch (P1.5)", () => {
@@ -73,5 +82,13 @@ describe("summarizeAutomations (P1.5)", () => {
     expect(out).toContain("daily at 09:00");
     expect(out).toContain("Build");
     expect(out).toContain("every 10 min");
+  });
+
+  it("summarizes a once reminder (4.1)", () => {
+    const out = summarizeAutomations({
+      schedules: [{ label: "Call mom", prompt: "call mom", kind: "once", at: "2026-07-21T15:00", enabled: true }],
+    });
+    expect(out).toContain("Call mom");
+    expect(out).toContain("once at 2026-07-21T15:00");
   });
 });

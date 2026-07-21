@@ -475,6 +475,21 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
     };
   }, []);
 
+  // One-shot reminders (improvement-6 4.1): a `once` schedule fires a plain reminder
+  // with NO agent turn - the scheduler shows the OS notification and emits
+  // `reminder://fired` with the text, which we speak here. On its own one-shot queue
+  // so it stays out of any in-flight reply's latency mark, same as the "On it" ack.
+  useEffect(() => {
+    const unlisten = listen<string>("reminder://fired", (e) => {
+      const text = typeof e.payload === "string" ? e.payload.trim() : "";
+      if (!text) return;
+      new SpeechQueue(() => {}, settingsRef.current.tts).enqueue(`Reminder. ${text}`);
+    });
+    return () => {
+      void unlisten.then((f) => f());
+    };
+  }, []);
+
   // Open an echo-cancelled monitor mic while June is thinking OR speaking, so the
   // user's voice can barge in. Arming during `thinking` too (3.4) lets speech
   // interrupt a long tool call, not just playback - `bargeIn` already handles both

@@ -95,13 +95,14 @@ server.registerTool(
   {
     title: "Add a scheduled run",
     description:
-      "Create a scheduled unattended run: June runs the given task on its own, either daily at a time or every N minutes. Use for 'every morning brief me', 'check my inbox every hour'. The run is unattended, so any action needing approval is blocked - use it for read-and-report tasks.",
+      "Create a scheduled unattended run OR a one-shot reminder. 'daily'/'every' run the given task on their own (daily at a time, or every N minutes) - use for 'every morning brief me', 'check my inbox every hour'; these run unattended, so any action needing approval is blocked (read-and-report tasks). 'once' is a one-shot reminder/timer that fires a single time at an absolute date-time and then retires - use for 'remind me in 20 minutes' or 'remind me at 3pm'; compute the absolute fire time from the current time and pass it as 'at'.",
     inputSchema: {
-      label: z.string().min(1).describe("A short name for the schedule, e.g. 'Morning briefing'."),
-      prompt: z.string().min(1).describe("The task to run, phrased as an instruction."),
-      kind: z.enum(["daily", "every"]).default("daily").describe("'daily' at a time, or 'every' N minutes."),
+      label: z.string().min(1).describe("A short name, e.g. 'Morning briefing' or 'Call mom'."),
+      prompt: z.string().min(1).describe("The task to run, or - for a 'once' reminder - the thing to be reminded about."),
+      kind: z.enum(["daily", "every", "once"]).default("daily").describe("'daily' at a time, 'every' N minutes, or 'once' at an absolute time."),
       time: z.string().optional().describe("24h HH:MM for a daily schedule, e.g. '09:00'."),
       everyMinutes: z.number().int().positive().optional().describe("Interval in minutes for an 'every' schedule."),
+      at: z.string().optional().describe("Absolute local fire time 'YYYY-MM-DDTHH:MM' for a 'once' reminder, e.g. '2026-07-21T15:00'."),
       days: z.array(z.number().int().min(0).max(6)).optional().describe("Days for a daily schedule, 0=Sun..6=Sat; omit for every day."),
     },
   },
@@ -110,9 +111,14 @@ server.registerTool(
       try {
         const schedule = validateSchedule({ ...input, enabled: true });
         if (!schedule) {
-          return fail("I need a valid time (HH:MM) for a daily schedule, or a minute interval for an 'every' schedule.");
+          return fail(
+            "I need a valid time (HH:MM) for a daily schedule, a minute interval for an 'every' schedule, or an absolute 'YYYY-MM-DDTHH:MM' time for a 'once' reminder.",
+          );
         }
         await writeBag(withSchedule(await readBag(), schedule));
+        if (schedule.kind === "once") {
+          return ok(`Reminder "${schedule.label}" set for ${schedule.at}. I'll speak it and send a notification when it's time.`);
+        }
         const recur = schedule.kind === "every" ? `every ${schedule.everyMinutes} minutes` : `daily at ${schedule.time}`;
         return ok(`Scheduled "${schedule.label}" to run ${recur}. It runs unattended and reports back.`);
       } catch (e) {

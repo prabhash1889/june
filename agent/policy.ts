@@ -246,6 +246,11 @@ export function summarize(action: string, input: Record<string, unknown>): strin
       // injected instruction hidden behind an innocent label must be visible to the
       // approver. Control chars made visible, capped so a huge blob can't flood.
       const label = s("label") || "a task";
+      // A `once` reminder (4.1) is a one-shot, not an unattended run, so it reads as
+      // a reminder on the card; daily/every still read as recurring unattended runs.
+      if (s("kind") === "once") {
+        return `Remind "${label}" once at ${s("at") || "?"}${promptTail(s("prompt"))}`;
+      }
       const recur =
         s("kind") === "every"
           ? `every ${Number(input.everyMinutes ?? 0) || "?"} min`
