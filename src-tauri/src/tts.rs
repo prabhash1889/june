@@ -56,13 +56,9 @@ impl TtsProvider for OpenAiTts {
             return Err("The OpenAI API key is empty. Set it in June's settings.".to_string());
         }
 
-        let client = reqwest::Client::builder()
-            .timeout(REQUEST_TIMEOUT)
-            .build()
-            .map_err(|e| e.to_string())?;
-
-        let resp = client
+        let resp = crate::http::client()
             .post(SPEECH_URL)
+            .timeout(REQUEST_TIMEOUT)
             .bearer_auth(key)
             .json(&serde_json::json!({
                 "model": self.model,

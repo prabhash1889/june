@@ -15,8 +15,8 @@ const OPENAI_KEY_SERVICE: &str = "june_provider_openai_api_key";
 const WHISPER_URL: &str = "https://api.openai.com/v1/audio/transcriptions";
 const WHISPER_MODEL: &str = "whisper-1";
 // Voice UX: fail fast. A stalled connection (VPN hiccup) must surface as an
-// error in seconds, not pin the UI in "Transcribing…" for half a minute.
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+// error in seconds, not pin the UI in "Transcribing…" for half a minute. The
+// connect timeout is baked into the shared client (http.rs); this is the total.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// One transcription backend. `audio` is a complete encoded clip (e.g. webm/opus
@@ -47,14 +47,9 @@ impl SttProvider for OpenAiStt {
             .text("model", WHISPER_MODEL)
             .part("file", part);
 
-        let client = reqwest::Client::builder()
-            .connect_timeout(CONNECT_TIMEOUT)
-            .timeout(REQUEST_TIMEOUT)
-            .build()
-            .map_err(|e| e.to_string())?;
-
-        let resp = client
+        let resp = crate::http::client()
             .post(WHISPER_URL)
+            .timeout(REQUEST_TIMEOUT)
             .bearer_auth(key)
             .multipart(form)
             .send()

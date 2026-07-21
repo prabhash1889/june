@@ -74,12 +74,9 @@ pub async fn bridge_health() -> BridgeHealth {
         return BridgeHealth::miss("The bridge discovery record has no endpoint.");
     }
 
-    let client = match reqwest::Client::builder().timeout(PROBE_TIMEOUT).build() {
-        Ok(c) => c,
-        Err(e) => return BridgeHealth::miss(format!("Could not build the probe client: {e}")),
-    };
-    match client
+    match crate::http::client()
         .get(format!("{endpoint}/capabilities"))
+        .timeout(PROBE_TIMEOUT)
         .bearer_auth(&token)
         .send()
         .await
@@ -166,12 +163,7 @@ pub async fn test_brain(provider: String, base_url: String) -> ProbeResult {
         }
     };
 
-    let client = match reqwest::Client::builder().timeout(PROBE_TIMEOUT).build() {
-        Ok(c) => c,
-        Err(e) => {
-            return ProbeResult { ok: false, detail: format!("Could not build the probe client: {e}"), ms: elapsed(started) }
-        }
-    };
+    let client = crate::http::client();
 
     let req = if provider == "claude" {
         if key.trim().is_empty() {
@@ -197,7 +189,7 @@ pub async fn test_brain(provider: String, base_url: String) -> ProbeResult {
         r
     };
 
-    match req.send().await {
+    match req.timeout(PROBE_TIMEOUT).send().await {
         Ok(resp) if resp.status().is_success() => {
             ProbeResult { ok: true, detail: "Reachable and authenticated.".to_string(), ms: elapsed(started) }
         }

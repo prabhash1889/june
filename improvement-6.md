@@ -203,10 +203,15 @@ round-trip + legacy migration (1.9).
 
 ## Phase 3 - Voice quality and latency
 
-3.1 **One shared `reqwest::Client`** | P1 | S
+3.1 **One shared `reqwest::Client`** | P1 | S - DONE
     STT, TTS and diagnostics each build a fresh client (new pool + TLS handshake) per
     call - on both voice legs of every turn. `static OnceLock<Client>` with per-request
     timeouts. `src-tauri/src/stt.rs`, `tts.rs`, `diagnostics.rs`.
+    New `src-tauri/src/http.rs`: `client()` returns a process-wide `OnceLock<Client>`
+    built once with a 5s connect timeout; the four call sites (stt, tts, and both
+    diagnostics probes) now reuse it and set their own total timeout per request via
+    `RequestBuilder::timeout` (STT 15s, TTS 30s, probes 2s). Dropped the per-call
+    `Client::builder()` and its build-error arms. All 40 cargo tests + clippy green.
 
 3.2 **Move local STT/TTS inference off the webview main thread** | P1 | M
     `numThreads: 1`, no worker proxy - Moonshine and every Kokoro sentence freeze the
