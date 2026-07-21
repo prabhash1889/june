@@ -1,4 +1,5 @@
 use keyring::Entry;
+use tauri::{AppHandle, Emitter};
 
 const KEYCHAIN_USER: &str = "june_user";
 
@@ -25,10 +26,18 @@ fn validate_service_name(service: &str) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn set_api_key(service: String, key: String) -> Result<(), String> {
+pub async fn set_api_key(app: AppHandle, service: String, key: String) -> Result<(), String> {
+    let svc = service.clone();
     tauri::async_runtime::spawn_blocking(move || set_api_key_inner(service, key))
         .await
-        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())??;
+    // 7.12: tell both windows a key changed (the app shows a confirmation toast; the
+    // widget can re-check its key gate). No secret rides in the payload.
+    let _ = app.emit(
+        "keychain://changed",
+        serde_json::json!({ "service": svc, "action": "set" }),
+    );
+    Ok(())
 }
 
 fn set_api_key_inner(service: String, key: String) -> Result<(), String> {
@@ -91,7 +100,18 @@ pub async fn has_api_key(service: String) -> Result<bool, String> {
 }
 
 #[tauri::command]
-pub async fn delete_api_key(service: String) -> Result<(), String> {
+pub async fn delete_api_key(
+    app: AppHandle,
+    window: tauri::Window,
+    service: String,
+) -> Result<(), String> {
+    // 7.12: deletion is destructive and only the full Settings window (label "app")
+    // ever needs it - the widget only ever ADDS a key via its onboarding gate. Deny
+    // deletion from any other webview (least privilege).
+    if window.label() != "app" {
+        return Err("Deleting keys is only available from the Settings window.".into());
+    }
+    let svc = service.clone();
     tauri::async_runtime::spawn_blocking(move || {
         validate_service_name(&service)?;
         let entry = Entry::new(&service, KEYCHAIN_USER).map_err(|e| e.to_string())?;
@@ -102,7 +122,12 @@ pub async fn delete_api_key(service: String) -> Result<(), String> {
         }
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())??;
+    let _ = app.emit(
+        "keychain://changed",
+        serde_json::json!({ "service": svc, "action": "deleted" }),
+    );
+    Ok(())
 }
 
 #[cfg(test)]

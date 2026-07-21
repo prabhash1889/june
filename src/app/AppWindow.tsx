@@ -194,6 +194,9 @@ export function AppWindow() {
   // Transient failure note (improvement-5 P0.7): a failed invoke must not look
   // like a button that did nothing.
   const [note, setNote] = useState<string | null>(null);
+  // 7.12: a positive transient toast (distinct from the red failure `note`) - e.g.
+  // a keychain change confirmation, so a key save/remove doesn't happen silently.
+  const [flash, setFlash] = useState<string | null>(null);
   // Unseen-runs badge (2.4): a run that lands while the user is on another tab
   // should announce itself, so a scheduled result isn't missed. Set on
   // `runs://updated` off the Runs tab; cleared when the Runs tab is opened.
@@ -237,6 +240,20 @@ export function AppWindow() {
     const id = window.setTimeout(() => setNote(null), 5000);
     return () => window.clearTimeout(id);
   }, [note]);
+
+  useEffect(() => {
+    if (!flash) return;
+    const id = window.setTimeout(() => setFlash(null), 3000);
+    return () => window.clearTimeout(id);
+  }, [flash]);
+
+  // 7.12: confirm a keychain change (set/delete) with a toast so it isn't silent.
+  useEffect(() => {
+    const unlisten = listen<{ action?: string }>("keychain://changed", (e) => {
+      setFlash(e.payload?.action === "deleted" ? "API key removed." : "API key saved.");
+    });
+    return () => void unlisten.then((f) => f());
+  }, []);
 
   const tab = (v: View, label: string) => (
     <button className={view === v ? "active" : ""} aria-current={view === v ? "page" : undefined} onClick={() => setView(v)}>
@@ -297,6 +314,11 @@ export function AppWindow() {
       {note && (
         <p className="err app-note" role="alert">
           {note}
+        </p>
+      )}
+      {flash && (
+        <p className="app-note app-flash" role="status">
+          {flash}
         </p>
       )}
 

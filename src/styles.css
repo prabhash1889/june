@@ -819,6 +819,13 @@ button {
   margin: var(--sp-2) var(--sp-5) 0;
 }
 
+/* 7.12: positive keychain-change confirmation, distinct from the red failure note. */
+.app-flash {
+  color: var(--text-dim);
+  border-left: 2px solid var(--accent);
+  padding-left: var(--sp-2);
+}
+
 .app-approval {
   display: flex;
   align-items: center;

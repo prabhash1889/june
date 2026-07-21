@@ -953,11 +953,21 @@ round-trip + legacy migration (1.9).
     (un-pressed refused / held permitted / grace permitted / past-grace refused).
     1 cargo test green.
 
-7.11 **Retention controls for recorded activity** | P2 | S
+7.11 **Retention controls for recorded activity** | P2 | S - DONE
     audit.jsonl and june-runs.jsonl hold verbatim params/prompts indefinitely with no view
     or clear path. `clear_recorded_data` command + "Clear recorded activity" button next
     to the privacy picker, with retention stated. `src-tauri/src/agent_runner.rs`,
     settings UI.
+    New `clear_recorded_data` command (agent_runner.rs) deletes both the run ledger and
+    the audit log across both generations (june-runs.jsonl[.1], audit.jsonl[.1]); a
+    missing file is not an error (nothing to clear), a real delete failure is reported so
+    the user knows data may remain, and it emits `runs://updated` so an open Runs tab
+    empties at once. A `ClearActivity` block under the Privacy picker states the retention
+    (kept until cleared; on-device modes redact content) and gates the wipe behind a
+    two-click confirm (arm -> "Delete all recorded activity"/Cancel) so a stray click
+    can't destroy history, showing "Cleared."/the error after. New `clearRecordedData`
+    client in session.ts; `.clear-activity` layout in styles.css (reuses the existing
+    `.danger` button). typecheck + eslint + cargo build green.
 
 7.12 **Keychain hygiene + CSP tightening** | P3 | S
     Toast on `keychain://changed`, restrict key mutation to the app window; gate the four
