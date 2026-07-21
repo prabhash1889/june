@@ -1665,6 +1665,13 @@ kbd {
   color: var(--dim);
 }
 
+/* On-device setup row on the onboarding card (improvement-7 1.5). */
+.onboarding-progress {
+  margin: 0;
+  font-size: var(--fs-s);
+  color: var(--dim);
+}
+
 /* First-run autostart offer (improvement-7 1.3): the settings checkbox rule is
    scoped to .settings-view, so restate it for the onboarding card. */
 .onboarding-autostart input[type="checkbox"] {

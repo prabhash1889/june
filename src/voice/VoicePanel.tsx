@@ -9,7 +9,7 @@ import { hotkeyLabel } from "../lib/hotkey.ts";
 import { appendInbox, hasOpenAiKey, injectText, runAgent, setOpenAiKey, transcribe } from "../lib/stt.ts";
 import { type Approval, cancelAgent, interactiveTurnBase, newConversation, openApp, useMission, usePendingApproval } from "../lib/session.ts";
 import { missionProgress } from "../lib/missions.ts";
-import { MODEL_PROGRESS_EVENT, type ModelProgress } from "../lib/model-progress.ts";
+import { formatModelProgress, MODEL_PROGRESS_EVENT, type ModelProgress } from "../lib/model-progress.ts";
 import { resolveProvider } from "../lib/providers.ts";
 import { followBottom } from "../lib/scroll.ts";
 import { DEFAULT_SETTINGS, type HandsFreeConfig, type JuneSettings, loadSettings, saveSettings, voiceAllowed, voiceNeedsOpenAiKey, type WakeConfig } from "../lib/settings.ts";
@@ -965,7 +965,12 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
               <p className="status" role="status">
                 <span className="status-dot busy" aria-hidden="true" />
                 Downloading the {modelDownload.label}
-                {modelDownload.pct != null ? ` - ${modelDownload.pct}%` : "…"} (one time)
+                {formatModelProgress(modelDownload)
+                  ? ` (${formatModelProgress(modelDownload)})`
+                  : modelDownload.pct != null
+                    ? ` - ${modelDownload.pct}%`
+                    : "…"}{" "}
+                (one time)
               </p>
             )}
             {voiceBlocked && (

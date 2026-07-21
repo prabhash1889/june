@@ -6,6 +6,7 @@ import { humanizeAction } from "../lib/actions.ts";
 import { useApprovalKeys } from "../lib/approval-hooks.ts";
 import { ApprovalMeta } from "../lib/approval-ui.tsx";
 import { usePttLabel } from "../lib/hotkey.ts";
+import { formatModelProgress, MODEL_PROGRESS_EVENT, type ModelProgress } from "../lib/model-progress.ts";
 import { PRIVACY_MODES, type PrivacyMode } from "../lib/privacy.ts";
 import { followBottom } from "../lib/scroll.ts";
 import { allocTurn, type Approval, newConversation, usePendingApproval } from "../lib/session.ts";
@@ -219,6 +220,15 @@ export function AppWindow() {
   useEffect(() => {
     void loadSettings().then(setSettings).catch(() => {});
   }, []);
+  // On-device voice setup progress (improvement-7 1.5). The download usually runs
+  // in the widget webview (or this window's settings preload); the aggregate is
+  // rebroadcast over Tauri, so the onboarding card can show one honest row.
+  const [modelSetup, setModelSetup] = useState<ModelProgress>(null);
+  useEffect(() => {
+    const unlisten = listen<ModelProgress>(MODEL_PROGRESS_EVENT, (e) => setModelSetup(e.payload));
+    return () => void unlisten.then((f) => f());
+  }, []);
+
   const finishOnboarding = (openSettings: boolean) => {
     setSettings((s) => {
       if (!s) return s;
@@ -291,6 +301,7 @@ export function AppWindow() {
         <Onboarding
           settings={settings}
           pttLabel={pttLabel}
+          modelSetup={modelSetup}
           onPrivacy={(mode) =>
             setSettings((s) => {
               if (!s) return s;
@@ -388,12 +399,14 @@ export function AppWindow() {
 function Onboarding({
   settings,
   pttLabel,
+  modelSetup,
   onPrivacy,
   onLaunchAtLogin,
   onDone,
 }: {
   settings: JuneSettings;
   pttLabel: string;
+  modelSetup: ModelProgress;
   onPrivacy: (mode: PrivacyMode) => void;
   onLaunchAtLogin: (on: boolean) => void;
   onDone: (openSettings: boolean) => void;
@@ -425,6 +438,15 @@ function Onboarding({
             </label>
           ))}
         </div>
+
+        {/* One aggregate on-device setup row (improvement-7 1.5), shown only while
+            a local voice model is actually downloading. */}
+        {modelSetup && (
+          <p className="onboarding-progress" role="status">
+            Setting up on-device voice
+            {formatModelProgress(modelSetup) ? ` (${formatModelProgress(modelSetup)})` : "…"} - one-time download.
+          </p>
+        )}
 
         {/* Offered once at first run (improvement-7 1.3); changeable any time in
             Settings -> Activation. Default off - autostart is the user's call. */}

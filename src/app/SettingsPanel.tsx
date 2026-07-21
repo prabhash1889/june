@@ -1,4 +1,4 @@
-import { type RefObject, useEffect, useRef, useState } from "react";
+import { type ReactNode, type RefObject, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 
 import { MapTextarea } from "./MapTextarea.tsx";
@@ -11,6 +11,7 @@ import {
 } from "../lib/diagnostics.ts";
 import { chordFromKeyEvent, hotkeyLabel } from "../lib/hotkey.ts";
 import { type LatencySample, latencySamples, percentile, type UsageTotals, usageTotal } from "../lib/latency.ts";
+import { formatModelProgress, MODEL_PROGRESS_EVENT, type ModelProgress } from "../lib/model-progress.ts";
 import { type VoiceHealth, voiceHealth } from "../lib/voice-health.ts";
 import {
   MCP_CATALOG,
@@ -336,8 +337,9 @@ function ModelInput({
 }
 
 /** Test button + result line. Latency doubles as the diagnostics latency
- *  breakdown for this stage (§4). */
-function TestControl({ run }: { run: () => Promise<ProbeResult> }) {
+ *  breakdown for this stage (§4). `blocked` (1.5) disables the button while an
+ *  on-device model download is still setting the stage up. */
+function TestControl({ run, blocked }: { run: () => Promise<ProbeResult>; blocked?: boolean }) {
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<ProbeResult | null>(null);
 
@@ -355,7 +357,7 @@ function TestControl({ run }: { run: () => Promise<ProbeResult> }) {
 
   return (
     <div className="settings-test">
-      <button onClick={click} disabled={busy}>
+      <button onClick={click} disabled={busy || blocked} title={blocked ? "Waiting for the on-device model download" : undefined}>
         {busy ? "Testing…" : "Test"}
       </button>
       {result && (
@@ -423,8 +425,70 @@ function MicMeter({ capture }: { capture: RefObject<CaptureHandle | null> }) {
   );
 }
 
+/** On-device model setup for a local STT/TTS pick (improvement-7 1.5). Picking a
+ *  local provider immediately warms the model download (instead of the FIRST TURN
+ *  paying it), and the caller blocks its Test button until ready. Only the
+ *  provider's listed model ids preload - a custom id typed into the free-text
+ *  model field still loads on first use, so keystrokes never trigger downloads. */
+function useLocalModelSetup(stage: "stt" | "tts", providerId: string, model: string): { ready: boolean; row: ReactNode } {
+  const provider = resolveProvider(stage, providerId);
+  const known = provider?.kind === "local" && provider.models.some((m) => m.id === model);
+  const [ready, setReady] = useState(true);
+  const [failed, setFailed] = useState(false);
+  const [progress, setProgress] = useState<ModelProgress>(null);
+
+  useEffect(() => {
+    if (!known) {
+      setReady(true);
+      setFailed(false);
+      return;
+    }
+    let alive = true;
+    setReady(false);
+    setFailed(false);
+    const load =
+      stage === "stt"
+        ? import("../lib/local-stt.ts").then((m) => m.preloadLocalStt(model))
+        : import("../lib/local-tts.ts").then((m) => m.preloadLocalTts(model));
+    load.then(
+      () => {
+        if (alive) setReady(true);
+      },
+      () => {
+        if (alive) setFailed(true);
+      },
+    );
+    return () => {
+      alive = false;
+    };
+  }, [stage, known, model]);
+
+  // The preload runs in this webview, so the window event carries the aggregate.
+  useEffect(() => {
+    const onProgress = (e: Event) => setProgress((e as CustomEvent<ModelProgress>).detail);
+    window.addEventListener(MODEL_PROGRESS_EVENT, onProgress);
+    return () => window.removeEventListener(MODEL_PROGRESS_EVENT, onProgress);
+  }, []);
+
+  if (!known || ready) return { ready: true, row: null };
+  const row = failed ? (
+    <p className="err" role="alert">
+      Couldn't download the on-device model - check your connection. It will retry when you use voice.
+    </p>
+  ) : (
+    <p className="settings-hint" role="status">
+      Setting up on-device voice{progress && formatModelProgress(progress) ? ` (${formatModelProgress(progress)})` : "…"}{" "}
+      - one-time download.
+    </p>
+  );
+  return { ready: false, row };
+}
+
 function SttCard({ settings, update }: { settings: JuneSettings; update: (s: JuneSettings) => void }) {
   const provider = resolveProvider("stt", settings.stt.provider);
+  // Local model warm-up (1.5): picking Moonshine starts the download here, and
+  // Test is blocked until it's ready instead of hanging on the download.
+  const setup = useLocalModelSetup("stt", settings.stt.provider, settings.stt.model);
   const [busy, setBusy] = useState(false);
   // While the test records, show a live input meter (improvement-5 P2 6.8) - the
   // ~11Hz poll lives in <MicMeter> (7.5) so it re-renders only that child, not the
@@ -491,8 +555,13 @@ function SttCard({ settings, update }: { settings: JuneSettings; update: (s: Jun
         <span className="stage-label">Microphone</span>
         <DevicePicker kind="audioinput" value={settings.micDeviceId} onChange={(id) => update({ ...settings, micDeviceId: id })} />
       </div>
+      {setup.row}
       <div className="settings-test">
-        <button onClick={runTest} disabled={busy}>
+        <button
+          onClick={runTest}
+          disabled={busy || !setup.ready}
+          title={setup.ready ? undefined : "Waiting for the on-device model download"}
+        >
           {busy ? "Testing…" : "Test"}
         </button>
         {recording && <MicMeter capture={captureRef} />}
@@ -552,6 +621,8 @@ function BrainCard({ settings, update }: { settings: JuneSettings; update: (s: J
 
 function TtsCard({ settings, update }: { settings: JuneSettings; update: (s: JuneSettings) => void }) {
   const provider = resolveProvider("tts", settings.tts.provider);
+  // Local model warm-up (1.5): picking Kokoro starts the download here.
+  const setup = useLocalModelSetup("tts", settings.tts.provider, settings.tts.model);
 
   const runTest = async (): Promise<ProbeResult> => {
     const t0 = performance.now();
@@ -598,7 +669,8 @@ function TtsCard({ settings, update }: { settings: JuneSettings; update: (s: Jun
         />
         <span className="settings-hint">{Math.round(settings.outputVolume * 100)}%</span>
       </div>
-      <TestControl run={runTest} />
+      {setup.row}
+      <TestControl run={runTest} blocked={!setup.ready} />
     </div>
   );
 }

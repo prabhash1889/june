@@ -21,6 +21,8 @@ export const DEFAULT_KOKORO_VOICE = "af_heart";
 // One warm model per id; a failed load is evicted so the next turn retries.
 const models = new Map<string, Promise<KokoroTTS>>();
 
+const TTS_PROGRESS_LABEL = "voice model";
+
 function getModel(model: string): Promise<KokoroTTS> {
   const id = model || DEFAULT_TTS_MODEL;
   let p = models.get(id);
@@ -32,18 +34,24 @@ function getModel(model: string): Promise<KokoroTTS> {
     p = KokoroTTS.from_pretrained(id, {
       dtype: "q8",
       device: "wasm",
-      progress_callback: (info: XformersProgress) => reportModelProgress("voice model", info),
+      progress_callback: (info: XformersProgress) => reportModelProgress(TTS_PROGRESS_LABEL, info),
     });
     void p.then(
-      () => clearModelProgress(),
+      () => clearModelProgress(TTS_PROGRESS_LABEL),
       () => {
         models.delete(id);
-        clearModelProgress();
+        clearModelProgress(TTS_PROGRESS_LABEL);
       },
     );
     models.set(id, p);
   }
   return p;
+}
+
+/** Warm the Kokoro model (improvement-7 1.5): download + compile it now so
+ *  picking the local voice doesn't make the first reply pay the download. */
+export function preloadLocalTts(model: string): Promise<void> {
+  return getModel(model).then(() => undefined);
 }
 
 /** Pick a valid Kokoro voice: the user's choice if the model actually has it,

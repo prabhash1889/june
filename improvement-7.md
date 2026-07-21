@@ -54,7 +54,7 @@ every other improvement multiplies in value once the app is installable.
     scheduler flags - this is wiring, not machinery.
     `src-tauri/src/lib.rs`, `scheduler.rs`, `src/lib/settings.ts`.
 
-1.5 **First-run model download UX** | P2 | S/M
+1.5 **First-run model download UX** | P2 | S/M - DONE
     `fetch-models.mjs` runs at build time, but the webview also pulls Moonshine/Kokoro/
     Silero from HF at first use with only a tiny progress hint. Surface one aggregate
     "Setting up on-device voice (34/120 MB)" progress row in onboarding, wired to the

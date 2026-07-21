@@ -28,6 +28,8 @@ const TARGET_RATE = 16_000; // every supported ASR model expects 16kHz mono
 // turn retries rather than caching a rejection forever.
 const pipes = new Map<string, Promise<AutomaticSpeechRecognitionPipeline>>();
 
+const STT_PROGRESS_LABEL = "speech-to-text model";
+
 function getPipe(model: string): Promise<AutomaticSpeechRecognitionPipeline> {
   const id = model || DEFAULT_STT_MODEL;
   let p = pipes.get(id);
@@ -39,18 +41,25 @@ function getPipe(model: string): Promise<AutomaticSpeechRecognitionPipeline> {
       device: "wasm",
       // First run downloads ~190MB of weights; the widget shows the progress
       // (improvement-5 P0.5) instead of hanging in "Transcribing…".
-      progress_callback: (info: XformersProgress) => reportModelProgress("speech-to-text model", info),
+      progress_callback: (info: XformersProgress) => reportModelProgress(STT_PROGRESS_LABEL, info),
     }) as unknown as Promise<AutomaticSpeechRecognitionPipeline>;
     void p.then(
-      () => clearModelProgress(),
+      () => clearModelProgress(STT_PROGRESS_LABEL),
       () => {
         pipes.delete(id);
-        clearModelProgress();
+        clearModelProgress(STT_PROGRESS_LABEL);
       },
     );
     pipes.set(id, p);
   }
   return p;
+}
+
+/** Warm the ASR model (improvement-7 1.5): download + compile it now so picking
+ *  a local provider doesn't make the FIRST TURN pay the multi-minute download.
+ *  Resolves when the pipeline is ready; rejects if the load failed. */
+export function preloadLocalStt(model: string): Promise<void> {
+  return getPipe(model).then(() => undefined);
 }
 
 /** Decode a compressed clip (webm/opus, mp4, ...) straight from MediaRecorder to

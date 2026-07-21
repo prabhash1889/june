@@ -8,7 +8,7 @@ import prettier from "eslint-config-prettier";
 export default tseslint.config(
   {
     // Not linted: build output, dependencies, native Rust, generated data.
-    ignores: ["dist", "node_modules", "src-tauri/target", "src-tauri/gen", "coverage"],
+    ignores: ["dist", "node_modules", "src-tauri/target", "src-tauri/gen", "src-tauri/resources", "coverage"],
   },
 
   // Application source (browser + React + TypeScript).
