@@ -241,6 +241,72 @@ export const MCP_CATALOG: CatalogPreset[] = [
     },
   },
   {
+    // improvement-6 4.8: a read-only page reader so a non-Claude brain (which lacks
+    // Claude's built-in WebFetch) can "read me that article". Official reference
+    // fetch server (Python, run via uvx - needs `uv` installed). Read-only, so the
+    // whole server is safe to auto-run -> defaultClass observe; still networked, so
+    // it is dropped under strict offline and blocked on unattended runs (exfil).
+    note: "Fetch: read a web page's text for a non-Claude brain (Claude has WebFetch built in). Needs `uv` (uvx) installed.",
+    entry: {
+      id: "fetch",
+      label: "Fetch (web page reader)",
+      enabled: true,
+      offlineSafe: false,
+      defaultClass: "observe", // fetching a page is read-only
+      transport: {
+        kind: "stdio",
+        command: "uvx",
+        args: ["mcp-server-fetch@2026.7.10"],
+        env: {},
+      },
+    },
+  },
+  {
+    // improvement-6 4.8: a read-only calendar so the 9am briefing (and "what's on my
+    // calendar today") has something personal to say. taylorwilsdon/google_workspace_mcp
+    // scoped to calendar and started in --read-only mode (write tools disabled), so
+    // the whole server is safe reads -> defaultClass observe. Google's API is
+    // networked (offlineSafe false), so it is unavailable under strict offline and
+    // an unattended briefing still can't call it (networked observe is blocked) -
+    // calendar reads happen when the user is present. Fill in the OAuth env from a
+    // Google Cloud OAuth client.
+    note: "Google Calendar (read-only): 'what's on my calendar today'. Needs `uv` (uvx) and a Google OAuth client id/secret.",
+    entry: {
+      id: "google-calendar",
+      label: "Google Calendar (read-only)",
+      enabled: true,
+      offlineSafe: false,
+      defaultClass: "observe", // --read-only disables every write tool
+      transport: {
+        kind: "stdio",
+        command: "uvx",
+        args: ["workspace-mcp@1.22.0", "--tools", "calendar", "--read-only"],
+        env: { GOOGLE_OAUTH_CLIENT_ID: "", GOOGLE_OAUTH_CLIENT_SECRET: "" },
+      },
+    },
+  },
+  {
+    // improvement-6 4.8: the full Google Workspace preset improvement-4's acceptance
+    // scenario assumes (Gmail/Calendar/Drive/Docs). Unlike the calendar entry above
+    // this includes WRITE tools (send email, create event), so `defaultClass` is
+    // left UNSET - unknown tools fail closed to gated, and the user promotes the
+    // read tools after inspecting them (same stance as GitHub). `--tool-tier core`
+    // keeps the surface to the essential tools.
+    note: "Google Workspace (Gmail/Calendar/Drive/Docs): reads auto after you promote them; sends/writes stay gated. Needs `uv` (uvx) and a Google OAuth client id/secret.",
+    entry: {
+      id: "google-workspace",
+      label: "Google Workspace",
+      enabled: false, // opt-in - a broad, write-capable surface; enable when wanted
+      offlineSafe: false,
+      transport: {
+        kind: "stdio",
+        command: "uvx",
+        args: ["workspace-mcp@1.22.0", "--tool-tier", "core"],
+        env: { GOOGLE_OAUTH_CLIENT_ID: "", GOOGLE_OAUTH_CLIENT_SECRET: "" },
+      },
+    },
+  },
+  {
     note: "Playwright (browser automation): heavy (~100k tokens/task) - enable only on demand.",
     entry: {
       id: "playwright",

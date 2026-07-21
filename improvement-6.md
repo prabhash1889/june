@@ -543,11 +543,27 @@ round-trip + legacy migration (1.9).
     write reversible + summaries). Full system + policy suites green, typecheck +
     eslint clean.
 
-4.8 **Catalog presets: calendar, Google Workspace, `fetch_url`** | P1-P3 | S
+4.8 **Catalog presets: calendar, Google Workspace, `fetch_url`** | P1-P3 | S - DONE
     Pure catalog data, zero core code: a read-only calendar entry (the 9am briefing
     currently has nothing personal to say), the Google Workspace presets improvement-4's
     own acceptance scenario assumes, and a pinned fetch-style page reader so non-Claude
     brains can "read me that article". `src/lib/mcp-servers.ts::MCP_CATALOG`.
+    Three new `MCP_CATALOG` rows, zero core code (they are just entries a user adds):
+    (1) **Fetch** - the official reference `mcp-server-fetch` (Python, `uvx
+    mcp-server-fetch@2026.7.10`), read-only -> `defaultClass: observe`, so a non-Claude
+    brain can read an article; (2) **Google Calendar (read-only)** -
+    taylorwilsdon/google_workspace_mcp scoped `--tools calendar --read-only` (write
+    tools disabled), `defaultClass: observe`, so "what's on my calendar today"; (3)
+    **Google Workspace** - the full `--tool-tier core` surface (Gmail/Calendar/Drive/
+    Docs), shipped `enabled: false` (broad, write-capable) with `defaultClass` UNSET so
+    writes/sends fail closed to gated and the user promotes reads (same stance as
+    GitHub). All three are `offlineSafe: false` (networked Google/web APIs), so strict
+    offline drops them and an unattended run still can't call them (networked observe is
+    blocked - calendar reads happen with the user present). Versions PINNED per 13.5:
+    `workspace-mcp@1.22.0` and `mcp-server-fetch@2026.7.10` (both confirmed live on
+    PyPI). Both use `uvx`, so the catalog-pinning test was extended to require an
+    `@version` for uvx as well as npx. mcp-servers suite green, full typecheck + eslint
+    clean.
 
 4.9 **Read agent/terminal output through the bridge** | P2 | M
     June can spawn agents but cannot answer "what is agent 3 doing?", and mission verify
