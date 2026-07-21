@@ -230,6 +230,25 @@ round-trip + legacy migration (1.9).
     `mic.ts` manager with a rolling ~1s 16kHz ring buffer; capture/wake/barge/follow-up
     attach listeners instead of reopening; prepend the ring buffer to wake-started
     captures. `src/lib/voice-capture.ts`, `wake.ts`, `vad.ts`, `src/voice/VoicePanel.tsx`.
+    Foundation shipped (ref-counted stream ownership), pre-roll prepend deferred.
+    New `src/lib/mic.ts`: `MicManager` ref-counts one shared `MediaStream` - it opens
+    on the first consumer and closes a short linger (800ms) after the last release, so
+    a PTT-only user never has a hot mic at rest yet a wake -> capture handoff never
+    re-opens the device (the linger bridges the overlap where wake releases as capture
+    acquires). The three `getUserMedia` sites (`startCapture`, `startBargeMonitor`,
+    `startWakeListener`, incl. the local-wake, cloud-burst and unavailable teardowns)
+    now `acquireMic()`/`lease.release()` instead of opening and stopping their own
+    stream; the dead `audioConstraints` helper is gone (the manager owns constraints,
+    which are the getUserMedia defaults anyway, so one shared stream matches prior
+    behaviour). A `PreRollRing` (16kHz, ~1s, wrap-around) is fed by the barge-monitor
+    and capture Silero `onFrame`s so it stays warm across a handoff. `mic.test.ts`
+    pins the ring's retention and the manager's dedup/handoff/linger/idempotent-release/
+    device-swap/unplug-reopen paths (11 tests; full suite 240 vitest green).
+    ponytail: the ring is populated but not yet PREPENDED to a wake/follow-up clip -
+    that needs replacing `MediaRecorder`(webm) with PCM+WAV capture, which only pays off
+    once first-word clipping and barge-in latency can be measured on a real Windows mic
+    (not observable in CI). Warm-`MicVAD` reuse (vs. one `MicVAD` per consumer) is the
+    other deferred half. Do both in a device session.
 
 3.4 **Barge-in while thinking** | P2 | S
     The barge monitor only arms on `speaking`; during long tool calls speech does nothing.

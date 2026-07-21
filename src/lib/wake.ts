@@ -14,6 +14,7 @@
 // wakeword.ts's `createWakeRunners` with no code change. Until then the local
 // wake phrase is "hey jarvis".
 
+import { acquireMic, type MicLease } from "./mic.ts";
 import type { StageChoice } from "./settings.ts";
 import { transcribe } from "./stt.ts";
 import { classifyGetUserMediaError, pickMimeType, rms, SilenceDetector } from "./voice-capture.ts";
@@ -123,22 +124,17 @@ export async function startWakeListener(opts: {
   /** Preferred input device (settings.micDeviceId); omitted = system default. */
   deviceId?: string;
 }): Promise<WakeHandle> {
-  let stream: MediaStream;
+  // The shared mic (3.3): echo-cancelled + noise-suppressed so June's own speech
+  // and steady room noise don't trip the onset gate. Borrowing it (rather than
+  // opening a fresh stream) means the wake -> capture handoff never re-opens the
+  // device, and the pre-roll ring stays warm through it.
+  let lease: MicLease;
   try {
-    // Echo-cancelled + noise-suppressed so June's own speech and steady room
-    // noise don't trip the onset gate (mirrors the barge-in monitor). `ideal`
-    // device constraint so an unplugged chosen mic falls back to the default.
-    stream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true,
-        ...(opts.deviceId ? { deviceId: { ideal: opts.deviceId } } : {}),
-      },
-    });
+    lease = await acquireMic(opts.deviceId);
   } catch (err) {
     throw classifyGetUserMediaError(err);
   }
+  const stream = lease.stream;
 
   // Local openWakeWord first (offline). It borrows the stream via Silero.
   let local: LocalWakeHandle | null = null;
@@ -155,7 +151,7 @@ export async function startWakeListener(opts: {
     return {
       stop: () => {
         local.stop();
-        stream.getTracks().forEach((t) => t.stop());
+        lease.release();
       },
     };
   }
@@ -164,7 +160,7 @@ export async function startWakeListener(opts: {
   if (!opts.allowCloudFallback) {
     // Wake is off entirely - record it + the load error so Diagnostics shows why (2.7).
     reportVoiceHealth("wake", { path: "unavailable", error: localErr });
-    stream.getTracks().forEach((t) => t.stop());
+    lease.release();
     throw new Error("Local wake models are unavailable and cloud voice is blocked by the privacy mode.");
   }
   // Degraded to the cloud-STT burst path; surface the local-model load error (2.7).
@@ -252,8 +248,8 @@ export async function startWakeListener(opts: {
       window.clearInterval(tick);
       if (recorder && recorder.state !== "inactive") recorder.stop();
       recorder = null;
-      stream.getTracks().forEach((t) => t.stop());
       void audioCtx.close();
+      lease.release();
     },
   };
 }

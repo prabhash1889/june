@@ -10,6 +10,7 @@
 // vad.ts (which imports onnxruntime-web's wasm build) is loaded dynamically inside
 // the capture functions, so tests can import the RMS helpers here without ORT.
 
+import { acquireMic, type MicLease, pushMicFrame } from "./mic.ts";
 import { reportVoiceHealth } from "./voice-health.ts";
 
 /** A load/init error as a short string (2.7 health reporting). */
@@ -66,14 +67,6 @@ export function rms(frame: Float32Array): number {
  *  orb's glow ring, the waveform bars, and the STT test meter all map quiet
  *  speech (~0.05-0.12 RMS) onto a 0..1 range with this. */
 export const LEVEL_GAIN = 8;
-
-/** getUserMedia audio constraints honouring the user's chosen mic
- *  (improvement-5 P2 6.5). `ideal`, not `exact`: an unplugged device falls back
- *  to the system default instead of erroring. */
-function audioConstraints(deviceId?: string, extra: MediaTrackConstraints = {}): MediaTrackConstraints | true {
-  const merged = deviceId ? { ...extra, deviceId: { ideal: deviceId } } : extra;
-  return Object.keys(merged).length > 0 ? merged : true;
-}
 
 /** A distinct failure the UI must handle (PLAN.md Phase 4: permission denial,
  *  missing device, timeout, cancellation, empty transcript). */
@@ -147,16 +140,15 @@ export async function startBargeMonitor(opts: {
   sustainMs?: number;
   deviceId?: string;
 }): Promise<() => void> {
-  let stream: MediaStream;
+  let lease: MicLease;
   try {
-    stream = await navigator.mediaDevices.getUserMedia({
-      audio: audioConstraints(opts.deviceId, { echoCancellation: true, noiseSuppression: true, autoGainControl: true }),
-    });
+    lease = await acquireMic(opts.deviceId);
   } catch (err) {
     // A missing/denied mic just means no voice barge-in; the caller can still
     // interrupt by pressing push-to-talk. Fail soft rather than crash the reply.
     throw classifyGetUserMediaError(err);
   }
+  const stream = lease.stream;
 
   let fired = false;
   const trip = () => {
@@ -170,7 +162,16 @@ export async function startBargeMonitor(opts: {
   // broken Silero asset shows in Diagnostics instead of silently degrading.
   let bargeErr: string | undefined;
   const silero = await import("./vad.ts")
-    .then((m) => m.startSilero(stream, { onSpeechStart: () => trip() }, m.BARGE_VAD))
+    .then((m) =>
+      m.startSilero(
+        stream,
+        // Feed every 16kHz frame into the shared pre-roll ring (3.3): this monitor
+        // is the ambient listener before a barge/follow-up capture, so the ring
+        // holds the ~1s that precedes it.
+        { onSpeechStart: () => trip(), onFrame: (_isSpeech, frame) => pushMicFrame(frame) },
+        m.BARGE_VAD,
+      ),
+    )
     .catch((e) => {
       bargeErr = errText(e);
       return null;
@@ -179,7 +180,7 @@ export async function startBargeMonitor(opts: {
   if (silero) {
     return () => {
       void silero.stop();
-      stream.getTracks().forEach((t) => t.stop());
+      lease.release();
     };
   }
 
@@ -212,20 +213,21 @@ export async function startBargeMonitor(opts: {
 
   return () => {
     window.clearInterval(tick);
-    stream.getTracks().forEach((t) => t.stop());
     void audioCtx.close();
+    lease.release();
   };
 }
 
 /** Start capturing the mic. Rejects with a {@link CaptureError} if the mic can't
  *  be opened. The returned handle stops/cancels and reads the live level. */
 export async function startCapture(opts: CaptureOptions = {}): Promise<CaptureHandle> {
-  let stream: MediaStream;
+  let lease: MicLease;
   try {
-    stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints(opts.deviceId) });
+    lease = await acquireMic(opts.deviceId);
   } catch (err) {
     throw classifyGetUserMediaError(err);
   }
+  const stream = lease.stream;
 
   const mime = pickMimeType();
   let recorder: MediaRecorder;
@@ -233,8 +235,8 @@ export async function startCapture(opts: CaptureOptions = {}): Promise<CaptureHa
     recorder = new MediaRecorder(stream, { mimeType: mime });
   } catch (err) {
     // Construction can throw (a webview that reports a mime supported then rejects
-    // it): free the mic we just opened instead of leaking it open (B4.8).
-    stream.getTracks().forEach((t) => t.stop());
+    // it): release the mic we just borrowed instead of leaking it open (B4.8).
+    lease.release();
     throw classifyGetUserMediaError(err);
   }
   const chunks: BlobPart[] = [];
@@ -268,6 +270,7 @@ export async function startCapture(opts: CaptureOptions = {}): Promise<CaptureHa
           onFrame: (isSpeech, frame) => {
             if (isSpeech) speechSeen = true;
             lastLevel = rms(frame);
+            pushMicFrame(frame); // keep the pre-roll ring warm across capture -> follow-up (3.3)
             if (overtime()) endpoint(); // frames arrive during silence too, so the cap always fires
           },
         },
@@ -307,7 +310,7 @@ export async function startCapture(opts: CaptureOptions = {}): Promise<CaptureHa
 
   function teardown(): void {
     stopVad();
-    stream.getTracks().forEach((t) => t.stop());
+    lease.release();
   }
 
   return {
