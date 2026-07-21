@@ -2,7 +2,7 @@ use serde_json::Value;
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use parking_lot::Mutex;
 use tauri::{Emitter, Manager};
 
 /// Serializes every Rust read-modify-write of settings.json (7.7) so two Tauri
@@ -98,7 +98,7 @@ pub fn load_settings(app: tauri::AppHandle) -> Result<Value, String> {
 /// own mtime watch emits `settings://changed` so open windows reload.
 pub(crate) fn disable_watch(app: &tauri::AppHandle, id: &str) {
     let Ok(path) = settings_path(app) else { return };
-    let _guard = SETTINGS_WRITE_LOCK.lock().unwrap();
+    let _guard = SETTINGS_WRITE_LOCK.lock();
     let Ok(mut settings) = read_settings_file(&path) else {
         return;
     };
@@ -124,7 +124,7 @@ pub(crate) fn disable_watch(app: &tauri::AppHandle, id: &str) {
 /// enabled, and the scheduler's persisted `fired` map still stops the re-fire.
 pub(crate) fn disable_schedule(app: &tauri::AppHandle, id: &str) {
     let Ok(path) = settings_path(app) else { return };
-    let _guard = SETTINGS_WRITE_LOCK.lock().unwrap();
+    let _guard = SETTINGS_WRITE_LOCK.lock();
     let Ok(mut settings) = read_settings_file(&path) else {
         return;
     };
@@ -152,7 +152,7 @@ pub(crate) fn disable_schedule(app: &tauri::AppHandle, id: &str) {
 /// starting a mission it couldn't dequeue, which would loop it forever.
 pub(crate) fn take_pending_mission(app: &tauri::AppHandle) -> Option<Value> {
     let path = settings_path(app).ok()?;
-    let _guard = SETTINGS_WRITE_LOCK.lock().unwrap();
+    let _guard = SETTINGS_WRITE_LOCK.lock();
     let mut settings = read_settings_file(&path).ok()?;
     let queue = settings.get_mut("pendingMissions")?.as_array_mut()?;
     if queue.is_empty() {
@@ -172,7 +172,7 @@ pub(crate) fn take_pending_mission(app: &tauri::AppHandle) -> Option<Value> {
 pub(crate) fn set_setting(app: &tauri::AppHandle, key: &str, value: Value) {
     let Ok(path) = settings_path(app) else { return };
     {
-        let _guard = SETTINGS_WRITE_LOCK.lock().unwrap();
+        let _guard = SETTINGS_WRITE_LOCK.lock();
         let Ok(mut settings) = read_settings_file(&path) else {
             return;
         };
@@ -213,7 +213,7 @@ pub fn save_settings(app: tauri::AppHandle, settings: Value) -> Result<(), Strin
     // automation-owned keys from disk, so this whole-bag write (from a possibly
     // stale webview snapshot) can't drop a concurrently voice-created schedule.
     {
-        let _guard = SETTINGS_WRITE_LOCK.lock().unwrap();
+        let _guard = SETTINGS_WRITE_LOCK.lock();
         let disk = read_settings_file(&path).unwrap_or_else(|_| Value::Object(Default::default()));
         let merged = merge_general_save(&disk, settings);
         write_settings_file(&path, &merged)?;
@@ -248,7 +248,7 @@ pub fn save_automations(
 ) -> Result<(), String> {
     let path = settings_path(&app)?;
     {
-        let _guard = SETTINGS_WRITE_LOCK.lock().unwrap();
+        let _guard = SETTINGS_WRITE_LOCK.lock();
         let disk = read_settings_file(&path).unwrap_or_else(|_| Value::Object(Default::default()));
         let merged = merge_automation_save(&disk, schedules, watches, triggers);
         write_settings_file(&path, &merged)?;

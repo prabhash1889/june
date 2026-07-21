@@ -25,7 +25,9 @@ use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+
+use parking_lot::Mutex;
 use std::time::{Duration, Instant};
 
 use chrono::Local;
@@ -176,7 +178,7 @@ pub(crate) fn append_run(
 /// Drain the blocked-actions collected for an unattended `turn` (P1.3), so each
 /// run's ledger record carries exactly what it wanted to do but couldn't.
 fn drain_blocked(session: &AgentSession, turn: u64) -> Vec<String> {
-    session.blocked_actions.lock().unwrap().remove(&turn).unwrap_or_default()
+    session.blocked_actions.lock().remove(&turn).unwrap_or_default()
 }
 
 /// A gated tool call awaiting a human yes/no. Serialized straight to the UI as
@@ -340,7 +342,7 @@ fn record_event(
     mut payload: serde_json::Value,
 ) -> serde_json::Value {
     payload["seq"] = (seq.fetch_add(1, Ordering::Relaxed) + 1).into();
-    let mut log = events.lock().unwrap();
+    let mut log = events.lock();
     log.push(serde_json::json!({ "name": name, "payload": payload }));
     if log.len() > MAX_EVENTS {
         let excess = log.len() - MAX_EVENTS;
@@ -376,8 +378,8 @@ fn idle_reset_minutes(app: &AppHandle) -> u64 {
 /// transcript. Does NOT touch the resident's own memory - callers pair this with
 /// a `{"type":"reset"}` write for that (Phase 11.2).
 fn clear_conversation(session: &AgentSession, app: &AppHandle) {
-    session.events.lock().unwrap().clear();
-    *session.pending.lock().unwrap() = None;
+    session.events.lock().clear();
+    *session.pending.lock() = None;
     let _ = app.emit("agent://reset", serde_json::json!({}));
 }
 
@@ -498,7 +500,7 @@ fn mcp_servers_env(app: &AppHandle, session: &AgentSession) -> Vec<(String, Stri
     else {
         return vec![];
     };
-    let filtered: Vec<serde_json::Value> = match session.mcp_filter.lock().unwrap().as_ref() {
+    let filtered: Vec<serde_json::Value> = match session.mcp_filter.lock().as_ref() {
         Some(ids) => entries
             .into_iter()
             .filter(|e| {
@@ -660,7 +662,7 @@ fn ensure_resident(app: &AppHandle, session: &AgentSession) -> Result<(), String
     // Blocking while holding it is fine - ensure_resident always runs inside
     // spawn_blocking or the scheduler thread, and a concurrent write_request simply
     // waits for the spawn to finish, which is exactly what we want.
-    let mut guard = session.resident.lock().unwrap();
+    let mut guard = session.resident.lock();
     if let Some(r) = guard.as_mut() {
         match r.child.try_wait() {
             Ok(None) => return Ok(()), // still running
@@ -676,7 +678,7 @@ fn ensure_resident(app: &AppHandle, session: &AgentSession) -> Result<(), String
 
     // Back off if a recent incarnation crashed, so a broken config can't spin.
     let delay = {
-        let b = session.backoff.lock().unwrap();
+        let b = session.backoff.lock();
         b.last_exit.map(|last| {
             let want = backoff_delay(b.fails);
             want.checked_sub(last.elapsed()).unwrap_or_default()
@@ -712,7 +714,7 @@ fn write_request(session: &AgentSession, req: &serde_json::Value) -> Result<(), 
     if session.spawning.load(Ordering::Relaxed) {
         return Err("The agent is starting up; try again in a moment.".to_string());
     }
-    let mut guard = session.resident.lock().unwrap();
+    let mut guard = session.resident.lock();
     let resident = guard.as_mut().ok_or("The agent is not running.")?;
     let line = format!("{req}\n");
     let write = resident
@@ -745,7 +747,7 @@ fn spawn_reader(session: AgentSession, app: AppHandle, stdout: std::process::Chi
             match v.get("t").and_then(|t| t.as_str()) {
                 Some("ready") => {
                     // A fresh process is up: clear the crash backoff.
-                    let mut b = session.backoff.lock().unwrap();
+                    let mut b = session.backoff.lock();
                     b.fails = 0;
                     b.last_exit = None;
                 }
@@ -792,13 +794,13 @@ fn spawn_reader(session: AgentSession, app: AppHandle, stdout: std::process::Chi
                             summary: str_at("summary"),
                             cls: str_at("cls"),
                         };
-                        *session.pending.lock().unwrap() = Some(pa.clone());
+                        *session.pending.lock() = Some(pa.clone());
                         let _ = app.emit("agent://approval", pa);
                     }
                 }
                 Some("approval-expired") => {
                     let id = v.get("id").and_then(|x| x.as_u64()).unwrap_or(0);
-                    let mut guard = session.pending.lock().unwrap();
+                    let mut guard = session.pending.lock();
                     if matches!(guard.as_ref(), Some(p) if p.turn == turn && p.id == id) {
                         *guard = None;
                         drop(guard);
@@ -817,7 +819,7 @@ fn spawn_reader(session: AgentSession, app: AppHandle, stdout: std::process::Chi
                     let text = str_at("text");
                     let text = if text.is_empty() { "June's agent failed to start.".to_string() } else { text };
                     crate::logf::log(&app, &format!("[serve] {text}"));
-                    let mut turns = session.turns.lock().unwrap();
+                    let mut turns = session.turns.lock();
                     for (_, tx) in turns.drain() {
                         let _ = tx.send(TurnMsg::Done(Err(text.clone())));
                     }
@@ -832,7 +834,7 @@ fn spawn_reader(session: AgentSession, app: AppHandle, stdout: std::process::Chi
                     // Record it against this turn for the run ledger (P1.3), so the
                     // Runs tab shows what a headless run wanted to do but couldn't.
                     let label = if summary.is_empty() { action } else { summary.clone() };
-                    session.blocked_actions.lock().unwrap().entry(turn).or_default().push(label);
+                    session.blocked_actions.lock().entry(turn).or_default().push(label);
                     crate::scheduler::notify(
                         &app,
                         "June paused an unattended action",
@@ -846,7 +848,7 @@ fn spawn_reader(session: AgentSession, app: AppHandle, stdout: std::process::Chi
                     // and hold the per-turn block to ride into the run ledger.
                     let usage = v.get("usage").filter(|u| u.is_object()).cloned();
                     if let Some(u) = &usage {
-                        let mut totals = session.usage.lock().unwrap();
+                        let mut totals = session.usage.lock();
                         totals.input_tokens += u.get("inputTokens").and_then(|x| x.as_u64()).unwrap_or(0);
                         totals.output_tokens += u.get("outputTokens").and_then(|x| x.as_u64()).unwrap_or(0);
                         totals.cost_usd += u.get("costUsd").and_then(|x| x.as_f64()).unwrap_or(0.0);
@@ -860,12 +862,12 @@ fn spawn_reader(session: AgentSession, app: AppHandle, stdout: std::process::Chi
                     );
                     // Clear a dangling approval for this finished turn.
                     {
-                        let mut guard = session.pending.lock().unwrap();
+                        let mut guard = session.pending.lock();
                         if matches!(guard.as_ref(), Some(p) if p.turn == turn) {
                             *guard = None;
                         }
                     }
-                    if let Some(tx) = session.turns.lock().unwrap().remove(&turn) {
+                    if let Some(tx) = session.turns.lock().remove(&turn) {
                         // The reply carries `is_error` alongside the text (B3.4): the
                         // voice path still speaks it (pre-11 behaviour), but a mission
                         // run can now count a brain-flagged task as failed.
@@ -881,17 +883,17 @@ fn spawn_reader(session: AgentSession, app: AppHandle, stdout: std::process::Chi
         // EOF: the child exited. If we are still the current incarnation, drop it,
         // record the crash for backoff, and fail every in-flight turn so no
         // command hangs waiting for a `final` that will never come.
-        let mut guard = session.resident.lock().unwrap();
+        let mut guard = session.resident.lock();
         if matches!(guard.as_ref(), Some(r) if r.gen == gen) {
             *guard = None;
             drop(guard);
             {
-                let mut b = session.backoff.lock().unwrap();
+                let mut b = session.backoff.lock();
                 b.fails = b.fails.saturating_add(1);
                 b.last_exit = Some(Instant::now());
             }
-            *session.pending.lock().unwrap() = None;
-            let mut turns = session.turns.lock().unwrap();
+            *session.pending.lock() = None;
+            let mut turns = session.turns.lock();
             for (_, tx) in turns.drain() {
                 let _ = tx.send(TurnMsg::Done(Err("The agent stopped unexpectedly.".to_string())));
             }
@@ -936,7 +938,7 @@ impl AgentSession {
     pub fn shutdown(&self) {
         // Take the resident OUT of the lock before the (up-to-1.5s) teardown, so
         // kill_tree never blocks a concurrent write_request on the resident mutex.
-        let taken = self.resident.lock().unwrap().take();
+        let taken = self.resident.lock().take();
         if let Some(r) = taken {
             kill_tree(r.stdin, r.child);
         }
@@ -959,7 +961,7 @@ impl AgentSession {
     /// Set/clear the mission toolset filter (improvement-5 P2 5.4). Takes effect at
     /// the next resident spawn - callers pair this with `request_respawn`.
     pub fn set_mcp_filter(&self, ids: Option<Vec<String>>) {
-        *self.mcp_filter.lock().unwrap() = ids;
+        *self.mcp_filter.lock() = ids;
     }
 }
 
@@ -970,7 +972,7 @@ fn bump_activity(session: &AgentSession, turn: u64) {
     if turn == 0 {
         return;
     }
-    if let Some(tx) = session.turns.lock().unwrap().get(&turn) {
+    if let Some(tx) = session.turns.lock().get(&turn) {
         let _ = tx.send(TurnMsg::Activity);
     }
 }
@@ -999,7 +1001,7 @@ fn await_turn(rx: &Receiver<TurnMsg>, idle: Duration) -> Result<TurnOutcome, ()>
 /// reset, a busy-recheck, the ledger, distinct return types), so only this common
 /// wedge policy is factored out rather than forced into one flag-driven core.
 fn fail_wedged_turn(app: &AppHandle, session: &AgentSession, turn: u64, msg: &str) {
-    session.turns.lock().unwrap().remove(&turn);
+    session.turns.lock().remove(&turn);
     session.shutdown();
     record(
         session,
@@ -1033,18 +1035,18 @@ pub async fn run_agent(
     // the resident to drop its memory below (before the run request). Then stamp
     // the activity clock so the NEXT turn's idle gap is measured from here.
     let reset_first = idle_exceeded(
-        session.last_activity.lock().unwrap().map(|t| t.elapsed()),
+        session.last_activity.lock().map(|t| t.elapsed()),
         idle_reset_minutes(&app),
     );
     if reset_first {
         clear_conversation(&session, &app);
     }
-    *session.last_activity.lock().unwrap() = Some(Instant::now());
+    *session.last_activity.lock() = Some(Instant::now());
 
     // Register this turn's delivery channel BEFORE the run request, so the reader
     // can never deliver a `final` before we are listening.
     let (tx, rx): (Sender<TurnMsg>, Receiver<TurnMsg>) = std::sync::mpsc::channel();
-    session.turns.lock().unwrap().insert(turn, tx);
+    session.turns.lock().insert(turn, tx);
 
     // Mirror the user's message to any open window before June starts working.
     record(
@@ -1079,7 +1081,7 @@ pub async fn run_agent(
         .map_err(|e| format!("Agent task failed: {e}"))?
     };
     if let Err(e) = ensure {
-        session.turns.lock().unwrap().remove(&turn);
+        session.turns.lock().remove(&turn);
         return Err(e);
     }
 
@@ -1106,7 +1108,7 @@ impl AgentSession {
     /// on) an interactive turn the user is in the middle of - it just waits for the
     /// next tick. Also serializes unattended runs against each other.
     pub fn is_busy(&self) -> bool {
-        !self.turns.lock().unwrap().is_empty() || self.pending.lock().unwrap().is_some()
+        !self.turns.lock().is_empty() || self.pending.lock().is_some()
     }
 }
 
@@ -1130,10 +1132,10 @@ pub(crate) fn run_attended(
     // Approvals raised by this turn must surface: the reader drops approvals from
     // any turn that isn't the latest.
     session.latest_turn.store(turn, Ordering::Relaxed);
-    *session.last_activity.lock().unwrap() = Some(Instant::now());
+    *session.last_activity.lock() = Some(Instant::now());
 
     let (tx, rx): (Sender<TurnMsg>, Receiver<TurnMsg>) = std::sync::mpsc::channel();
-    session.turns.lock().unwrap().insert(turn, tx);
+    session.turns.lock().insert(turn, tx);
     record(
         session,
         app,
@@ -1144,7 +1146,7 @@ pub(crate) fn run_attended(
         session,
         &serde_json::json!({ "type": "run", "turn": turn, "transcript": transcript }),
     ) {
-        session.turns.lock().unwrap().remove(&turn);
+        session.turns.lock().remove(&turn);
         return Err(e);
     }
     match await_turn(&rx, WATCHDOG) {
@@ -1174,7 +1176,7 @@ pub(crate) fn reset_conversation(app: &AppHandle, session: &AgentSession) {
     // still cleared so the reset always gives immediate, honest feedback.
     let _ = write_request(session, &serde_json::json!({ "type": "reset" }));
     clear_conversation(session, app);
-    *session.last_activity.lock().unwrap() = None;
+    *session.last_activity.lock() = None;
 }
 
 /// Run one UNATTENDED turn to completion and return June's reply text (Phase 18).
@@ -1216,8 +1218,8 @@ pub fn run_unattended(
     // serialized by the single scheduler thread, so an empty map here means no other
     // turn is in flight. `Ok(None)` tells the caller to retry on the next tick.
     {
-        let mut turns = session.turns.lock().unwrap();
-        if !turns.is_empty() || session.pending.lock().unwrap().is_some() {
+        let mut turns = session.turns.lock();
+        if !turns.is_empty() || session.pending.lock().is_some() {
             return Ok(None);
         }
         turns.insert(turn, tx);
@@ -1234,7 +1236,7 @@ pub fn run_unattended(
     }
 
     if let Err(e) = write_request(session, &req) {
-        session.turns.lock().unwrap().remove(&turn);
+        session.turns.lock().remove(&turn);
         return Err(e);
     }
 
@@ -1282,7 +1284,7 @@ pub fn resolve_approval(
     // Validate against the pending approval before touching stdin: a decision for
     // an approval that is no longer pending (expired, decided in the other window)
     // must not reach the resident.
-    let turn = match session.pending.lock().unwrap().as_ref() {
+    let turn = match session.pending.lock().as_ref() {
         Some(p) if p.id == id => p.turn,
         _ => return Err("That approval is no longer pending.".to_string()),
     };
@@ -1292,7 +1294,7 @@ pub fn resolve_approval(
         &serde_json::json!({ "type": "approve", "approvalId": id, "decision": decision }),
     )?;
 
-    *session.pending.lock().unwrap() = None;
+    *session.pending.lock() = None;
     let _ = app.emit(
         "agent://approval-resolved",
         serde_json::json!({ "turn": turn, "id": id, "decision": decision }),
@@ -1317,14 +1319,14 @@ pub fn cancel_agent(session: State<'_, AgentSession>, turn: u64) -> Result<(), S
 /// started before the window existed.
 #[tauri::command]
 pub fn pending_approval(session: State<'_, AgentSession>) -> Option<PendingApproval> {
-    session.pending.lock().unwrap().clone()
+    session.pending.lock().clone()
 }
 
 /// The recorded session log, oldest first. A window opened mid-session replays
 /// this before applying live events (deduplicated by each payload's `seq`).
 #[tauri::command]
 pub fn session_events(session: State<'_, AgentSession>) -> Vec<serde_json::Value> {
-    session.events.lock().unwrap().clone()
+    session.events.lock().clone()
 }
 
 /// Append a finished turn's latency sample to the shared, capped buffer (Phase
@@ -1333,7 +1335,7 @@ pub fn session_events(session: State<'_, AgentSession>) -> Vec<serde_json::Value
 /// diagnostics record must never disturb the voice pipeline.
 #[tauri::command]
 pub fn record_latency(session: State<'_, AgentSession>, sample: serde_json::Value) {
-    push_capped(&mut session.latency.lock().unwrap(), sample, MAX_LATENCY);
+    push_capped(&mut session.latency.lock(), sample, MAX_LATENCY);
 }
 
 /// Push `item`, then trim the oldest so `buf` never exceeds `cap`. Pure so the
@@ -1350,14 +1352,14 @@ fn push_capped(buf: &mut Vec<serde_json::Value>, item: serde_json::Value, cap: u
 /// 11.5). The panel computes P50/P95 from these.
 #[tauri::command]
 pub fn latency_samples(session: State<'_, AgentSession>) -> Vec<serde_json::Value> {
-    session.latency.lock().unwrap().clone()
+    session.latency.lock().clone()
 }
 
 /// Cumulative token/cost usage this app session (2.6), for the Diagnostics panel
 /// next to the latency percentiles. In-memory, so a restart zeroes it.
 #[tauri::command]
 pub fn usage_total(session: State<'_, AgentSession>) -> UsageTotals {
-    session.usage.lock().unwrap().clone()
+    session.usage.lock().clone()
 }
 
 /// Record which path a voice subsystem went live on, plus any load error (2.7).
@@ -1365,13 +1367,13 @@ pub fn usage_total(session: State<'_, AgentSession>) -> UsageTotals {
 /// subsystem wins. Best-effort - a health write must never disturb voice.
 #[tauri::command]
 pub fn record_voice_health(session: State<'_, AgentSession>, subsystem: String, status: serde_json::Value) {
-    session.voice_health.lock().unwrap().insert(subsystem, status);
+    session.voice_health.lock().insert(subsystem, status);
 }
 
 /// The current voice-stack health for the Diagnostics panel (2.7).
 #[tauri::command]
 pub fn voice_health(session: State<'_, AgentSession>) -> HashMap<String, serde_json::Value> {
-    session.voice_health.lock().unwrap().clone()
+    session.voice_health.lock().clone()
 }
 
 /// Start a fresh conversation on demand (Phase 11.2 "new conversation", from
@@ -1589,7 +1591,7 @@ mod tests {
             );
             assert_eq!(stamped["seq"].as_u64(), Some(i as u64 + 1));
         }
-        let log = events.lock().unwrap();
+        let log = events.lock();
         assert_eq!(log.len(), MAX_EVENTS);
         // Oldest fell off; the remaining log is contiguous and ends at the newest.
         assert_eq!(log[0]["payload"]["seq"].as_u64(), Some(11));
@@ -1731,11 +1733,11 @@ mod tests {
     #[test]
     fn config_change_while_busy_defers_the_respawn_and_spares_the_child() {
         let session = AgentSession::default();
-        *session.resident.lock().unwrap() = Some(dummy_resident());
+        *session.resident.lock() = Some(dummy_resident());
 
         // A registered turn == busy (B2.2: the just-sent command's turn).
         let (tx, _rx) = std::sync::mpsc::channel();
-        session.turns.lock().unwrap().insert(1, tx);
+        session.turns.lock().insert(1, tx);
         assert!(session.is_busy());
 
         // A settings save (or learned correction) while busy must NOT kill the child.
@@ -1745,7 +1747,6 @@ mod tests {
             session
                 .resident
                 .lock()
-                .unwrap()
                 .as_mut()
                 .unwrap()
                 .child
@@ -1756,15 +1757,15 @@ mod tests {
         );
 
         // Turn done -> the deferred respawn lands, dropping the stale resident.
-        session.turns.lock().unwrap().remove(&1);
+        session.turns.lock().remove(&1);
         apply_pending_respawn(&session);
         assert!(!session.respawn_pending.load(Ordering::Relaxed));
-        assert!(session.resident.lock().unwrap().is_none(), "idle: deferred respawn should apply");
+        assert!(session.resident.lock().is_none(), "idle: deferred respawn should apply");
 
         // Idle path unchanged: a config change with no turn in flight kills at once.
-        *session.resident.lock().unwrap() = Some(dummy_resident());
+        *session.resident.lock() = Some(dummy_resident());
         session.request_respawn();
-        assert!(session.resident.lock().unwrap().is_none(), "idle: respawn should be immediate");
+        assert!(session.resident.lock().is_none(), "idle: respawn should be immediate");
     }
 
     #[test]

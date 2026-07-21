@@ -2277,6 +2277,7 @@ dependencies = [
  "chrono",
  "enigo",
  "keyring",
+ "parking_lot",
  "reqwest 0.12.28",
  "serde",
  "serde_json",

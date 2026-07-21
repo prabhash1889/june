@@ -8,7 +8,9 @@
 // encoded audio bytes it just plays - the secret stays on this side.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
+
+use parking_lot::Mutex;
 use std::time::Duration;
 
 use tokio::sync::Notify;
@@ -110,7 +112,7 @@ fn cancel_registry() -> &'static CancelReg {
 
 /// Register one in-flight synth under `token`, returning the shared Notify to race.
 fn acquire_cancel(token: u64) -> Arc<Notify> {
-    let mut m = cancel_registry().lock().unwrap();
+    let mut m = cancel_registry().lock();
     let entry = m.entry(token).or_insert_with(|| (Arc::new(Notify::new()), 0));
     entry.1 += 1;
     entry.0.clone()
@@ -118,7 +120,7 @@ fn acquire_cancel(token: u64) -> Arc<Notify> {
 
 /// Drop one in-flight synth; reap the token's entry once its last synth is done.
 fn release_cancel(token: u64) {
-    let mut m = cancel_registry().lock().unwrap();
+    let mut m = cancel_registry().lock();
     if let Some(entry) = m.get_mut(&token) {
         entry.1 -= 1;
         if entry.1 == 0 {
@@ -131,7 +133,7 @@ fn release_cancel(token: u64) {
 /// in-flight synths, so a late/duplicate stop is harmless.
 #[tauri::command]
 pub fn cancel_synthesis(token: u64) {
-    if let Some(entry) = cancel_registry().lock().unwrap().get(&token) {
+    if let Some(entry) = cancel_registry().lock().get(&token) {
         entry.0.notify_waiters();
     }
 }
@@ -191,15 +193,15 @@ mod tests {
         let a = acquire_cancel(token);
         let b = acquire_cancel(token); // two sentences share one queue's token
         assert!(std::sync::Arc::ptr_eq(&a, &b), "same token shares one Notify");
-        assert!(cancel_registry().lock().unwrap().contains_key(&token));
+        assert!(cancel_registry().lock().contains_key(&token));
         release_cancel(token);
         assert!(
-            cancel_registry().lock().unwrap().contains_key(&token),
+            cancel_registry().lock().contains_key(&token),
             "one synth still in flight keeps the entry"
         );
         release_cancel(token);
         assert!(
-            !cancel_registry().lock().unwrap().contains_key(&token),
+            !cancel_registry().lock().contains_key(&token),
             "entry reaped once the last synth releases"
         );
         release_cancel(token); // extra release is harmless (late/duplicate stop)

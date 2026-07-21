@@ -487,7 +487,7 @@ const DEFAULT_PTT: &str = "ctrl+shift+space";
 /// (None when quick capture is off or failed to register).
 #[cfg(desktop)]
 type Chords = std::sync::Arc<
-    std::sync::Mutex<(
+    parking_lot::Mutex<(
         Option<tauri_plugin_global_shortcut::Shortcut>,
         Option<tauri_plugin_global_shortcut::Shortcut>,
     )>,
@@ -589,7 +589,7 @@ fn apply_hotkeys(app: &tauri::AppHandle, chords: &Chords) {
         );
     }
 
-    *chords.lock().unwrap() = (ptt_shortcut, capture_shortcut);
+    *chords.lock() = (ptt_shortcut, capture_shortcut);
 }
 
 /// Registers the global hotkeys and bridges each chord's Pressed/Released edges to
@@ -603,7 +603,7 @@ fn register_hotkeys(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Er
     use tauri::{Emitter, Listener};
     use tauri_plugin_global_shortcut::ShortcutState;
 
-    let chords: Chords = std::sync::Arc::new(std::sync::Mutex::new((None, None)));
+    let chords: Chords = std::sync::Arc::new(parking_lot::Mutex::new((None, None)));
 
     // The one handler dispatches by which registered chord fired (the fired shortcut
     // is compared against the two stored chords), so PTT and quick capture share a
@@ -613,7 +613,7 @@ fn register_hotkeys(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Er
         tauri_plugin_global_shortcut::Builder::new()
             .with_handler(move |app, shortcut, event| {
                 let kind = {
-                    let c = chords_h.lock().unwrap();
+                    let c = chords_h.lock();
                     if c.0.as_ref() == Some(shortcut) {
                         "ptt"
                     } else if c.1.as_ref() == Some(shortcut) {
@@ -637,10 +637,10 @@ fn register_hotkeys(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Er
 
     let handle = app.clone();
     let chords_l = chords.clone();
-    let last = std::sync::Mutex::new((ptt_hotkey(app), capture_hotkey(app)));
+    let last = parking_lot::Mutex::new((ptt_hotkey(app), capture_hotkey(app)));
     app.listen("settings://changed", move |_| {
         let want = (ptt_hotkey(&handle), capture_hotkey(&handle));
-        let mut cur = last.lock().unwrap();
+        let mut cur = last.lock();
         if *cur != want {
             *cur = want.clone();
             apply_hotkeys(&handle, &chords_l);
