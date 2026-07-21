@@ -10,6 +10,13 @@
 // vad.ts (which imports onnxruntime-web's wasm build) is loaded dynamically inside
 // the capture functions, so tests can import the RMS helpers here without ORT.
 
+import { reportVoiceHealth } from "./voice-health.ts";
+
+/** A load/init error as a short string (2.7 health reporting). */
+function errText(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
+
 /** End-of-utterance detector: energy-threshold VAD with a silence hangover.
  *
  *  ponytail: the RMS fallback for Silero (12.1). For push-to-talk it only has to
@@ -159,10 +166,16 @@ export async function startBargeMonitor(opts: {
   };
 
   // Silero speech onset is the barge signal; fall back to the RMS monitor if the
-  // model can't load.
+  // model can't load. Record which path went live + any load error (2.7) so a
+  // broken Silero asset shows in Diagnostics instead of silently degrading.
+  let bargeErr: string | undefined;
   const silero = await import("./vad.ts")
     .then((m) => m.startSilero(stream, { onSpeechStart: () => trip() }, m.BARGE_VAD))
-    .catch(() => null);
+    .catch((e) => {
+      bargeErr = errText(e);
+      return null;
+    });
+  reportVoiceHealth("barge", { path: silero ? "silero" : "rms", error: bargeErr });
   if (silero) {
     return () => {
       void silero.stop();
@@ -245,6 +258,7 @@ export async function startCapture(opts: CaptureOptions = {}): Promise<CaptureHa
   // the same 16kHz frames. Fall back to the RMS AnalyserNode gate if Silero can't
   // load. `stopVad` tears down whichever path is live.
   let stopVad: () => void = () => {};
+  let endpointErr: string | undefined;
   const silero = await import("./vad.ts")
     .then((m) =>
       m.startSilero(
@@ -260,7 +274,12 @@ export async function startCapture(opts: CaptureOptions = {}): Promise<CaptureHa
         m.ENDPOINT_VAD,
       ),
     )
-    .catch(() => null);
+    .catch((e) => {
+      endpointErr = errText(e);
+      return null;
+    });
+  // Surface a silent Silero->RMS downgrade in Diagnostics (2.7).
+  reportVoiceHealth("endpointing", { path: silero ? "silero" : "rms", error: endpointErr });
 
   if (silero) {
     stopVad = () => void silero.stop();

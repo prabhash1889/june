@@ -127,6 +127,8 @@ pub fn run() {
             agent_runner::record_latency,
             agent_runner::latency_samples,
             agent_runner::usage_total,
+            agent_runner::record_voice_health,
+            agent_runner::voice_health,
             show_app,
             set_widget_expanded,
         ])

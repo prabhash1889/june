@@ -11,6 +11,7 @@ import {
 } from "../lib/diagnostics.ts";
 import { chordFromKeyEvent, hotkeyLabel } from "../lib/hotkey.ts";
 import { type LatencySample, latencySamples, percentile, type UsageTotals, usageTotal } from "../lib/latency.ts";
+import { type VoiceHealth, voiceHealth } from "../lib/voice-health.ts";
 import {
   MCP_CATALOG,
   type McpClass,
@@ -1515,6 +1516,7 @@ function DiagnosticsSection() {
   const [health, setHealth] = useState<BridgeHealth | null>(null);
   const [latency, setLatency] = useState<LatencySample[]>([]);
   const [usage, setUsage] = useState<UsageTotals | null>(null);
+  const [voice, setVoice] = useState<VoiceHealth>({});
   const [busy, setBusy] = useState(false);
 
   const refresh = async () => {
@@ -1533,6 +1535,9 @@ function DiagnosticsSection() {
       .catch(() => {});
     await usageTotal()
       .then(setUsage)
+      .catch(() => {});
+    await voiceHealth()
+      .then(setVoice)
       .catch(() => {});
   };
 
@@ -1571,6 +1576,7 @@ function DiagnosticsSection() {
       </div>
       <LatencyReadout samples={latency} />
       <UsageReadout usage={usage} />
+      <VoiceHealthReadout health={voice} />
       <div className="diag-row">
         <button onClick={exportReport}>Export diagnostics</button>
         <span className="settings-hint">Redacted JSON (versions + latency, no keys or transcript) for support.</span>
@@ -1629,6 +1635,30 @@ function UsageReadout({ usage }: { usage: UsageTotals | null }) {
       <span className="settings-hint">
         {usage.turns} turn{usage.turns === 1 ? "" : "s"} this session
       </span>
+    </div>
+  );
+}
+
+// Voice-stack health (2.7): which path each VAD/wake subsystem is actually running,
+// so a silent Silero/openWakeWord asset-load failure (degraded to RMS / cloud-burst /
+// off) is visible instead of an unexplained accuracy drop. Only the local-first
+// paths (silero/local) read "ok"; a fallback reads "bad" with its load error.
+function VoiceHealthReadout({ health }: { health: VoiceHealth }) {
+  const rows = Object.entries(health);
+  if (rows.length === 0) {
+    return <p className="settings-hint">Voice stack: no turns this session yet - speak to see VAD/wake health.</p>;
+  }
+  const label: Record<string, string> = { barge: "Barge-in VAD", endpointing: "Endpointing VAD", wake: "Wake word" };
+  const good = new Set(["silero", "local"]);
+  return (
+    <div className="diag-latency">
+      {rows.map(([id, s]) => (
+        <div className="diag-row" key={id}>
+          <span className="stage-label">{label[id] ?? id}</span>
+          <span className={`test-result ${good.has(s.path) ? "ok" : "bad"}`}>{s.path}</span>
+          {s.error && <span className="settings-hint">fell back: {s.error}</span>}
+        </div>
+      ))}
     </div>
   );
 }

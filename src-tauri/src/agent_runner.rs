@@ -274,6 +274,11 @@ pub struct AgentSession {
     /// turn's `final` event and read back by Diagnostics. In-memory like `latency`;
     /// resets when the app restarts.
     usage: Arc<Mutex<UsageTotals>>,
+    /// Voice-stack health (2.7): subsystem id (`barge`/`endpointing`/`wake`) ->
+    /// `{path, error?}`, written by the widget when each VAD/wake path initializes
+    /// and read back by Diagnostics. Surfaces a silent Silero/openWakeWord
+    /// asset-load failure that would otherwise downgrade voice with no signal.
+    voice_health: Arc<Mutex<HashMap<String, serde_json::Value>>>,
     /// A config change (settings/memory/lessons edit) arrived while a turn was in
     /// flight (B2.1). The resident reads its env once at spawn, so it must respawn -
     /// but killing it now would abort the running turn (the exact "The agent stopped
@@ -1314,6 +1319,20 @@ pub fn latency_samples(session: State<'_, AgentSession>) -> Vec<serde_json::Valu
 #[tauri::command]
 pub fn usage_total(session: State<'_, AgentSession>) -> UsageTotals {
     session.usage.lock().unwrap().clone()
+}
+
+/// Record which path a voice subsystem went live on, plus any load error (2.7).
+/// Called by the widget as each VAD/wake path initializes; last write per
+/// subsystem wins. Best-effort - a health write must never disturb voice.
+#[tauri::command]
+pub fn record_voice_health(session: State<'_, AgentSession>, subsystem: String, status: serde_json::Value) {
+    session.voice_health.lock().unwrap().insert(subsystem, status);
+}
+
+/// The current voice-stack health for the Diagnostics panel (2.7).
+#[tauri::command]
+pub fn voice_health(session: State<'_, AgentSession>) -> HashMap<String, serde_json::Value> {
+    session.voice_health.lock().unwrap().clone()
 }
 
 /// Start a fresh conversation on demand (Phase 11.2 "new conversation", from

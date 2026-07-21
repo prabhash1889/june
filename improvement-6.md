@@ -155,11 +155,19 @@ round-trip + legacy migration (1.9).
     Diagnostics panel. Mission tasks count toward the session total but carry no
     per-ledger usage (dispatch returns only text) - noted with a ponytail comment.
 
-2.7 **Surface silent VAD/wake degradation** | P2
+2.7 **Surface silent VAD/wake degradation** | P2 - DONE
     Silero/openWakeWord load failures are swallowed - broken assets permanently downgrade
     endpointing/wake with no signal. Record which path is live (silero/rms,
     local-wake/cloud-burst) plus the load error; one line in Diagnostics.
     `src/lib/voice-capture.ts`, `src/lib/wake.ts`, `src/lib/diagnostics.ts`.
+    New `src/lib/voice-health.ts` (`reportVoiceHealth`/`voiceHealth`) backed by Rust
+    `record_voice_health`/`voice_health` + a `voice_health` session map (the widget
+    writes, the app's Diagnostics reads - separate webviews, same pattern as latency).
+    The three `.catch(() => null)` fallback sites - barge monitor + endpointing in
+    voice-capture.ts, local-wake in wake.ts - now capture the load error and report
+    `{path, error}` (silero|rms, local|cloud-burst|unavailable). A "Voice stack"
+    readout in Diagnostics shows each subsystem's live path (ok for local-first,
+    bad + the load error for a fallback).
 
 2.8 **Distinguish keychain failure from "no key set"** | P2
     `test_brain` treats a broken/locked keychain as an empty key and reports success.

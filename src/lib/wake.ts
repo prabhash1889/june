@@ -17,6 +17,7 @@
 import type { StageChoice } from "./settings.ts";
 import { transcribe } from "./stt.ts";
 import { classifyGetUserMediaError, pickMimeType, rms, SilenceDetector } from "./voice-capture.ts";
+import { reportVoiceHealth } from "./voice-health.ts";
 // wakeword.ts (local openWakeWord) is imported dynamically in startWakeListener so
 // tests can import phraseMatches/wakeBackoffUntil without pulling in ORT.
 import type { WakeHandle as LocalWakeHandle } from "./wakeword.ts";
@@ -141,13 +142,16 @@ export async function startWakeListener(opts: {
 
   // Local openWakeWord first (offline). It borrows the stream via Silero.
   let local: LocalWakeHandle | null = null;
+  let localErr: string | undefined;
   try {
     const { startLocalWake } = await import("./wakeword.ts");
     local = await startLocalWake({ stream, sensitivity: opts.sensitivity, onWake: opts.onWake });
-  } catch {
+  } catch (e) {
     local = null;
+    localErr = e instanceof Error ? e.message : String(e);
   }
   if (local) {
+    reportVoiceHealth("wake", { path: "local" });
     return {
       stop: () => {
         local.stop();
@@ -158,9 +162,13 @@ export async function startWakeListener(opts: {
 
   // Local models unavailable. Only stream to the cloud if the mode allows it.
   if (!opts.allowCloudFallback) {
+    // Wake is off entirely - record it + the load error so Diagnostics shows why (2.7).
+    reportVoiceHealth("wake", { path: "unavailable", error: localErr });
     stream.getTracks().forEach((t) => t.stop());
     throw new Error("Local wake models are unavailable and cloud voice is blocked by the privacy mode.");
   }
+  // Degraded to the cloud-STT burst path; surface the local-model load error (2.7).
+  reportVoiceHealth("wake", { path: "cloud-burst", error: localErr });
 
   const mime = pickMimeType();
   const audioCtx = new AudioContext();
