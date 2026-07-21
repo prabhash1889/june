@@ -24,7 +24,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 
-import { isWithin, resolveWithin, utf8SafeEnd } from "./paths.ts";
+import { assertRealWithin, resolveWithin, utf8SafeEnd } from "./paths.ts";
 
 /** Cap a single read so a voice reply can't be flooded by a huge file. */
 const MAX_READ_BYTES = 100_000;
@@ -50,12 +50,21 @@ function fail(message: string): CallToolResult {
   return { content: [{ type: "text", text: message }], isError: true };
 }
 
-/** After resolving an EXISTING path, confirm its realpath is still inside the
- *  root - catches a symlink inside the root that points outside it. */
-async function assertRealWithin(abs: string): Promise<void> {
-  const real = await fs.realpath(abs);
-  if (!isWithin(ROOT, real)) {
-    throw new Error("That path resolves outside the allowed folder.");
+/** Confirm an EXISTING path's realpath is inside ROOT - catches a symlink inside
+ *  the root that points outside it. Bound to ROOT + fs.realpath. */
+function guardReal(abs: string): Promise<void> {
+  return assertRealWithin(ROOT, abs, (p) => fs.realpath(p));
+}
+
+/** Like `guardReal`, but a not-yet-existing target is fine (a fresh file whose
+ *  parent has already been guarded). Only an existing target that resolves OUT
+ *  of the root - i.e. a symlink escape - is rejected. */
+async function guardRealIfExists(abs: string): Promise<void> {
+  try {
+    await guardReal(abs);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw e;
   }
 }
 
@@ -74,6 +83,9 @@ server.registerTool(
   async ({ subdir }) => {
     try {
       const dir = resolveWithin(ROOT, subdir ?? ".");
+      // A subdir can be a symlink inside the root that points outside it; the
+      // string check above won't catch that, so verify the real path too.
+      await guardReal(dir);
       const entries = await fs.readdir(dir, { withFileTypes: true });
       const rows = await Promise.all(
         entries.map(async (e) => {
@@ -104,7 +116,7 @@ server.registerTool(
   async ({ path: rel }) => {
     try {
       const abs = resolveWithin(ROOT, rel);
-      await assertRealWithin(abs);
+      await guardReal(abs);
       const buf = await fs.readFile(abs);
       const truncated = buf.length > MAX_READ_BYTES;
       const text = buf.subarray(0, utf8SafeEnd(buf, MAX_READ_BYTES)).toString("utf-8");
@@ -129,11 +141,15 @@ server.registerTool(
   async ({ path: rel, content }) => {
     try {
       const abs = resolveWithin(ROOT, rel);
-      // Guard the parent dir's real path too, so a symlinked folder can't be used
-      // to write outside the root. The file itself need not exist yet.
+      // Guard the parent dir's real path, so a symlinked folder can't redirect the
+      // write outside the root...
       const parent = path.dirname(abs);
       await fs.mkdir(parent, { recursive: true });
-      await assertRealWithin(parent);
+      await guardReal(parent);
+      // ...and guard the target itself: an existing in-root symlink at `abs`
+      // pointing outside would otherwise be followed by writeFile. A brand-new
+      // file (no symlink) is fine - the parent is already contained.
+      await guardRealIfExists(abs);
       await fs.writeFile(abs, content, "utf-8");
       return ok(`Wrote ${content.length} characters to ${rel}.`);
     } catch (e) {

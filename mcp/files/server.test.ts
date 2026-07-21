@@ -8,7 +8,7 @@ import * as path from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { resolveWithin, utf8SafeEnd } from "./paths.ts";
+import { assertRealWithin, resolveWithin, utf8SafeEnd } from "./paths.ts";
 
 const ROOT = path.resolve("/allowed/root");
 
@@ -36,6 +36,27 @@ describe("resolveWithin", () => {
     // `/allowed/root-evil` shares the string prefix `/allowed/root` but is NOT
     // inside it - the separator check is what catches this.
     expect(() => resolveWithin(ROOT, path.resolve("/allowed/root-evil/x"))).toThrow(/outside/);
+  });
+});
+
+describe("assertRealWithin", () => {
+  // The realpath resolver is injected, so we simulate a symlink by returning a
+  // real path that differs from the input - no filesystem, no privilege needed.
+  const link = path.join(ROOT, "link");
+
+  it("allows a target whose real path stays inside the root", async () => {
+    const realpath = async () => path.join(ROOT, "sub", "actual.txt");
+    await expect(assertRealWithin(ROOT, link, realpath)).resolves.toBeUndefined();
+  });
+
+  it("rejects a symlink whose real path escapes the root", async () => {
+    const realpath = async () => path.resolve("/etc/passwd");
+    await expect(assertRealWithin(ROOT, link, realpath)).rejects.toThrow(/outside/);
+  });
+
+  it("rejects a symlink to a sibling that only shares the root's string prefix", async () => {
+    const realpath = async () => path.resolve("/allowed/root-evil/secret");
+    await expect(assertRealWithin(ROOT, link, realpath)).rejects.toThrow(/outside/);
   });
 });
 

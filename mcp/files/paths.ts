@@ -18,10 +18,9 @@ export function isWithin(root: string, abs: string): boolean {
  * check - so both traversal (`../../etc`) and absolute-path escapes (`C:\Windows`)
  * are caught. `root` must already be canonical (realpath'd).
  *
- * ponytail: prefix containment on the canonical root. A symlink *inside* the root
- * pointing out is not followed here; the server realpaths existing targets as a
- * second guard. Upgrade to realpath-every-segment only if untrusted symlinks in
- * the root become a real threat.
+ * A symlink *inside* the root pointing out is not followed here (string math
+ * only); `assertRealWithin` is the second guard that resolves real paths before
+ * a list/read/write touches the target.
  */
 export function resolveWithin(root: string, rel: string): string {
   const abs = path.resolve(root, rel);
@@ -29,6 +28,32 @@ export function resolveWithin(root: string, rel: string): string {
     throw new Error(`Path "${rel}" is outside the allowed folder.`);
   }
   return abs;
+}
+
+/**
+ * After a path has passed `resolveWithin` (string containment), confirm its REAL
+ * path - symlinks followed - is still inside `root`. This is the second guard the
+ * `resolveWithin` note refers to: a symlink *inside* the root pointing out passes
+ * the string check but must be caught here before its target is read or written.
+ *
+ * `realpath` is injected (the server passes `fs.realpath`) so the containment
+ * decision is testable without creating real symlinks, which need elevated
+ * privilege on Windows.
+ *
+ * ponytail: realpath-then-use has a TOCTOU window (the link could be swapped
+ * between the check and the open). Node exposes no portable O_NOFOLLOW, and
+ * Windows symlink creation is privileged, so this is proportionate. Upgrade to an
+ * open-with-nofollow strategy only if untrusted local symlinks become a real threat.
+ */
+export async function assertRealWithin(
+  root: string,
+  abs: string,
+  realpath: (p: string) => Promise<string>,
+): Promise<void> {
+  const real = await realpath(abs);
+  if (!isWithin(root, real)) {
+    throw new Error("That path resolves outside the allowed folder.");
+  }
 }
 
 /** Largest number of bytes at or before `limit` that end on a UTF-8 character
