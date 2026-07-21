@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import {
   countProcesses,
   isProcessRunning,
+  parseActiveContext,
   parseCsvLine,
   parseMemCell,
   parseTasklistCsv,
@@ -82,6 +83,29 @@ describe("countProcesses / isProcessRunning", () => {
     expect(countProcesses("firefox", procs)).toBe(0);
     expect(isProcessRunning("firefox", procs)).toBe(false);
     expect(countProcesses("  ", procs)).toBe(0);
+  });
+});
+
+describe("parseActiveContext", () => {
+  it("parses a well-formed foreground payload", () => {
+    const out = parseActiveContext('{"title":"notes.md - VS Code","processName":"Code","pid":4321}');
+    expect(out).toEqual({ title: "notes.md - VS Code", processName: "Code", pid: 4321 });
+  });
+
+  it("degrades to an empty context for blank or garbled output", () => {
+    const empty = { title: "", processName: null, pid: null };
+    expect(parseActiveContext("")).toEqual(empty);
+    expect(parseActiveContext("   ")).toEqual(empty);
+    expect(parseActiveContext("not json")).toEqual(empty);
+  });
+
+  it("nulls a missing process/pid and keeps an untitled window", () => {
+    // No foreground window: PowerShell emits an empty title and a null process.
+    expect(parseActiveContext('{"title":"","processName":null,"pid":0}')).toEqual({
+      title: "",
+      processName: null,
+      pid: null,
+    });
   });
 });
 

@@ -77,6 +77,39 @@ export function isProcessRunning(query: string, processes: ProcessInfo[]): boole
   return countProcesses(query, processes) > 0;
 }
 
+/** The foreground window's metadata (improvement-6 4.4) - what the user is looking
+ *  at, without any display capture. */
+export interface ActiveContext {
+  /** Window title, e.g. a document name or a browser tab title. "" if untitled. */
+  title: string;
+  /** Owning process name (no ".exe"), e.g. "chrome"; null if it couldn't resolve. */
+  processName: string | null;
+  /** Owning process id; null if it couldn't resolve. */
+  pid: number | null;
+}
+
+/** Parse the JSON the foreground-window PowerShell helper emits into an
+ *  ActiveContext, defensively: a blank/garbled payload (no foreground window, or a
+ *  PowerShell error on stdout) yields an empty context rather than throwing, so the
+ *  tool degrades to "nothing focused" instead of a crash. */
+export function parseActiveContext(stdout: string): ActiveContext {
+  const empty: ActiveContext = { title: "", processName: null, pid: null };
+  const text = stdout.trim();
+  if (!text) return empty;
+  let raw: unknown;
+  try {
+    raw = JSON.parse(text);
+  } catch {
+    return empty;
+  }
+  if (typeof raw !== "object" || raw === null) return empty;
+  const r = raw as Record<string, unknown>;
+  const title = typeof r.title === "string" ? r.title : "";
+  const processName = typeof r.processName === "string" && r.processName ? r.processName : null;
+  const pid = typeof r.pid === "number" && Number.isInteger(r.pid) && r.pid > 0 ? r.pid : null;
+  return { title, processName, pid };
+}
+
 /** Raw OS snapshot, so summarizeStats stays pure (the server passes node's `os`
  *  readings in; the test passes fixed numbers). */
 export interface StatsSnapshot {

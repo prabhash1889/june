@@ -451,11 +451,26 @@ round-trip + legacy migration (1.9).
     platforms). Full suite green, typecheck (+ new `mcp/system/tsconfig.json` in the
     typecheck script) + eslint clean.
 
-4.4 **Foreground-context awareness (metadata, not pixels)** | P1 | S/M
+4.4 **Foreground-context awareness (metadata, not pixels)** | P1 | S/M - DONE
     90% of "what am I looking at" is answerable from window metadata; no display capture
     needed. Observe-class `get_active_context`: Win32 `GetForegroundWindow` title +
     process name (+ browser tab URL via UI Automation later). Local-only, works under
     strict offline, audit-logged. New `src-tauri/src/context.rs`, `agent/policy.ts`.
+    Landed in the `mcp/system` server, NOT a Rust `context.rs`: the agent runs as a
+    node subprocess with no IPC channel back to the Tauri host, so a Rust command it
+    can't invoke would be dead code. `get_active_context` reads the foreground window's
+    OWN metadata via Win32 (`GetForegroundWindow` + `GetWindowText` +
+    `GetWindowThreadProcessId` -> `Get-Process`) through PowerShell, run via
+    `-EncodedCommand` (UTF-16LE base64) so the interop script's quotes/newlines never
+    fight the shell, with `$ProgressPreference='SilentlyContinue'` so Add-Type's
+    progress can't pollute stdout. Verified E2E: correctly returned the live foreground
+    window (title + process). It is metadata-only (the description is explicit: no
+    screen capture), classified `observe` in `ACTION_CLASS` (auto-runs, unattended-safe,
+    local). Pure `parseActiveContext` degrades a blank/garbled/no-foreground payload to
+    an empty context ({title:"", process:null, pid:null}) rather than throwing, and
+    nulls a 0/absent pid. Windows-only (clear error elsewhere, not a lying empty
+    context). Pinned: parse.test (well-formed / blank / garbled / untitled-no-process).
+    Full suite green, typecheck + eslint clean.
 
 4.5 **Quick-capture voice inbox** | P1 | S
     A sub-second "jot this down" path: second hotkey mode, speak -> local STT -> append a

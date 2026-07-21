@@ -88,6 +88,10 @@ const ACTION_CLASS: Record<string, SafetyClass> = {
   list_processes: "observe",
   process_running: "observe",
   system_stats: "observe",
+  // Foreground-context awareness (improvement-6 4.4): reads the active window's OWN
+  // metadata (title + process), no display capture, local-only - so it is observe
+  // like the rest of the pack, safe to auto-run and usable unattended.
+  get_active_context: "observe",
 };
 
 /**
@@ -289,6 +293,8 @@ export function summarize(action: string, input: Record<string, unknown>): strin
       return `Check if process ${s("name") || "?"} is running`;
     case "system_stats":
       return "Read system stats";
+    case "get_active_context":
+      return "Read active window context";
     default: {
       // An unknown gated tool (a generic server's action) still fails closed to
       // destructive, so the user WILL be asked to approve it - and must see what

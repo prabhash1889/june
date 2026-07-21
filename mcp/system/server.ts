@@ -19,7 +19,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 
-import { countProcesses, parseTasklistCsv, summarizeStats, type ProcessInfo } from "./parse.ts";
+import { countProcesses, parseActiveContext, parseTasklistCsv, summarizeStats, type ProcessInfo } from "./parse.ts";
 
 const execAsync = promisify(exec);
 
@@ -45,6 +45,42 @@ async function readProcesses(): Promise<ProcessInfo[]> {
   }
   const { stdout } = await execAsync("tasklist /FO CSV /NH", { maxBuffer: MAX_TASKLIST_BUFFER });
   return parseTasklistCsv(stdout);
+}
+
+/** PowerShell that reads the FOREGROUND window's own metadata via Win32 (no
+ *  display capture): title + owning process name/pid, emitted as one-line JSON.
+ *  Note `$fgPid` not `$pid` - `$pid` is a PowerShell automatic (this process). */
+const ACTIVE_CONTEXT_PS = `
+$ProgressPreference = 'SilentlyContinue'
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+public class JuneFg {
+  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
+  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+}
+"@
+$h = [JuneFg]::GetForegroundWindow()
+$sb = New-Object System.Text.StringBuilder 512
+[void][JuneFg]::GetWindowText($h, $sb, $sb.Capacity)
+$fgPid = [uint32]0
+[void][JuneFg]::GetWindowThreadProcessId($h, [ref]$fgPid)
+$proc = $null
+try { $proc = (Get-Process -Id $fgPid -ErrorAction Stop).ProcessName } catch {}
+[pscustomobject]@{ title = $sb.ToString(); processName = $proc; pid = [int]$fgPid } | ConvertTo-Json -Compress
+`;
+
+/** Run a PowerShell script via -EncodedCommand (UTF-16LE base64) so the script's
+ *  quotes/newlines never fight the shell. */
+async function runPwsh(script: string): Promise<string> {
+  const encoded = Buffer.from(script, "utf16le").toString("base64");
+  const { stdout } = await execAsync(
+    `powershell -NoProfile -NonInteractive -EncodedCommand ${encoded}`,
+    { maxBuffer: 1024 * 1024 },
+  );
+  return stdout;
 }
 
 const server = new McpServer({ name: "system", version: "0.1.0" });
@@ -107,6 +143,27 @@ server.registerTool(
         loadAvg1: os.loadavg()[0] ?? 0,
       });
       return ok(JSON.stringify(summary, null, 2));
+    } catch (e) {
+      return fail(msg(e));
+    }
+  },
+);
+
+server.registerTool(
+  "get_active_context",
+  {
+    title: "Active window context",
+    description:
+      "Get metadata about the window the user is currently looking at: its title and owning app (process). Read-only, local, and metadata-only - it does NOT capture or read the screen contents. Use to answer 'what am I looking at' without a screenshot.",
+    inputSchema: {},
+  },
+  async () => {
+    try {
+      if (process.platform !== "win32") {
+        return fail("Active-window context is only supported on Windows.");
+      }
+      const ctx = parseActiveContext(await runPwsh(ACTIVE_CONTEXT_PS));
+      return ok(JSON.stringify(ctx));
     } catch (e) {
       return fail(msg(e));
     }
