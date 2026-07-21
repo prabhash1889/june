@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { type Ref, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
@@ -255,6 +255,29 @@ export function AppWindow() {
     return () => void unlisten.then((f) => f());
   }, []);
 
+  // Keyboard routes (6.6): Ctrl+1..4 switch views, "/" jumps to the composer -
+  // one window-level listener, mirroring useApprovalKeys. "/" is ignored while
+  // typing in a field so a draft containing a slash isn't hijacked.
+  const composerRef = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => {
+    const VIEW_KEYS: Record<string, View> = { "1": "chat", "2": "missions", "3": "runs", "4": "settings" };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey && VIEW_KEYS[e.key]) {
+        e.preventDefault();
+        setView(VIEW_KEYS[e.key]);
+      } else if (e.key === "/" && !e.ctrlKey && !e.altKey && !e.metaKey) {
+        const t = e.target as HTMLElement | null;
+        if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+        e.preventDefault();
+        setView("chat");
+        // The composer may be mounting right now (view switch); focus after commit.
+        requestAnimationFrame(() => composerRef.current?.focus());
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   const tab = (v: View, label: string) => (
     <button className={view === v ? "active" : ""} aria-current={view === v ? "page" : undefined} onClick={() => setView(v)}>
       {label}
@@ -341,7 +364,7 @@ export function AppWindow() {
               <ConversationEntry key={e.key} entry={e} />
             ))}
           </div>
-          <Composer onError={setNote} />
+          <Composer onError={setNote} fieldRef={composerRef} />
         </>
       )}
     </div>
@@ -408,7 +431,7 @@ function Onboarding({
  *  are equals now. Enter sends (Shift+Enter for a newline); the reply streams into
  *  the conversation above via the shared agent://* events. Sending while June is
  *  working preempts the active turn, exactly like barging in by voice. */
-function Composer({ onError }: { onError: (m: string) => void }) {
+function Composer({ onError, fieldRef }: { onError: (m: string) => void; fieldRef?: Ref<HTMLTextAreaElement> }) {
   const [text, setText] = useState("");
   // Last sent command, for ArrowUp recall (6.3) - the raw text (newlines kept).
   const lastSent = useRef("");
@@ -422,6 +445,7 @@ function Composer({ onError }: { onError: (m: string) => void }) {
   return (
     <footer className="app-composer">
       <textarea
+        ref={fieldRef}
         rows={1}
         value={text}
         placeholder="Type a command for June…"

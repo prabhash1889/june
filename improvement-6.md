@@ -763,9 +763,18 @@ round-trip + legacy migration (1.9).
     bubble became a flex column so the meta reserves its own row - no layout shift on
     hover, and the copy button stays keyboard-reachable via `:focus-within`.
 
-6.6 **Keyboard routes between views** | P3 | S
+6.6 **Keyboard routes between views** | P3 | S - DONE
     Ctrl+1..4 for the four tabs, `/` to focus the composer. One window-level keydown
     listener, mirroring `useApprovalKeys`. `src/app/AppWindow.tsx`.
+    One window-level keydown listener in AppWindow: Ctrl+1..4 (no Alt/Meta/Shift)
+    switch to Conversation/Missions/Runs/Settings; `/` switches to the chat view and
+    focuses the composer (via a `fieldRef` threaded into `Composer`, focused after
+    commit with requestAnimationFrame since the composer may be mounting on the view
+    switch). `/` is ignored while the event target is an input/textarea/
+    contentEditable so a draft containing a slash isn't hijacked. Pinned:
+    AppWindow.test (Ctrl+3 -> Runs, Ctrl+1 -> Conversation, `/` focuses the
+    composer, `/` inside the field not hijacked). 302 vitest + typecheck + eslint
+    green.
 
 ---
 

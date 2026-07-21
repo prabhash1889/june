@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { vi } from "vitest";
 
 const invoke = vi.hoisted(() => vi.fn());
@@ -20,6 +20,29 @@ it("renders the conversation shell with an empty state", async () => {
   render(<AppWindow />);
   expect(await screen.findByText("June")).toBeInTheDocument();
   expect(screen.getByText(/Nothing yet/)).toBeInTheDocument();
+});
+
+it("routes views with Ctrl+1..4 and focuses the composer with '/' (6.6)", async () => {
+  // Benign nulls for every panel command - the panels coerce defensively.
+  invoke.mockImplementation((cmd: string) =>
+    Promise.resolve(cmd === "session_events" ? [] : null),
+  );
+  render(<AppWindow />);
+  await screen.findByText("June");
+
+  fireEvent.keyDown(window, { key: "3", ctrlKey: true });
+  expect(screen.getByRole("button", { name: /Runs/ })).toHaveAttribute("aria-current", "page");
+
+  fireEvent.keyDown(window, { key: "1", ctrlKey: true });
+  expect(screen.getByRole("button", { name: "Conversation" })).toHaveAttribute("aria-current", "page");
+
+  const composer = screen.getByLabelText("Type a command for June");
+  fireEvent.keyDown(window, { key: "/" });
+  await vi.waitFor(() => expect(composer).toHaveFocus());
+
+  // "/" while already typing in the field must not be hijacked.
+  fireEvent.keyDown(composer, { key: "/" });
+  expect(composer).toHaveFocus();
 });
 
 it("replays the recorded session when opened mid-session", async () => {
