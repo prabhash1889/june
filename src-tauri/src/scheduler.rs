@@ -635,6 +635,12 @@ pub fn start(app: AppHandle, session: AgentSession, runner: MissionRunner) {
         // automation MCP server writes schedules/watches straight to settings.json,
         // which can't emit a Tauri event itself).
         let mut settings_mtime: Option<std::time::SystemTime> = None;
+        // Cached parsed settings bag + a loaded flag, so a tick reuses the last parse
+        // when settings.json's mtime hasn't moved (7.4 - the tick already stats the
+        // mtime for the out-of-band-write check, so re-parsing on every tick is pure
+        // waste when nothing changed).
+        let mut cached_settings: serde_json::Value = serde_json::Value::Object(Default::default());
+        let mut settings_loaded = false;
         // The `now` of the previous live tick, to close the schedule-starvation
         // window (5.1): a schedule whose fire moment fell in the gap since we last
         // looked - a gap a long blocking `fire()` can stretch past the fixed
@@ -643,22 +649,26 @@ pub fn start(app: AppHandle, session: AgentSession, runner: MissionRunner) {
 
         loop {
             std::thread::sleep(TICK);
-            let settings = crate::settings::read_settings(&app);
             let now = Local::now().naive_local();
 
-            // An out-of-band settings write (e.g. a voice-created automation, P1.5)
-            // should reach open windows, so the settings panel reloads instead of
-            // later saving a stale copy over the new automation. Emit the same
-            // `settings://changed` the save command emits; the panel ignores it
-            // while mid-edit, so this never clobbers what the user is typing.
-            if let Some(p) = crate::settings::settings_file(&app) {
-                if let Ok(m) = std::fs::metadata(&p).and_then(|md| md.modified()) {
-                    if settings_mtime.is_some() && settings_mtime != Some(m) {
-                        let _ = app.emit("settings://changed", ());
-                    }
-                    settings_mtime = Some(m);
+            // Stat settings.json's mtime once (7.4). Re-parse only when it moved (or
+            // on the first tick, or when the stat failed and the cache can't be
+            // trusted); otherwise reuse the last parsed bag. An out-of-band write
+            // (e.g. a voice-created automation, P1.5) should also reach open windows,
+            // so emit the same `settings://changed` the save command emits when the
+            // mtime advances from a known prior value; the panel ignores it while
+            // mid-edit, so this never clobbers what the user is typing.
+            let settings_mtime_now = crate::settings::settings_file(&app)
+                .and_then(|p| std::fs::metadata(&p).and_then(|md| md.modified()).ok());
+            if !settings_loaded || settings_mtime_now.is_none() || settings_mtime_now != settings_mtime {
+                if settings_loaded && settings_mtime_now.is_some() && settings_mtime_now != settings_mtime {
+                    let _ = app.emit("settings://changed", ());
                 }
+                settings_mtime = settings_mtime_now;
+                cached_settings = crate::settings::read_settings(&app);
+                settings_loaded = true;
             }
+            let settings = &cached_settings;
 
             // Voice-started missions (4.10): the automation server pushed a request
             // to `pendingMissions` (already user-approved - start_mission is gated).
@@ -689,7 +699,7 @@ pub fn start(app: AppHandle, session: AgentSession, runner: MissionRunner) {
                 }
             }
 
-            for sc in read_schedules(&settings) {
+            for sc in read_schedules(settings) {
                 if !sc.enabled {
                     continue;
                 }
@@ -728,7 +738,7 @@ pub fn start(app: AppHandle, session: AgentSession, runner: MissionRunner) {
                 }
             }
 
-            for tr in read_triggers(&settings) {
+            for tr in read_triggers(settings) {
                 if !tr.enabled {
                     continue;
                 }
@@ -764,7 +774,7 @@ pub fn start(app: AppHandle, session: AgentSession, runner: MissionRunner) {
             // on an interval, stopping when June replies DONE (the condition holds) or
             // the iteration cap is hit. The unattended leash (18.2) makes this safe by
             // construction - a watch can read and report, never act.
-            for w in read_watches(&settings) {
+            for w in read_watches(settings) {
                 if !w.enabled || watch_done.contains(&w.id) {
                     continue;
                 }

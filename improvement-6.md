@@ -811,9 +811,18 @@ round-trip + legacy migration (1.9).
     own, never the AppWindow slice with the settings/mission/runs panels. Typecheck
     green; chunk split confirmed in the vite build output.
 
-7.4 **Scheduler: skip the 30s settings re-parse when mtime is unchanged** | P2 | S
+7.4 **Scheduler: skip the 30s settings re-parse when mtime is unchanged** | P2 | S - DONE
     It already stats the mtime three lines later. Hoist the stat, reuse the last parsed
     value. `src-tauri/src/scheduler.rs`.
+    The tick loop now stats settings.json's mtime FIRST (the stat the out-of-band-write
+    check already needed) and re-reads+parses only when it advanced, on the first tick,
+    or when the stat failed (a missing/unstattable file falls back to reading every
+    tick, so the cache is never trusted without evidence); otherwise it reuses a cached
+    `serde_json::Value` via a `&settings` reference. The `settings://changed` emit still
+    fires exactly when the mtime advances from a known prior value, so a voice-created
+    automation still reaches open windows. `settings` in the loop became a `&Value`, so
+    the three `read_schedules/triggers/watches(&settings)` call sites drop the extra
+    borrow. Clippy `-D warnings` + 13 scheduler tests green.
 
 7.5 **Isolate the 11Hz waveform re-render** | P2 | M
     The level-poll re-renders all of VoicePanel (transcript, chips, approvals) every 90ms
