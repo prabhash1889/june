@@ -435,6 +435,24 @@ button {
   margin: 0;
 }
 
+/* Top-level ErrorBoundary fallback (2.2): a recoverable card instead of a blank
+   widget when a render throws. Centered so it reads in either face. */
+.error-fallback {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  padding: var(--sp-3);
+  text-align: center;
+  color: var(--warm);
+  font-size: var(--fs-m);
+}
+.error-fallback p {
+  margin: 0;
+}
+
 .review {
   display: flex;
   flex-direction: column;

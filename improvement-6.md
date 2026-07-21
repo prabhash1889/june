@@ -93,10 +93,14 @@ round-trip + legacy migration (1.9).
     the resident's stderr (was `Stdio::inherit`) into `june.log` via a `[serve]` reader
     thread. `log_message` command backs 2.2.
 
-2.2 **Renderer ErrorBoundary + global error hooks** | P1
+2.2 **Renderer ErrorBoundary + global error hooks** | P1 - DONE
     A render throw blanks the always-on-top widget with no trace ("June died"). One
     top-level ErrorBoundary around `<Face />` plus `error`/`unhandledrejection` handlers
     forwarding into 2.1. `src/main.tsx`.
+    New `src/app/ErrorBoundary.tsx` (catches render throws, logs the stack, shows a
+    recoverable "June hit a display error" + Reload card) and `src/lib/errorlog.ts`
+    (`reportError` -> `log_message`, `installGlobalErrorHooks` for
+    error/unhandledrejection). Wired into `main.tsx`; `.error-fallback` styling added.
 
 2.3 **Missions write to the run ledger** (x2: missions + frontend) | P1 | M
     Missions bypass `append_run` entirely and "Clear mission" destroys the only record a
