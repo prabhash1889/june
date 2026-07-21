@@ -181,6 +181,27 @@ describe("gate policy", () => {
     );
   });
 
+  it("manages automations as reversible: auto-run when present, blocked unattended (4.2)", () => {
+    // Enabling/disabling/removing an existing automation is reversible - it auto-runs
+    // with the user present (no gate)...
+    expect(classify("set_automation_enabled", "automation")).toBe("reversible");
+    expect(classify("remove_automation", "automation")).toBe("reversible");
+    expect(isGated(classify("set_automation_enabled", "automation"))).toBe(false);
+    // ...but reversible is not observe, so an unattended (possibly injected) run is
+    // still blocked from silently disabling June's own safety automations.
+    expect(
+      unattendedBlockReason({ cls: "reversible", action: "remove_automation", server: "automation" }, new Set()),
+    ).toBe("needs approval");
+    // The audit/card text names exactly what happens.
+    expect(summarize("set_automation_enabled", { idOrLabel: "Build watch", enabled: false })).toBe(
+      "Disable automation Build watch",
+    );
+    expect(summarize("set_automation_enabled", { idOrLabel: "Build watch", enabled: true })).toBe(
+      "Enable automation Build watch",
+    );
+    expect(summarize("remove_automation", { idOrLabel: "Morning briefing" })).toBe("Remove automation Morning briefing");
+  });
+
   it("redacts string params under on-device privacy modes but keeps them under standard", () => {
     const params = { path: "notes/secret.md", count: 3, force: true };
     expect(redactParams(params, "standard")).toEqual(params);

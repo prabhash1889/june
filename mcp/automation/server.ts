@@ -27,6 +27,8 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 
 import {
+  removeAutomation,
+  setAutomationEnabled,
   type SettingsBag,
   summarizeAutomations,
   validateSchedule,
@@ -148,6 +150,53 @@ server.registerTool(
         await writeBag(withWatch(await readBag(), watch));
         const until = watch.untilCondition ? ` until ${watch.untilCondition}` : "";
         return ok(`Watching "${watch.label}" every ${watch.everyMinutes} minutes${until}. I'll stop and tell you when it's done.`);
+      } catch (e) {
+        return fail(e instanceof Error ? e.message : String(e));
+      }
+    }),
+);
+
+server.registerTool(
+  "set_automation_enabled",
+  {
+    title: "Enable or disable an automation",
+    description:
+      "Turn an existing scheduled run, watch loop, or file trigger on or off by its name or id, without deleting it. Use for 'pause the build watch', 'turn my morning briefing back on'.",
+    inputSchema: {
+      idOrLabel: z.string().min(1).describe("The automation's name (label) or id, e.g. 'Build watch'."),
+      enabled: z.boolean().describe("true to enable, false to disable (pause)."),
+    },
+  },
+  (input): Promise<CallToolResult> =>
+    serialize(async () => {
+      try {
+        const { bag, result } = setAutomationEnabled(await readBag(), input.idOrLabel, input.enabled);
+        if (!result) return fail(`I couldn't find an automation called "${input.idOrLabel}".`);
+        await writeBag(bag);
+        return ok(`${input.enabled ? "Enabled" : "Disabled"} the ${result.kind} "${result.label}".`);
+      } catch (e) {
+        return fail(e instanceof Error ? e.message : String(e));
+      }
+    }),
+);
+
+server.registerTool(
+  "remove_automation",
+  {
+    title: "Remove an automation",
+    description:
+      "Delete a scheduled run, watch loop, or file trigger by its name or id. Use for 'stop the build watch', 'delete my morning briefing'. To pause one without deleting it, use set_automation_enabled instead.",
+    inputSchema: {
+      idOrLabel: z.string().min(1).describe("The automation's name (label) or id."),
+    },
+  },
+  (input): Promise<CallToolResult> =>
+    serialize(async () => {
+      try {
+        const { bag, result } = removeAutomation(await readBag(), input.idOrLabel);
+        if (!result) return fail(`I couldn't find an automation called "${input.idOrLabel}".`);
+        await writeBag(bag);
+        return ok(`Removed the ${result.kind} "${result.label}".`);
       } catch (e) {
         return fail(e instanceof Error ? e.message : String(e));
       }

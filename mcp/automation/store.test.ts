@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  removeAutomation,
+  setAutomationEnabled,
   summarizeAutomations,
   validateSchedule,
   validateWatch,
@@ -90,5 +92,45 @@ describe("summarizeAutomations (P1.5)", () => {
     });
     expect(out).toContain("Call mom");
     expect(out).toContain("once at 2026-07-21T15:00");
+  });
+});
+
+describe("setAutomationEnabled / removeAutomation (4.2)", () => {
+  const bag = () => ({
+    other: { keep: true },
+    schedules: [{ id: "brief", label: "Morning briefing", enabled: true }],
+    watches: [{ id: "build", label: "Build watch", enabled: true }],
+    triggers: [{ id: "err", label: "Error log", enabled: false }],
+  });
+
+  it("disables a watch by label (case-insensitive) and preserves everything else", () => {
+    const { bag: next, result } = setAutomationEnabled(bag(), "build watch", false);
+    expect(result).toEqual({ kind: "watch", id: "build", label: "Build watch" });
+    expect(next.watches[0].enabled).toBe(false);
+    expect(next.schedules[0].enabled).toBe(true); // untouched
+    expect(next.other).toEqual({ keep: true }); // untouched
+  });
+
+  it("enables a trigger by id", () => {
+    const { bag: next, result } = setAutomationEnabled(bag(), "err", true);
+    expect(result?.kind).toBe("trigger");
+    expect(next.triggers[0].enabled).toBe(true);
+  });
+
+  it("removes a schedule by label and leaves the others", () => {
+    const { bag: next, result } = removeAutomation(bag(), "Morning briefing");
+    expect(result).toEqual({ kind: "schedule", id: "brief", label: "Morning briefing" });
+    expect(next.schedules).toHaveLength(0);
+    expect(next.watches).toHaveLength(1);
+  });
+
+  it("returns a null result and an unchanged bag when nothing matches", () => {
+    const original = bag();
+    const enable = setAutomationEnabled(original, "nope", false);
+    expect(enable.result).toBeNull();
+    expect(enable.bag).toBe(original);
+    const remove = removeAutomation(original, "nope");
+    expect(remove.result).toBeNull();
+    expect(remove.bag).toBe(original);
   });
 });

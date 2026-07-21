@@ -44,6 +44,83 @@ export function withWatch(bag: SettingsBag, watch: WatchLoop): SettingsBag {
   return { ...bag, watches: coerceWatches([...existing, watch]) };
 }
 
+/** Which automation list an entry lives in (improvement-6 4.2). */
+export type AutomationKind = "schedule" | "watch" | "trigger";
+
+/** What a management op (enable/disable/remove) matched, for the spoken reply. Null
+ *  from the helpers means nothing matched the given id/label. */
+export interface ManageResult {
+  kind: AutomationKind;
+  id: string;
+  label: string;
+}
+
+/** The three managed lists and their settings keys, scanned in this order (4.2). */
+const LISTS: readonly { kind: AutomationKind; key: string }[] = [
+  { kind: "schedule", key: "schedules" },
+  { kind: "watch", key: "watches" },
+  { kind: "trigger", key: "triggers" },
+];
+
+/** Match an automation by exact id OR case-insensitive label (4.2), so a voice
+ *  "stop the build watch" resolves the entry the same way the user named it. */
+function matches(entry: Record<string, unknown>, idOrLabel: string): boolean {
+  const needle = idOrLabel.trim().toLowerCase();
+  if (!needle) return false;
+  const id = typeof entry.id === "string" ? entry.id.trim().toLowerCase() : "";
+  const label = typeof entry.label === "string" ? entry.label.trim().toLowerCase() : "";
+  return id === needle || label === needle;
+}
+
+/** Find the first automation across all three lists matching `idOrLabel`. Returns
+ *  its list key + index (into the ORIGINAL array, so a caller mutates only that one
+ *  entry and preserves every other verbatim), or null. */
+function findMatch(
+  bag: SettingsBag,
+  idOrLabel: string,
+): { kind: AutomationKind; key: string; idx: number; list: unknown[]; entry: Record<string, unknown> } | null {
+  for (const { kind, key } of LISTS) {
+    const list = bag[key];
+    if (!Array.isArray(list)) continue;
+    const idx = list.findIndex((e) => typeof e === "object" && e !== null && matches(e as Record<string, unknown>, idOrLabel));
+    if (idx >= 0) return { kind, key, idx, list, entry: list[idx] as Record<string, unknown> };
+  }
+  return null;
+}
+
+function resultOf(m: { kind: AutomationKind; entry: Record<string, unknown> }): ManageResult {
+  return {
+    kind: m.kind,
+    id: typeof m.entry.id === "string" ? m.entry.id : "",
+    label: typeof m.entry.label === "string" ? m.entry.label : "",
+  };
+}
+
+/** Enable or disable one automation by id/label (4.2). Pure: returns a new bag with
+ *  only the matched entry's `enabled` flipped (every other entry, and every other
+ *  settings key, preserved verbatim), plus what matched - or the bag unchanged and a
+ *  null result if nothing matched. */
+export function setAutomationEnabled(
+  bag: SettingsBag,
+  idOrLabel: string,
+  enabled: boolean,
+): { bag: SettingsBag; result: ManageResult | null } {
+  const m = findMatch(bag, idOrLabel);
+  if (!m) return { bag, result: null };
+  const next = m.list.map((e, i) => (i === m.idx ? { ...(e as Record<string, unknown>), enabled } : e));
+  return { bag: { ...bag, [m.key]: next }, result: resultOf(m) };
+}
+
+/** Remove one automation by id/label (4.2). Pure: returns a new bag with the matched
+ *  entry dropped (everything else preserved) plus what matched - or the bag unchanged
+ *  and a null result if nothing matched. */
+export function removeAutomation(bag: SettingsBag, idOrLabel: string): { bag: SettingsBag; result: ManageResult | null } {
+  const m = findMatch(bag, idOrLabel);
+  if (!m) return { bag, result: null };
+  const next = m.list.filter((_, i) => i !== m.idx);
+  return { bag: { ...bag, [m.key]: next }, result: resultOf(m) };
+}
+
 /** A one-paragraph, spoken-style summary of the current automations for
  *  list_automations. Reads the bag through the shared coercers so it reflects
  *  exactly what the scheduler will act on. Pure. */

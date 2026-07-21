@@ -72,6 +72,14 @@ const ACTION_CLASS: Record<string, SafetyClass> = {
   add_schedule: "expensive",
   add_watch: "expensive",
   list_automations: "observe",
+  // Managing an EXISTING automation (improvement-6 4.2) is reversible: enabling/
+  // disabling/removing a schedule/watch/trigger is local-only, user-visible in
+  // settings, and trivially undone (re-enable, or recreate by voice), so it auto-
+  // runs when the user is present. Being `reversible` (not `observe`) it is still
+  // blocked on an UNATTENDED run (unattendedBlockReason), so an injected trigger
+  // prompt can't silently disable June's own safety watches.
+  set_automation_enabled: "reversible",
+  remove_automation: "reversible",
 };
 
 /**
@@ -261,6 +269,10 @@ export function summarize(action: string, input: Record<string, unknown>): strin
       return `Watch "${s("label") || "a task"}" every ${Number(input.everyMinutes ?? 0) || "?"} min${
         s("untilCondition") ? ` until ${showPayload(s("untilCondition"))}` : ""
       } (unattended)${promptTail(s("prompt"))}`;
+    case "set_automation_enabled":
+      return `${input.enabled === false ? "Disable" : "Enable"} automation ${s("idOrLabel") || "?"}`;
+    case "remove_automation":
+      return `Remove automation ${s("idOrLabel") || "?"}`;
     case "list_automations":
       return "List automations";
     default: {

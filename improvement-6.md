@@ -406,11 +406,27 @@ round-trip + legacy migration (1.9).
     (validate + summarize), policy.test (summarize once). Full suite: 251 vitest +
     Rust scheduler tests green, clippy `-D warnings` + eslint clean.
 
-4.2 **Voice management verbs: remove / enable / disable automations** (x2) | P1 | S
+4.2 **Voice management verbs: remove / enable / disable automations** (x2) | P1 | S - DONE
     The automation server can create but never manage - "stop the build watch" is
     impossible by voice. Add `set_automation_enabled` + `remove_automation` (match by id
     or label), classify `reversible`; cover triggers too. `mcp/automation/server.ts`,
     `store.ts`, `agent/policy.ts`.
+    Two new pure store helpers - `setAutomationEnabled` and `removeAutomation` - scan
+    all three managed lists (schedules, watches, triggers) via one shared `findMatch`
+    that matches an exact id OR a case-insensitive label ("stop the build watch" ->
+    "Build watch"). Both are pure: they return a new bag touching ONLY the matched
+    entry (every other entry and settings key preserved verbatim, including a once
+    reminder's `at`) plus a `ManageResult` naming what matched, or the bag unchanged +
+    null when nothing matches (the tool then speaks "I couldn't find..."). The two new
+    MCP tools read-modify-write through the same serialized atomic path as add_*.
+    Classified `reversible` in policy (auto-runs with the user present - frictionless
+    voice management), which is deliberately NOT `observe`, so `unattendedBlockReason`
+    still blocks them on an unattended run: an injected trigger prompt can't silently
+    disable June's own safety watches. `summarize` renders both for the audit/card
+    ("Disable automation Build watch", "Remove automation Morning briefing"). Pinned:
+    store.test (disable-by-label/enable-by-id/remove-by-label/no-match-unchanged),
+    policy.test (reversible class + unattended-blocked + summarize). Full suite: 256
+    vitest green, typecheck + eslint clean.
 
 4.3 **`mcp/system` observe pack** | P1 | M
     Unattended watch loops may only call local observe tools, which today means the files
