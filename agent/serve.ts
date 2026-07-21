@@ -165,7 +165,11 @@ async function main(): Promise<void> {
         : text;
       // Pre-run recall (17.2): inject the top-k lessons relevant to this task. Read
       // fresh so a lesson recorded earlier this session is available now.
-      const prompt = withRecalledLessons(framed, await readLessons(lessonsFile));
+      const recalled = withRecalledLessons(framed, await readLessons(lessonsFile));
+      // Give the model a clock (3.8): without it, June schedules "daily at 9am" and
+      // answers "what day is it" blind. One trusted line, prepended BEFORE the fenced
+      // untrusted blocks so a poisoned trigger payload can never spoof the time.
+      const prompt = `Current date and time: ${new Date().toString()}\n\n${recalled}`;
       const result = await agent.run(prompt, {
         gate: hub.makeGate(turn, run.unattended, networkedServers),
         onText: (delta) => emit({ t: "text", turn, delta }),

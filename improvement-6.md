@@ -300,10 +300,15 @@ round-trip + legacy migration (1.9).
     retry-dropped-connection-then-succeed, and 4xx-fails-at-once. (HTTP-date
     Retry-After falls back to exponential - noted with a ponytail comment.)
 
-3.8 **Give the model a clock** | P2 | S
+3.8 **Give the model a clock** | P2 | S - DONE
     Nothing injects the current date/time, yet June creates "daily at 9am" schedules and
     answers "what day is it" blind. One line per turn in `runTurn`, outside the fenced
     untrusted blocks. `agent/serve.ts`.
+    `runTurn` now prepends `Current date and time: ${new Date().toString()}` (includes
+    the local timezone offset + name, so "daily at 9am" resolves and "what day is it"
+    answers) to the composed prompt, BEFORE the fenced untrusted/lessons blocks - a
+    poisoned trigger payload can't spoof the clock. Computed per turn so a long-lived
+    resident never reads a stale time.
 
 3.9 **Audio output device picker** | P2 | S
     Mic picker shipped (6.5) but TTS speaks on system default - headset users get AEC
