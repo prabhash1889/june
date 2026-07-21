@@ -6,8 +6,10 @@ import { humanizeAction } from "../lib/actions.ts";
 import { useApprovalKeys } from "../lib/approval-hooks.ts";
 import { ApprovalMeta } from "../lib/approval-ui.tsx";
 import { usePttLabel } from "../lib/hotkey.ts";
+import { PRIVACY_MODES, type PrivacyMode } from "../lib/privacy.ts";
 import { followBottom } from "../lib/scroll.ts";
 import { allocTurn, type Approval, newConversation, usePendingApproval } from "../lib/session.ts";
+import { type JuneSettings, loadSettings, saveSettings } from "../lib/settings.ts";
 import { runAgent } from "../lib/stt.ts";
 import { MissionBoard } from "./MissionBoard.tsx";
 import { RunsPanel } from "./RunsPanel.tsx";
@@ -208,6 +210,22 @@ export function AppWindow() {
     if (view === "runs") setRunsUnseen(false);
   }, [view]);
 
+  // First-run onboarding (6.4): a fresh install is an unexplained floating dot.
+  // Load settings once; if the one-time welcome hasn't been dismissed, show it.
+  const [settings, setSettings] = useState<JuneSettings | null>(null);
+  useEffect(() => {
+    void loadSettings().then(setSettings).catch(() => {});
+  }, []);
+  const finishOnboarding = (openSettings: boolean) => {
+    setSettings((s) => {
+      if (!s) return s;
+      const next = { ...s, firstRunDone: true };
+      void saveSettings(next).catch(() => {});
+      return next;
+    });
+    if (openSettings) setView("settings");
+  };
+
   // Sticky-bottom, not forced (improvement-5 P0.8): a reader who scrolled up
   // stays put; a reader at the bottom follows the stream, instantly.
   useEffect(() => {
@@ -229,6 +247,21 @@ export function AppWindow() {
 
   return (
     <div className="app-window">
+      {settings && !settings.firstRunDone && (
+        <Onboarding
+          settings={settings}
+          pttLabel={pttLabel}
+          onPrivacy={(mode) =>
+            setSettings((s) => {
+              if (!s) return s;
+              const next = { ...s, privacyMode: mode };
+              void saveSettings(next).catch(() => {});
+              return next;
+            })
+          }
+          onDone={finishOnboarding}
+        />
+      )}
       <header className="app-header">
         <div className="app-title">June</div>
         <nav className="app-nav">
@@ -289,6 +322,62 @@ export function AppWindow() {
           <Composer onError={setNote} />
         </>
       )}
+    </div>
+  );
+}
+
+/** One-time first-run welcome (6.4). A fresh install otherwise opens to an
+ *  unexplained floating dot: this orients the user - how to talk to June (the PTT
+ *  chord), a privacy-mode choice up front (the one decision that changes what
+ *  leaves the device), and a route into Settings to test the mic (which lives
+ *  there already, so we don't duplicate the control). Dismissed once via the
+ *  `firstRunDone` flag; never shown again. */
+function Onboarding({
+  settings,
+  pttLabel,
+  onPrivacy,
+  onDone,
+}: {
+  settings: JuneSettings;
+  pttLabel: string;
+  onPrivacy: (mode: PrivacyMode) => void;
+  onDone: (openSettings: boolean) => void;
+}) {
+  return (
+    <div className="onboarding-backdrop" role="dialog" aria-modal="true" aria-label="Welcome to June">
+      <div className="onboarding-card">
+        <h1>Welcome to June</h1>
+        <p>
+          June is a voice-first assistant that lives in the corner of your screen. Hold <kbd>{pttLabel}</kbd> and speak,
+          or just type in the box below - your commands, June's replies, and every action it takes appear in the
+          Conversation view.
+        </p>
+
+        <div className="onboarding-privacy">
+          <span className="onboarding-label">Choose a privacy mode</span>
+          {PRIVACY_MODES.map((m) => (
+            <label key={m.id} className="privacy-mode">
+              <input
+                type="radio"
+                name="onboarding-privacy"
+                checked={settings.privacyMode === m.id}
+                onChange={() => onPrivacy(m.id as PrivacyMode)}
+              />
+              <span>
+                <span className="privacy-name">{m.label}</span>
+                <span className="privacy-desc">{m.desc}</span>
+              </span>
+            </label>
+          ))}
+        </div>
+
+        <div className="onboarding-actions">
+          <button className="primary" onClick={() => onDone(true)}>
+            Open Settings to test your mic
+          </button>
+          <button onClick={() => onDone(false)}>Start using June</button>
+        </div>
+      </div>
     </div>
   );
 }

@@ -95,6 +95,10 @@ export interface JuneSettings {
    *  0 = never auto-reset; the conversation persists until "new conversation". */
   conversationIdleMinutes: number;
   privacyMode: PrivacyMode;
+  /** Whether the one-time first-run welcome card has been dismissed (6.4). False on
+   *  a fresh install (or a settings file predating this flag), so onboarding shows
+   *  once, then never again. */
+  firstRunDone: boolean;
   wake: WakeConfig;
   handsFree: HandsFreeConfig;
   transcript: TranscriptConfig;
@@ -122,6 +126,7 @@ export const DEFAULT_SETTINGS: JuneSettings = {
   outputVolume: 1,
   conversationIdleMinutes: 10,
   privacyMode: "standard",
+  firstRunDone: false,
   wake: { enabled: false, phrase: "hey june", sensitivity: 0.5 },
   handsFree: { autoAccept: false, spokenApprovals: false, followUp: false, backchannel: false },
   transcript: { autoEdit: false, dictionary: {}, snippets: {} },
@@ -203,6 +208,7 @@ function coerce(raw: RawSettings): JuneSettings {
     outputVolume: unit(raw.outputVolume, d.outputVolume),
     conversationIdleMinutes: nonNegInt(raw.conversationIdleMinutes, d.conversationIdleMinutes),
     privacyMode: modes.includes(mode as PrivacyMode) ? (mode as PrivacyMode) : d.privacyMode,
+    firstRunDone: bool(raw.firstRunDone, d.firstRunDone),
     wake: {
       enabled: typeof wake.enabled === "boolean" ? wake.enabled : d.wake.enabled,
       phrase: str(wake.phrase, d.wake.phrase),

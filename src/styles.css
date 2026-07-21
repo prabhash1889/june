@@ -1556,6 +1556,65 @@ kbd {
   white-space: pre-wrap;
 }
 
+/* First-run onboarding (6.4): a one-time welcome over the app window. */
+.onboarding-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--sp-5);
+  background: color-mix(in srgb, var(--bg0) 78%, transparent);
+  backdrop-filter: blur(4px);
+  animation: turn-in 0.2s var(--ease-out);
+}
+
+.onboarding-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  width: min(100%, 44ch);
+  max-height: 100%;
+  overflow-y: auto;
+  padding: var(--sp-5);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-l, 16px);
+  background: var(--bg1);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
+}
+
+.onboarding-card h1 {
+  margin: 0;
+  font-size: var(--fs-xl, 22px);
+}
+
+.onboarding-card p {
+  margin: 0;
+  color: var(--dim);
+  line-height: 1.55;
+}
+
+.onboarding-privacy {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.onboarding-label {
+  font-weight: 600;
+  font-size: var(--fs-s);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--dim);
+}
+
+.onboarding-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
 /* Confirmation line under an automation card (6.2): next fire + last outcome. */
 .card-status {
   display: flex;
