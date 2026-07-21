@@ -668,6 +668,19 @@ pub fn start(app: AppHandle, session: AgentSession, runner: MissionRunner) {
             }
             let settings = &cached_settings;
 
+            // Tray "Pause automations" (improvement-7 1.4): a no-op flag over the
+            // whole tick. Runs that come due while paused are SKIPPED, not queued -
+            // advancing last_tick keeps the gap-catchup rule (5.1) from replaying
+            // them on unpause.
+            if settings
+                .get("automationsPaused")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+            {
+                last_tick = Some(now);
+                continue;
+            }
+
             // Voice-started missions (4.10): the automation server pushed a request
             // to `pendingMissions` (already user-approved - start_mission is gated).
             // Start it via the SAME path as the start_mission command. Only when

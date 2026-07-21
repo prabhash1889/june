@@ -11,7 +11,7 @@ mod settings;
 mod stt;
 mod tts;
 
-use tauri::menu::{Menu, MenuItem};
+use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -67,13 +67,42 @@ pub fn run() {
                 // (improvement-5 P2 5.2) - the runner outlives every webview now.
                 missions::resume(app.handle().clone(), session, runner);
             }
-            // Tray presence (Phase 0 exit criterion): an icon in the system tray for the
-            // whole app lifetime, independent of any window being open. Left-click
-            // brings the widget to front; right-click offers the full window and quit.
+            // Tray presence (Phase 0 exit criterion), grown into a real menu
+            // (improvement-7 1.4): open/show, mic mute, pause automations, and a
+            // privacy-mode submenu - all wiring over existing settings flags. The
+            // check states live in settings.json, so the menu, both webviews and
+            // the scheduler all read the same truth; a `settings://changed` from
+            // any of them re-syncs the menu and the badge below.
             let show_widget = MenuItem::with_id(app, "show-widget", "Show widget", true, None::<&str>)?;
-            let open_full = MenuItem::with_id(app, "open-app", "Open full window", true, None::<&str>)?;
+            let open_full = MenuItem::with_id(app, "open-app", "Open June", true, None::<&str>)?;
+            let s = settings::read_settings(app.handle());
+            let flag = |k: &str| s.get(k).and_then(|v| v.as_bool()).unwrap_or(false);
+            let mode = s.get("privacyMode").and_then(|v| v.as_str()).unwrap_or("standard").to_string();
+            let mute = CheckMenuItem::with_id(app, "mute-mic", "Mute microphone", true, flag("micMuted"), None::<&str>)?;
+            let pause = CheckMenuItem::with_id(app, "pause-automations", "Pause automations", true, flag("automationsPaused"), None::<&str>)?;
+            let privacy_items: Vec<CheckMenuItem<_>> = PRIVACY_MODES
+                .iter()
+                .map(|(id, label)| {
+                    CheckMenuItem::with_id(app, format!("privacy-{id}"), *label, true, mode == *id, None::<&str>)
+                })
+                .collect::<Result<_, _>>()?;
+            let privacy_refs: Vec<&dyn tauri::menu::IsMenuItem<_>> =
+                privacy_items.iter().map(|i| i as &dyn tauri::menu::IsMenuItem<_>).collect();
+            let privacy = Submenu::with_id_and_items(app, "privacy", "Privacy mode", true, &privacy_refs)?;
             let quit = MenuItem::with_id(app, "quit", "Quit June", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show_widget, &open_full, &quit])?;
+            let menu = Menu::with_items(
+                app,
+                &[
+                    &open_full,
+                    &show_widget,
+                    &PredefinedMenuItem::separator(app)?,
+                    &mute,
+                    &pause,
+                    &privacy,
+                    &PredefinedMenuItem::separator(app)?,
+                    &quit,
+                ],
+            )?;
             // Build the tray WITHOUT unwrapping the bundle icon (1.12): a missing
             // icon must not panic the whole app at startup. The tray still works
             // (menu + clicks); it just shows the OS default glyph.
@@ -81,13 +110,26 @@ pub fn run() {
             if let Some(icon) = app.default_window_icon() {
                 tray = tray.icon(icon.clone());
             }
-            tray.menu(&menu)
+            let tray = tray
+                .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id().as_ref() {
                     "show-widget" => focus_widget(app),
                     "open-app" => open_full_window(app),
+                    "mute-mic" => toggle_setting(app, "micMuted"),
+                    "pause-automations" => toggle_setting(app, "automationsPaused"),
                     "quit" => app.exit(0),
-                    _ => {}
+                    id => {
+                        if let Some(mode) = id.strip_prefix("privacy-") {
+                            use tauri::Manager;
+                            settings::set_setting(app, "privacyMode", mode.into());
+                            // The resident reads JUNE_PRIVACY_MODE at spawn, exactly
+                            // like a panel privacy change (save_settings).
+                            if let Some(session) = app.try_state::<agent_runner::AgentSession>() {
+                                session.request_respawn();
+                            }
+                        }
+                    }
                 })
                 .on_tray_icon_event(|tray, event| {
                     if let TrayIconEvent::Click {
@@ -100,6 +142,26 @@ pub fn run() {
                     }
                 })
                 .build(app)?;
+
+            // Re-sync the menu checks, tooltip and badge whenever settings change,
+            // from ANY writer (tray toggle, settings panel, voice automation).
+            {
+                use tauri::Listener;
+                let handle = app.handle().clone();
+                // Re-own the pixels: the borrowed bundle icon can't move into the
+                // 'static listener closure.
+                let base_icon = app
+                    .default_window_icon()
+                    .map(|i| tauri::image::Image::new_owned(i.rgba().to_vec(), i.width(), i.height()));
+                sync_tray(&handle, &tray, &mute, &pause, &privacy_items, base_icon.as_ref());
+                let tray_l = tray.clone();
+                let mute_l = mute.clone();
+                let pause_l = pause.clone();
+                let privacy_l = privacy_items.clone();
+                app.listen("settings://changed", move |_| {
+                    sync_tray(&handle, &tray_l, &mute_l, &pause_l, &privacy_l, base_icon.as_ref());
+                });
+            }
 
             // Keep the OS login item in step with the `launchAtLogin` setting
             // (improvement-7 1.3): reconcile once at startup (the registry entry may
@@ -232,6 +294,89 @@ fn apply_autostart(app: &tauri::AppHandle) {
     if let Err(e) = result {
         logf::log(app, &format!("[autostart] could not apply launchAtLogin={want}: {e}"));
     }
+}
+
+/// Tray privacy submenu entries (improvement-7 1.4); ids and labels match
+/// src/lib/privacy.ts's PRIVACY_MODES.
+const PRIVACY_MODES: [(&str, &str); 3] = [
+    ("standard", "Standard"),
+    ("local-voice", "Local voice"),
+    ("strict-offline", "Strict offline"),
+];
+
+/// Flip a boolean settings key from the tray (1.4). The `settings://changed`
+/// broadcast from the write re-syncs the menu, both webviews and the scheduler.
+fn toggle_setting(app: &tauri::AppHandle, key: &str) {
+    let cur = settings::read_settings(app)
+        .get(key)
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    settings::set_setting(app, key, (!cur).into());
+}
+
+/// Reflect current settings into the tray (1.4): menu check marks, tooltip, and
+/// a red (muted) / amber (paused) dot badge on the icon. Best-effort throughout -
+/// a tray that can't redraw must never break a settings save.
+fn sync_tray(
+    app: &tauri::AppHandle,
+    tray: &tauri::tray::TrayIcon,
+    mute: &CheckMenuItem<tauri::Wry>,
+    pause: &CheckMenuItem<tauri::Wry>,
+    privacy: &[CheckMenuItem<tauri::Wry>],
+    base_icon: Option<&tauri::image::Image<'static>>,
+) {
+    let s = settings::read_settings(app);
+    let flag = |k: &str| s.get(k).and_then(|v| v.as_bool()).unwrap_or(false);
+    let muted = flag("micMuted");
+    let paused = flag("automationsPaused");
+    let mode = s.get("privacyMode").and_then(|v| v.as_str()).unwrap_or("standard");
+    let _ = mute.set_checked(muted);
+    let _ = pause.set_checked(paused);
+    for ((id, _), item) in PRIVACY_MODES.iter().zip(privacy) {
+        let _ = item.set_checked(*id == mode);
+    }
+    let tooltip = match (muted, paused) {
+        (true, true) => "June (mic muted, automations paused)",
+        (true, false) => "June (mic muted)",
+        (false, true) => "June (automations paused)",
+        (false, false) => "June",
+    };
+    let _ = tray.set_tooltip(Some(tooltip));
+    if let Some(base) = base_icon {
+        // Muted wins when both are set - a dead mic is the more surprising state.
+        let badge = if muted {
+            Some([220u8, 60, 60])
+        } else if paused {
+            Some([230u8, 170, 40])
+        } else {
+            None
+        };
+        let _ = tray.set_icon(Some(badged_icon(base, badge)));
+    }
+}
+
+/// The tray icon with an optional filled-dot badge in the bottom-right corner.
+/// ponytail: a plain filled circle, no anti-aliasing - reads fine at tray sizes.
+fn badged_icon(base: &tauri::image::Image<'_>, badge: Option<[u8; 3]>) -> tauri::image::Image<'static> {
+    let (w, h) = (base.width(), base.height());
+    let mut rgba = base.rgba().to_vec();
+    if let Some([r, g, b]) = badge {
+        let radius = (w.min(h) as f32) * 0.28;
+        let (cx, cy) = (w as f32 - radius, h as f32 - radius);
+        for y in 0..h {
+            for x in 0..w {
+                let (dx, dy) = (x as f32 + 0.5 - cx, y as f32 + 0.5 - cy);
+                if dx * dx + dy * dy <= radius * radius {
+                    let i = ((y * w + x) * 4) as usize;
+                    rgba[i] = r;
+                    rgba[i + 1] = g;
+                    rgba[i + 2] = b;
+                    rgba[i + 3] = 255;
+                }
+            }
+        }
+    }
+    tauri::image::Image::new_owned(rgba, w, h)
 }
 
 /// Brings the always-on widget to the front (tray click / tray menu).

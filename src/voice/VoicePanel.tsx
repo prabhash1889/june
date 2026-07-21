@@ -164,6 +164,10 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
   const settingsRef = useRef<JuneSettings>(DEFAULT_SETTINGS);
   const voiceBlockedRef = useRef(false);
   const [voiceBlocked, setVoiceBlocked] = useState(false);
+  // Tray mic mute (improvement-7 1.4): kills wake + PTT/quick-capture. State for
+  // the wake/follow-up effects, a ref for the global hotkey handlers.
+  const [micMuted, setMicMuted] = useState(false);
+  const micMutedRef = useRef(false);
   // Wake config in state (not just the ref) so the hands-free listener effect
   // re-arms when settings load or the user toggles it.
   const [wake, setWake] = useState(DEFAULT_SETTINGS.wake);
@@ -204,6 +208,8 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
     // wake / hands-free effects don't needlessly re-arm the mic on every save.
     setWake((prev) => (sameWake(prev, s.wake) ? prev : s.wake));
     setHandsFree((prev) => (sameHandsFree(prev, s.handsFree) ? prev : s.handsFree));
+    micMutedRef.current = s.micMuted;
+    setMicMuted(s.micMuted);
     const blocked = !voiceAllowed(s);
     voiceBlockedRef.current = blocked;
     setVoiceBlocked(blocked);
@@ -626,6 +632,8 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
 
   useEffect(() => {
     const unlistenDown = listen("ptt://down", () => {
+      // Tray mic mute (improvement-7 1.4): the global hotkeys are dead while muted.
+      if (micMutedRef.current) return;
       // Dictation mode (15.4): a PTT press captures for injection into the focused
       // app. Start it directly (not via activate, which is command-only) so the
       // capture is tagged "dictation" and never routed to the agent. PTT is the one
@@ -648,6 +656,7 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
     // beginTranscribe routes it; started directly (not via activate, which is
     // command-only) exactly like dictation, and independent of dictation mode.
     const unlistenCapDown = listen("capture://down", () => {
+      if (micMutedRef.current) return; // tray mic mute (1.4)
       if (phaseRef.current.s === "listening") return; // a capture/command is already live
       captureModeRef.current = "capture";
       transcribeRef.current += 1;
@@ -671,7 +680,7 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
   // June is already capturing, thinking, or speaking; the effect tears the
   // listener down the moment activation moves us out of "idle".
   useEffect(() => {
-    if (!wake.enabled || voiceBlocked || approval || dictation || phase.s !== "idle") return;
+    if (!wake.enabled || micMuted || voiceBlocked || approval || dictation || phase.s !== "idle") return;
     let alive = true;
     let stop = () => {};
     startWakeListener({
@@ -688,7 +697,7 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
       alive = false;
       stop();
     };
-  }, [wake, voiceBlocked, approval, dictation, phase.s, activate]);
+  }, [wake, micMuted, voiceBlocked, approval, dictation, phase.s, activate]);
 
   // Follow-up mode (Phase 14.3): after each reply, keep the mic armed for a few
   // seconds with no wake word so the user can just keep talking. Reuses the Silero
@@ -698,7 +707,7 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
   // ponytail: the first ~200ms of the follow-up can clip while the capture opens
   // after onset; acceptable for v1, a continuous rolling buffer is the upgrade.
   useEffect(() => {
-    if (!handsFree.followUp || voiceBlocked || approval || dictation || phase.s !== "reply") return;
+    if (!handsFree.followUp || micMuted || voiceBlocked || approval || dictation || phase.s !== "reply") return;
     let alive = true;
     let stop = () => {};
     const timer = window.setTimeout(() => {
@@ -722,7 +731,7 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
       window.clearTimeout(timer);
       stop();
     };
-  }, [handsFree.followUp, voiceBlocked, approval, dictation, phase.s, activate]);
+  }, [handsFree.followUp, micMuted, voiceBlocked, approval, dictation, phase.s, activate]);
 
   // Spoken approvals (Phase 14.2): for EXPENSIVE actions only, June speaks the
   // exact repeat-back and listens for a strict local yes/no. Destructive/external

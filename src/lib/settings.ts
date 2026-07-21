@@ -103,6 +103,14 @@ export interface JuneSettings {
    *  default and offered once during onboarding - a voice assistant that dies at
    *  reboot is not an assistant, but autostart is still the user's call. */
   launchAtLogin: boolean;
+  /** Mute the microphone (improvement-7 1.4, toggled from the tray): kills wake
+   *  listening and push-to-talk/quick-capture until unmuted. The orb still works -
+   *  clicking it is explicit intent. */
+  micMuted: boolean;
+  /** Pause all unattended automations (improvement-7 1.4, toggled from the tray):
+   *  the scheduler skips schedules/triggers/watches while set. Runs missed during
+   *  the pause are skipped, not queued. */
+  automationsPaused: boolean;
   wake: WakeConfig;
   handsFree: HandsFreeConfig;
   transcript: TranscriptConfig;
@@ -132,6 +140,8 @@ export const DEFAULT_SETTINGS: JuneSettings = {
   privacyMode: "standard",
   firstRunDone: false,
   launchAtLogin: false,
+  micMuted: false,
+  automationsPaused: false,
   wake: { enabled: false, phrase: "hey june", sensitivity: 0.5 },
   handsFree: { autoAccept: false, spokenApprovals: false, followUp: false, backchannel: false },
   transcript: { autoEdit: false, dictionary: {}, snippets: {} },
@@ -215,6 +225,8 @@ function coerce(raw: RawSettings): JuneSettings {
     privacyMode: modes.includes(mode as PrivacyMode) ? (mode as PrivacyMode) : d.privacyMode,
     firstRunDone: bool(raw.firstRunDone, d.firstRunDone),
     launchAtLogin: bool(raw.launchAtLogin, d.launchAtLogin),
+    micMuted: bool(raw.micMuted, d.micMuted),
+    automationsPaused: bool(raw.automationsPaused, d.automationsPaused),
     wake: {
       enabled: typeof wake.enabled === "boolean" ? wake.enabled : d.wake.enabled,
       phrase: str(wake.phrase, d.wake.phrase),

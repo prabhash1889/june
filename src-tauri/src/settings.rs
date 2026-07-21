@@ -163,6 +163,27 @@ pub(crate) fn take_pending_mission(app: &tauri::AppHandle) -> Option<Value> {
     Some(head)
 }
 
+/// Set one top-level settings key from Rust (improvement-7 1.4: the tray menu
+/// toggles micMuted / automationsPaused / privacyMode). Atomic read-modify-write
+/// under the write lock, then a `settings://changed` broadcast so open windows,
+/// the hotkey re-register listener and the tray's own sync stay in step. Does NOT
+/// respawn the resident - a caller changing a key the resident reads at spawn
+/// (privacyMode) must request that itself.
+pub(crate) fn set_setting(app: &tauri::AppHandle, key: &str, value: Value) {
+    let Ok(path) = settings_path(app) else { return };
+    {
+        let _guard = SETTINGS_WRITE_LOCK.lock().unwrap();
+        let Ok(mut settings) = read_settings_file(&path) else {
+            return;
+        };
+        if let Value::Object(map) = &mut settings {
+            map.insert(key.to_string(), value);
+        }
+        let _ = write_settings_file(&path, &settings);
+    }
+    let _ = app.emit("settings://changed", ());
+}
+
 /// Read the settings bag from Rust (e.g. to resolve the chosen brain before
 /// spawning a turn). Missing/unreadable settings collapse to an empty object so
 /// callers get defaults rather than an error.

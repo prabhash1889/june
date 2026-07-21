@@ -47,7 +47,7 @@ every other improvement multiplies in value once the app is installable.
     during onboarding). A voice assistant that dies at reboot is not an assistant.
     `src-tauri/src/lib.rs`, `src/lib/settings.ts`, `SettingsPanel.tsx`, onboarding card.
 
-1.4 **A real tray menu** | P1 | S/M
+1.4 **A real tray menu** | P1 | S/M - DONE
     Today the tray is icon + Quit. Add: Open June (app window), Mute microphone (kills
     wake + PTT capture, icon badge while muted), Pause automations (scheduler no-op flag,
     also badge), Privacy mode submenu, Quit. All four states already exist as settings or
