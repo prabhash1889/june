@@ -215,8 +215,14 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
       const { audio, mime } = await handle.stop();
       timer.captureEnded();
       if (transcribeRef.current !== tid) return; // cancelled while stopping
-      if (audio.length === 0) {
-        setPhase({ s: "error", message: "I didn't catch any audio. Try again." });
+      const dictating = captureModeRef.current === "dictation";
+      // Skip STT entirely on a speechless clip (1.8): cloud Whisper hallucinates
+      // words like "Okay." on pure silence, and handsFree.autoAccept would then
+      // auto-send that phantom command. The VAD already tracks whether real speech
+      // was heard (the same signal the spoken-approval path trusts). A dictation
+      // clip stands down quietly; a command surfaces "try again".
+      if (audio.length === 0 || !handle.heardSpeech()) {
+        setPhase(dictating ? { s: "idle" } : { s: "error", message: "I didn't hear a command. Try again." });
         return;
       }
       // Belt-and-braces over the backend's own timeout: if the invoke never
@@ -241,7 +247,6 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
       // Phase 15.1-15.3: clean the raw transcript (snippets -> dictionary -> filler
       // pass) before it reaches the review gate or the injector. Pure and local.
       const cleaned = cleanTranscript(text, settingsRef.current.transcript);
-      const dictating = captureModeRef.current === "dictation";
       if (!cleaned.trim()) {
         // Nothing usable: a dictation clip just stands down quietly; a command
         // surfaces the same "try again" it always has.

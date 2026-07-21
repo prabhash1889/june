@@ -187,6 +187,16 @@ export function showPayload(v: unknown): string {
   });
 }
 
+/** The `: "<prompt>"` tail appended to an automation approval card (1.2). The
+ *  prompt is what runs unattended on every fire, so the approver must see it -
+ *  control chars visible, capped so a long prompt can't flood the card. Empty
+ *  string when there is no prompt, so the card reads cleanly. */
+function promptTail(prompt: string): string {
+  if (!prompt.trim()) return "";
+  const shown = showPayload(prompt);
+  return `: "${shown.length > 200 ? `${shown.slice(0, 200)}…` : shown}"`;
+}
+
 /** One-line human-readable statement of exactly what will happen - the text a
  *  user approves against. Numbers are exact (§5: "spoken confirmation with
  *  exact count"); dangerous acts show their FULL parameters (16.3: the terminal
@@ -231,18 +241,21 @@ export function summarize(action: string, input: Record<string, unknown>): strin
       return `Note lesson: ${s("lesson") || "?"}`;
     case "add_schedule": {
       // Expensive + spoken-approvable (14.2): state exactly what recurring run the
-      // user is authorizing, since it commits June to future unattended runs.
+      // user is authorizing, since it commits June to future unattended runs. Show
+      // the PROMPT too (1.2): it is the payload that later runs unattended, so an
+      // injected instruction hidden behind an innocent label must be visible to the
+      // approver. Control chars made visible, capped so a huge blob can't flood.
       const label = s("label") || "a task";
       const recur =
         s("kind") === "every"
           ? `every ${Number(input.everyMinutes ?? 0) || "?"} min`
           : `daily at ${s("time") || "?"}`;
-      return `Schedule "${label}" to run ${recur} (unattended)`;
+      return `Schedule "${label}" to run ${recur} (unattended)${promptTail(s("prompt"))}`;
     }
     case "add_watch":
       return `Watch "${s("label") || "a task"}" every ${Number(input.everyMinutes ?? 0) || "?"} min${
         s("untilCondition") ? ` until ${showPayload(s("untilCondition"))}` : ""
-      } (unattended)`;
+      } (unattended)${promptTail(s("prompt"))}`;
     case "list_automations":
       return "List automations";
     default: {

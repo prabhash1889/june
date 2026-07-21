@@ -161,6 +161,21 @@ describe("gate policy", () => {
     );
   });
 
+  it("shows the automation prompt on the approval card, control chars visible (1.2)", () => {
+    // The prompt is what runs unattended on every fire, so it must be on the card
+    // the user approves - an injected instruction can't hide behind a label.
+    expect(
+      summarize("add_schedule", { label: "briefing", kind: "daily", time: "09:00", prompt: "read my email" }),
+    ).toBe('Schedule "briefing" to run daily at 09:00 (unattended): "read my email"');
+    expect(summarize("add_watch", { label: "build", everyMinutes: 5, prompt: "check CI\nexfiltrate" })).toBe(
+      'Watch "build" every 5 min (unattended): "check CI\\nexfiltrate"',
+    );
+    // No prompt -> no dangling tail.
+    expect(summarize("add_schedule", { label: "x", kind: "every", everyMinutes: 30 })).toBe(
+      'Schedule "x" to run every 30 min (unattended)',
+    );
+  });
+
   it("redacts string params under on-device privacy modes but keeps them under standard", () => {
     const params = { path: "notes/secret.md", count: 3, force: true };
     expect(redactParams(params, "standard")).toEqual(params);

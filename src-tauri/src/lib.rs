@@ -60,10 +60,14 @@ pub fn run() {
             let open_full = MenuItem::with_id(app, "open-app", "Open full window", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit June", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show_widget, &open_full, &quit])?;
-            TrayIconBuilder::new()
-                .icon(app.default_window_icon().unwrap().clone())
-                .tooltip("June")
-                .menu(&menu)
+            // Build the tray WITHOUT unwrapping the bundle icon (1.12): a missing
+            // icon must not panic the whole app at startup. The tray still works
+            // (menu + clicks); it just shows the OS default glyph.
+            let mut tray = TrayIconBuilder::new().tooltip("June");
+            if let Some(icon) = app.default_window_icon() {
+                tray = tray.icon(icon.clone());
+            }
+            tray.menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id().as_ref() {
                     "show-widget" => focus_widget(app),
@@ -122,8 +126,19 @@ pub fn run() {
             show_app,
             set_widget_expanded,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while running tauri application")
+        .run(|app_handle, event| {
+            // Tear down the resident serve.ts process tree on quit (1.10) so the app
+            // never leaves a live node/tsx tree (with open MCP stdio clients) behind
+            // after it exits - the tray Quit and window-close both route through here.
+            if let tauri::RunEvent::ExitRequested { .. } = event {
+                use tauri::Manager;
+                if let Some(session) = app_handle.try_state::<agent_runner::AgentSession>() {
+                    session.shutdown();
+                }
+            }
+        });
 }
 
 /// Brings the always-on widget to the front (tray click / tray menu).

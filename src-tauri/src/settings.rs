@@ -39,6 +39,34 @@ pub fn load_settings(app: tauri::AppHandle) -> Result<Value, String> {
     read_settings_file(&settings_path(&app)?)
 }
 
+/// Flip one watch loop's `enabled` to false in settings.json (1.9). When a watch
+/// hits its stop condition (or the iteration cap) the scheduler retires it so it
+/// no longer lingers as "enabled" and re-arms on the next app restart. Read-
+/// modify-write with the same atomic rename as `save_settings`; best-effort - a
+/// failed write only means the watch stays enabled (its DONE state is still
+/// persisted in june-scheduler.json, which stops the re-fire). Does NOT respawn
+/// the resident (a watch edit isn't part of the system prompt); the scheduler's
+/// own mtime watch emits `settings://changed` so open windows reload.
+pub(crate) fn disable_watch(app: &tauri::AppHandle, id: &str) {
+    let Ok(path) = settings_path(app) else { return };
+    let Ok(mut settings) = read_settings_file(&path) else {
+        return;
+    };
+    let Some(watches) = settings.get_mut("watches").and_then(|v| v.as_array_mut()) else {
+        return;
+    };
+    let mut changed = false;
+    for w in watches.iter_mut() {
+        if w.get("id").and_then(|x| x.as_str()) == Some(id) {
+            w["enabled"] = Value::Bool(false);
+            changed = true;
+        }
+    }
+    if changed {
+        let _ = write_settings_file(&path, &settings);
+    }
+}
+
 /// Read the settings bag from Rust (e.g. to resolve the chosen brain before
 /// spawning a turn). Missing/unreadable settings collapse to an empty object so
 /// callers get defaults rather than an error.

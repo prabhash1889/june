@@ -257,6 +257,11 @@ pub struct AgentSession {
     /// spawn, so the session's tool surface stays lean. `None` = no restriction.
     /// Set/cleared by the mission runner, paired with `request_respawn`.
     mcp_filter: Arc<Mutex<Option<Vec<String>>>>,
+    /// True while `ensure_resident` is (backing off and) spawning the child (1.11).
+    /// `write_request` checks this FIRST and fails fast instead of blocking on the
+    /// resident mutex, which `ensure_resident` holds across the up-to-8s backoff
+    /// sleep + spawn - otherwise an approval click during a respawn freezes the UI.
+    spawning: Arc<AtomicBool>,
 }
 
 /// ponytail: keep the last N latency samples for the P50/P95 readout; older ones
@@ -526,6 +531,12 @@ fn spawn_serve(
     } else {
         Command::new("npx")
     };
+    // 1.3: JUNE_APPROVE=allow is a test-only headless policy that auto-approves
+    // every gated action (agent/serve.ts). Strip it from the resident's inherited
+    // env in release builds so a stray var on a user machine can never silently
+    // disable the approval gate. Dev/test builds keep it for the text harness.
+    #[cfg(not(debug_assertions))]
+    cmd.env_remove("JUNE_APPROVE");
     let mut child = cmd
         .arg("tsx")
         .arg(&script)
@@ -564,6 +575,12 @@ fn ensure_resident(app: &AppHandle, session: &AgentSession) -> Result<(), String
         }
     }
 
+    // Signal write_request to fail fast rather than block on the resident mutex for
+    // the whole backoff + spawn below (1.11): we hold `guard` across it (B4.3, to
+    // prevent a double-spawn), so without this flag an approval click mid-respawn
+    // would wait up to 8s for the lock and freeze the UI.
+    session.spawning.store(true, Ordering::Relaxed);
+
     // Back off if a recent incarnation crashed, so a broken config can't spin.
     let delay = {
         let b = session.backoff.lock().unwrap();
@@ -579,15 +596,29 @@ fn ensure_resident(app: &AppHandle, session: &AgentSession) -> Result<(), String
     }
 
     let gen = session.generation.fetch_add(1, Ordering::Relaxed) + 1;
-    let (stdin, stdout, child) = spawn_serve(app, session)?;
+    let spawned = spawn_serve(app, session);
+    let (stdin, stdout, child) = match spawned {
+        Ok(v) => v,
+        Err(e) => {
+            session.spawning.store(false, Ordering::Relaxed);
+            return Err(e);
+        }
+    };
     spawn_reader(session.clone(), app.clone(), stdout, gen);
     *guard = Some(Resident { stdin, child, gen });
+    session.spawning.store(false, Ordering::Relaxed);
     Ok(())
 }
 
 /// Write one JSON request line to the resident's stdin. On write failure the
 /// resident is presumed dead and dropped so the next call respawns it.
 fn write_request(session: &AgentSession, req: &serde_json::Value) -> Result<(), String> {
+    // Fail fast during a respawn (1.11): ensure_resident holds the resident mutex
+    // across its backoff + spawn, so blocking here would freeze an approval click
+    // for up to 8s. The caller (an approval decision) can just retry once up.
+    if session.spawning.load(Ordering::Relaxed) {
+        return Err("The agent is starting up; try again in a moment.".to_string());
+    }
     let mut guard = session.resident.lock().unwrap();
     let resident = guard.as_mut().ok_or("The agent is not running.")?;
     let line = format!("{req}\n");
@@ -751,13 +782,46 @@ fn spawn_reader(session: AgentSession, app: AppHandle, stdout: std::process::Chi
     });
 }
 
+/// Tear down the resident serve.ts and its ENTIRE process tree (1.10). On Windows
+/// the child is a `cmd /C npx tsx serve.ts` wrapper, so `Child::kill()` reaps only
+/// the `cmd.exe` shell and orphans the live npx/node/tsx descendants - each still
+/// holding open MCP stdio clients - which leaked on every respawn and every Quit.
+///
+/// Graceful first: dropping stdin closes it, and serve.ts exits on stdin EOF
+/// (disposing its MCP connections cleanly). If it hasn't exited within the deadline
+/// (wedged), force-kill the whole tree with `taskkill /T /F`, then reap the child.
+fn kill_tree(stdin: ChildStdin, mut child: Child) {
+    drop(stdin); // EOF -> serve.ts's reader "close" -> dispose + exit
+    let deadline = Instant::now() + Duration::from_millis(1500);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return, // exited on its own - clean shutdown, tree gone
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(50)),
+            _ => break, // still alive past the deadline, or errored - force-kill below
+        }
+    }
+    #[cfg(windows)]
+    {
+        let _ = Command::new("taskkill")
+            .args(["/T", "/F", "/PID", &child.id().to_string()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+    let _ = child.kill();
+    let _ = child.wait(); // reap so it doesn't linger as a zombie
+}
+
 impl AgentSession {
     /// Kill the resident so the next `run_agent` respawns it. Unconditional - used
     /// by the watchdog to drop a wedged process. A config change should go through
     /// `request_respawn` instead, which defers this when a turn is in flight.
     pub fn shutdown(&self) {
-        if let Some(mut r) = self.resident.lock().unwrap().take() {
-            let _ = r.child.kill();
+        // Take the resident OUT of the lock before the (up-to-1.5s) teardown, so
+        // kill_tree never blocks a concurrent write_request on the resident mutex.
+        let taken = self.resident.lock().unwrap().take();
+        if let Some(r) = taken {
+            kill_tree(r.stdin, r.child);
         }
     }
 

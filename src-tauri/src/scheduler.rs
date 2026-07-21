@@ -379,33 +379,89 @@ fn truncate(s: &str, max: usize) -> String {
 /// whose space separator `NaiveDateTime`'s parser rejects) so it round-trips.
 const FIRED_FMT: &str = "%Y-%m-%dT%H:%M:%S";
 
-/// Render the last-fired map for `june-scheduler.json` (sorted for determinism).
-/// Pure, so the roundtrip is unit-tested. Persisting this map (improvement-5 P0.4)
-/// stops a restart inside the catch-up window from re-firing a daily schedule that
-/// already ran today, and stops an `every` schedule (P1.1) from re-firing before
-/// its interval has elapsed. Stored as a full timestamp so both rules survive.
-fn render_fired(fired: &HashMap<String, NaiveDateTime>) -> String {
-    let map: std::collections::BTreeMap<&String, String> =
-        fired.iter().map(|(k, v)| (k, v.format(FIRED_FMT).to_string())).collect();
-    serde_json::to_string(&map).unwrap_or_else(|_| "{}".to_string())
+/// The persisted scheduler bookkeeping (`june-scheduler.json`). `fired` stops a
+/// daily/`every` schedule re-firing across a restart (improvement-5 P0.4/P1.1);
+/// the watch fields (1.9) stop a DONE watch loop re-arming, re-firing and
+/// re-notifying on every app restart, forever - watch state used to live only in
+/// memory. All four persist together in one file.
+#[derive(Default, Debug, PartialEq)]
+struct Persisted {
+    fired: HashMap<String, NaiveDateTime>,
+    watch_fired: HashMap<String, NaiveDateTime>,
+    watch_iters: HashMap<String, u32>,
+    watch_done: std::collections::HashSet<String>,
 }
 
-/// Parse a persisted last-fired map; garbage (missing file contents, bad JSON,
-/// malformed timestamps) reads as empty, which only risks the pre-persistence
-/// behaviour. Tolerates a legacy date-only value (pre-P1.1) as that day's midnight.
-fn parse_fired(s: &str) -> HashMap<String, NaiveDateTime> {
-    serde_json::from_str::<HashMap<String, String>>(s)
-        .map(|m| {
-            m.into_iter()
-                .filter_map(|(k, v)| {
-                    NaiveDateTime::parse_from_str(&v, FIRED_FMT)
+/// Parse one id->timestamp map from a JSON object, tolerating a legacy date-only
+/// value (pre-P1.1) as that day's midnight and dropping malformed entries.
+fn parse_time_map(v: &serde_json::Value) -> HashMap<String, NaiveDateTime> {
+    v.as_object()
+        .map(|o| {
+            o.iter()
+                .filter_map(|(k, val)| {
+                    let s = val.as_str()?;
+                    NaiveDateTime::parse_from_str(s, FIRED_FMT)
                         .ok()
-                        .or_else(|| v.parse::<NaiveDate>().ok().map(|d| d.and_hms_opt(0, 0, 0).unwrap()))
-                        .map(|dt| (k, dt))
+                        .or_else(|| s.parse::<NaiveDate>().ok().map(|d| d.and_hms_opt(0, 0, 0).unwrap()))
+                        .map(|dt| (k.clone(), dt))
                 })
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// Render an id->timestamp map to a sorted (deterministic) JSON object value.
+fn render_time_map(m: &HashMap<String, NaiveDateTime>) -> serde_json::Value {
+    let sorted: std::collections::BTreeMap<&String, String> =
+        m.iter().map(|(k, v)| (k, v.format(FIRED_FMT).to_string())).collect();
+    serde_json::to_value(sorted).unwrap_or_else(|_| serde_json::json!({}))
+}
+
+/// Render the persisted state for `june-scheduler.json` (sorted for determinism).
+/// Pure, so the roundtrip is unit-tested.
+fn render_state(p: &Persisted) -> String {
+    let iters: std::collections::BTreeMap<&String, u32> = p.watch_iters.iter().map(|(k, v)| (k, *v)).collect();
+    let mut done: Vec<&String> = p.watch_done.iter().collect();
+    done.sort();
+    serde_json::json!({
+        "fired": render_time_map(&p.fired),
+        "watchFired": render_time_map(&p.watch_fired),
+        "watchIters": iters,
+        "watchDone": done,
+    })
+    .to_string()
+}
+
+/// Parse persisted state; garbage (missing file, bad JSON, malformed timestamps)
+/// reads as empty, which only risks the pre-persistence behaviour. Migrates the
+/// legacy pre-1.9 format (a flat id->timestamp map that was the whole `fired` set).
+fn parse_state(s: &str) -> Persisted {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(s) else {
+        return Persisted::default();
+    };
+    // Legacy format: a flat map of id -> timestamp string (no nested "fired"
+    // object, no watch keys) was the entire fired set before 1.9.
+    let is_new = v.get("fired").map(|f| f.is_object()).unwrap_or(false) || v.get("watchDone").is_some();
+    if !is_new {
+        return Persisted {
+            fired: parse_time_map(&v),
+            ..Default::default()
+        };
+    }
+    Persisted {
+        fired: v.get("fired").map(parse_time_map).unwrap_or_default(),
+        watch_fired: v.get("watchFired").map(parse_time_map).unwrap_or_default(),
+        watch_iters: v
+            .get("watchIters")
+            .and_then(|x| x.as_object())
+            .map(|o| o.iter().filter_map(|(k, val)| val.as_u64().map(|n| (k.clone(), n as u32))).collect())
+            .unwrap_or_default(),
+        watch_done: v
+            .get("watchDone")
+            .and_then(|x| x.as_array())
+            .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+            .unwrap_or_default(),
+    }
 }
 
 /// `<app_data_dir>/june-scheduler.json` - NOT settings.json: a settings write
@@ -417,19 +473,31 @@ fn state_file(app: &AppHandle) -> Option<std::path::PathBuf> {
     Some(dir.join("june-scheduler.json"))
 }
 
-fn load_fired(app: &AppHandle) -> HashMap<String, NaiveDateTime> {
+fn load_state(app: &AppHandle) -> Persisted {
     state_file(app)
         .and_then(|p| std::fs::read_to_string(p).ok())
-        .map(|s| parse_fired(&s))
+        .map(|s| parse_state(&s))
         .unwrap_or_default()
 }
 
 /// Best-effort atomic write (temp + rename, the same pattern as memory/lessons).
 /// A failed write only means restart-double-fire protection lapses until the next.
-fn save_fired(app: &AppHandle, fired: &HashMap<String, NaiveDateTime>) {
+fn save_state(
+    app: &AppHandle,
+    fired: &HashMap<String, NaiveDateTime>,
+    watch_fired: &HashMap<String, NaiveDateTime>,
+    watch_iters: &HashMap<String, u32>,
+    watch_done: &std::collections::HashSet<String>,
+) {
     let Some(path) = state_file(app) else { return };
+    let state = Persisted {
+        fired: fired.clone(),
+        watch_fired: watch_fired.clone(),
+        watch_iters: watch_iters.clone(),
+        watch_done: watch_done.clone(),
+    };
     let tmp = path.with_extension("json.tmp");
-    let write = std::fs::write(&tmp, render_fired(fired).as_bytes()).and_then(|()| std::fs::rename(&tmp, &path));
+    let write = std::fs::write(&tmp, render_state(&state).as_bytes()).and_then(|()| std::fs::rename(&tmp, &path));
     if let Err(e) = write {
         eprintln!("[scheduler] couldn't persist fired state: {e}");
     }
@@ -441,20 +509,21 @@ fn save_fired(app: &AppHandle, fired: &HashMap<String, NaiveDateTime>) {
 /// fires so an unattended run never barges in on the user.
 pub fn start(app: AppHandle, session: AgentSession) {
     std::thread::spawn(move || {
-        // Fired-today is persisted (june-scheduler.json, improvement-5 P0.4) so a
-        // restart inside the catch-up window can't re-fire a schedule that already
-        // ran. Trigger mtimes stay in-memory: a restart re-baselines them without
-        // firing, so enabling/relaunching never acts on an already-old file.
-        let mut fired: HashMap<String, NaiveDateTime> = load_fired(&app);
+        // Scheduler bookkeeping is persisted (june-scheduler.json, improvement-5
+        // P0.4 + 1.9) so a restart can't re-fire a schedule that already ran, nor
+        // re-arm a watch that already finished. Trigger mtimes stay in-memory: a
+        // restart re-baselines them without firing, so relaunching never acts on an
+        // already-old file.
+        let loaded = load_state(&app);
+        let mut fired: HashMap<String, NaiveDateTime> = loaded.fired;
         let mut attempts: HashMap<String, u32> = HashMap::new();
         let mut mtimes: HashMap<String, std::time::SystemTime> = HashMap::new();
-        // Watch-loop state (P1.2) is in-memory: last-fired, iteration count, and the
-        // set that have hit their stop condition (or the iteration cap). ponytail: a
-        // restart re-arms an unfinished watch, which is safe - it re-checks the
-        // condition and stops on DONE; persist alongside `fired` only if that bites.
-        let mut watch_fired: HashMap<String, NaiveDateTime> = HashMap::new();
-        let mut watch_iters: HashMap<String, u32> = HashMap::new();
-        let mut watch_done: std::collections::HashSet<String> = std::collections::HashSet::new();
+        // Watch-loop state (P1.2, now persisted per 1.9): last-fired, iteration
+        // count, and the set that have hit their stop condition (or the iteration
+        // cap). Persisting `watch_done` stops a finished watch re-firing on restart.
+        let mut watch_fired: HashMap<String, NaiveDateTime> = loaded.watch_fired;
+        let mut watch_iters: HashMap<String, u32> = loaded.watch_iters;
+        let mut watch_done: std::collections::HashSet<String> = loaded.watch_done;
         // Last-seen settings.json mtime, to notice an out-of-band write (P1.5: the
         // automation MCP server writes schedules/watches straight to settings.json,
         // which can't emit a Tauri event itself).
@@ -503,7 +572,7 @@ pub fn start(app: AppHandle, session: AgentSession) {
                     // Full timestamp (P1.1): a daily schedule compares the date, an
                     // `every` schedule measures the elapsed interval from here.
                     fired.insert(sc.id.clone(), now);
-                    save_fired(&app, &fired);
+                    save_state(&app, &fired, &watch_fired, &watch_iters, &watch_done);
                 }
             }
 
@@ -565,29 +634,36 @@ pub fn start(app: AppHandle, session: AgentSession) {
                             *n += 1;
                             *n
                         };
-                        match outcome {
+                        // Decide whether this watch is finished (DONE) or has hit its
+                        // check cap, and the completion note to speak.
+                        let retire: Option<(String, String)> = match outcome {
                             Ok(Some(reply)) => {
                                 if parse_verdict(&reply) == Verdict::Done {
-                                    watch_done.insert(w.id.clone());
-                                    notify(&app, &format!("Watch complete: {}", w.label), &truncate(&reply, 240));
+                                    Some((format!("Watch complete: {}", w.label), truncate(&reply, 240)))
                                 } else if iters >= MAX_WATCH_ITERS {
-                                    watch_done.insert(w.id.clone());
-                                    notify(
-                                        &app,
-                                        &format!("Watch stopped (max checks): {}", w.label),
-                                        &truncate(&reply, 240),
-                                    );
+                                    Some((format!("Watch stopped (max checks): {}", w.label), truncate(&reply, 240)))
+                                } else {
+                                    None
                                 }
                             }
-                            Err(e) => {
-                                // A transient error counts as an iteration; give up at the cap.
-                                if iters >= MAX_WATCH_ITERS {
-                                    watch_done.insert(w.id.clone());
-                                    notify(&app, &format!("Watch stopped: {}", w.label), &e);
-                                }
+                            // A transient error counts as an iteration; give up at the cap.
+                            Err(e) if iters >= MAX_WATCH_ITERS => {
+                                Some((format!("Watch stopped: {}", w.label), e))
                             }
+                            Err(_) => None,
                             Ok(None) => unreachable!("Ok(None) handled above"),
+                        };
+                        // Retire a finished watch: mark it done AND flip its `enabled`
+                        // off in settings (1.9), so it neither re-arms on restart nor
+                        // lingers as "enabled" in the UI.
+                        if let Some((title, body)) = retire {
+                            watch_done.insert(w.id.clone());
+                            crate::settings::disable_watch(&app, &w.id);
+                            notify(&app, &title, &body);
                         }
+                        // Persist the watch bookkeeping so a restart honours the interval
+                        // and the DONE set (1.9).
+                        save_state(&app, &fired, &watch_fired, &watch_iters, &watch_done);
                     }
                 }
             }
@@ -731,19 +807,34 @@ mod tests {
     }
 
     #[test]
-    fn fired_state_roundtrips_and_tolerates_garbage() {
-        let mut fired = HashMap::new();
-        fired.insert("morning".to_string(), dt("2026-07-20 09:00"));
-        fired.insert("interval".to_string(), dt("2026-07-20 21:34"));
-        assert_eq!(parse_fired(&render_fired(&fired)), fired);
-        assert!(parse_fired("").is_empty());
-        assert!(parse_fired("not json").is_empty());
-        // A malformed timestamp drops that entry, not the whole map; a legacy
-        // date-only value (pre-P1.1) is read as that day's midnight.
-        let partial = parse_fired(r#"{"ts":"2026-07-20T09:00:00","legacy":"2026-07-19","bad":"yesterday"}"#);
-        assert_eq!(partial.len(), 2);
-        assert_eq!(partial.get("legacy"), Some(&dt("2026-07-19 00:00")));
-        assert!(!partial.contains_key("bad"));
+    fn scheduler_state_roundtrips_and_tolerates_garbage() {
+        let mut p = Persisted::default();
+        p.fired.insert("morning".to_string(), dt("2026-07-20 09:00"));
+        p.fired.insert("interval".to_string(), dt("2026-07-20 21:34"));
+        p.watch_fired.insert("build".to_string(), dt("2026-07-20 10:00"));
+        p.watch_iters.insert("build".to_string(), 5);
+        p.watch_done.insert("build".to_string());
+        // Full state (schedules + watch bookkeeping) round-trips (1.9).
+        assert_eq!(parse_state(&render_state(&p)), p);
+        assert_eq!(parse_state(""), Persisted::default());
+        assert_eq!(parse_state("not json"), Persisted::default());
+    }
+
+    #[test]
+    fn scheduler_state_migrates_the_legacy_flat_fired_map() {
+        // Pre-1.9 june-scheduler.json was a flat id->timestamp map that was the whole
+        // `fired` set; it must still load, with watch state defaulting to empty. A
+        // malformed timestamp drops that entry, not the whole map; a legacy date-only
+        // value (pre-P1.1) is read as that day's midnight.
+        let legacy = parse_state(r#"{"ts":"2026-07-20T09:00:00","legacy":"2026-07-19","bad":"yesterday"}"#);
+        assert_eq!(legacy.fired.len(), 2);
+        assert_eq!(legacy.fired.get("legacy"), Some(&dt("2026-07-19 00:00")));
+        assert!(!legacy.fired.contains_key("bad"));
+        assert!(legacy.watch_done.is_empty());
+        // A new-format file with an empty fired object is NOT mistaken for legacy.
+        let empty_new = parse_state(r#"{"fired":{},"watchDone":["w1"]}"#);
+        assert!(empty_new.fired.is_empty());
+        assert!(empty_new.watch_done.contains("w1"));
     }
 
     #[test]

@@ -246,9 +246,11 @@ async function main(): Promise<void> {
       : null;
 
   const filesRoot = process.env.JUNE_FILES_ROOT?.trim() || undefined;
-  // Strict privacy keeps nothing on disk: the Claude brain's session history is
-  // not persisted under an on-device mode (Phase 11.2).
-  const persistSession = !(mode === "strict-offline");
+  // On-device privacy keeps nothing on disk: the Claude brain's session history is
+  // persisted ONLY under standard mode (1.4). local-voice also redacts the run
+  // ledger, so persisting full SDK transcripts there was a leak; only standard
+  // mode writes transcripts. An unset mode defaults to standard (persist).
+  const persistSession = !mode || mode === "standard";
 
   // Long-term memory (Phase 11.4): the host points us at one june-memory.md; read
   // it once at spawn and inject it into the system prompt. A settings save or a

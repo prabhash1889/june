@@ -285,20 +285,31 @@ export class OpenAiCompatBrain implements Brain {
       const transport = transportFor(cfg);
       if (!transport) continue; // unsupported config shape - skip, never crash the turn
       const client = new Client({ name: `june-${this.id}`, version: "0.1.0" });
-      await client.connect(transport);
-      // One listTools per server: names for routing and schemas for the model
-      // both come from this single call (10.8 - was fetched twice). Namespace the
-      // tools by server id so the gate classifies per-server and names never
-      // collide across servers (B1.2).
-      const { tools } = await client.listTools();
-      const ns = namespaceTools(serverId, tools);
-      out.push({
-        client,
-        close: () => client.close(),
-        bareByFull: ns.bareByFull,
-        tools: ns.tools,
-      });
+      try {
+        await client.connect(transport);
+        // One listTools per server: names for routing and schemas for the model
+        // both come from this single call (10.8 - was fetched twice). Namespace the
+        // tools by server id so the gate classifies per-server and names never
+        // collide across servers (B1.2).
+        const { tools } = await client.listTools();
+        const ns = namespaceTools(serverId, tools);
+        out.push({
+          client,
+          close: () => client.close(),
+          bareByFull: ns.bareByFull,
+          tools: ns.tools,
+        });
+      } catch (e) {
+        // One failing server must not fail the whole turn or orphan the clients
+        // that DID connect on every retry (1.7): close this one, skip it, keep the
+        // rest. The turn runs with the surviving tools instead of crashing.
+        await client.close().catch(() => {});
+        console.error(`[june] MCP server "${serverId}" failed to connect: ${errMsg(e)}`);
+      }
     }
+    // Cache the surviving set so a later turn reuses the warm connections rather
+    // than reconnecting (which would leak). A config change respawns the resident,
+    // which is how a fixed server gets retried.
     this.#servers = out;
     return out;
   }

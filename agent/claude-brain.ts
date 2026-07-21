@@ -28,6 +28,11 @@ import {
 import { type Brain, type TurnHooks, type TurnResult } from "./brain.ts";
 import { actionOf, classify, serverOf, summarize } from "./policy.ts";
 
+// Bound the agentic tool loop so a runaway model can't spin forever (1.6).
+// Generous - a real mission task takes several tool rounds - but finite, so the
+// turn always terminates with a spoken result instead of unbounded token spend.
+const MAX_TURNS = 24;
+
 export interface ClaudeBrainConfig {
   model?: string;
   systemPrompt: string;
@@ -152,12 +157,23 @@ export class ClaudeBrain implements Brain {
         settingSources: [],
         permissionMode: "default",
         persistSession: this.#persistSession,
+        // Bound the tool loop so a model that keeps calling tools can't spin
+        // forever and run up unbounded spend (1.6) - the OpenAI brain caps its
+        // step loop the same way. On hitting the cap the SDK ends the turn with a
+        // `result` of subtype `error_max_turns`, mapped to a short spoken message.
+        maxTurns: MAX_TURNS,
       },
     });
   }
 
   async run(prompt: string, hooks: TurnHooks): Promise<TurnResult> {
     this.#ensureQuery();
+    // Capture the query reference NOW (1.5): a mid-turn reset() ("New
+    // conversation") nulls `this.#query`, so reading `this.#query!` each loop
+    // iteration would throw a raw TypeError. The captured `q` still points at the
+    // (now-ended) query, whose next() resolves `done`, which the loop handles
+    // gracefully as "the session ended". Same shape as the openai-brain B4.4 fix.
+    const q = this.#query!;
     this.#hooks = hooks;
     this.#input!.push({
       type: "user",
@@ -178,7 +194,7 @@ export class ClaudeBrain implements Brain {
       // Only one turn runs at a time (the orchestrator serializes), so a single
       // consumer of the generator is safe.
       for (;;) {
-        const next = await this.#query!.next();
+        const next = await q.next();
         if (next.done) {
           // The session ended out from under us (crash/reset mid-turn).
           isError = true;
@@ -208,7 +224,12 @@ export class ClaudeBrain implements Brain {
                 );
         } else if (msg.type === "result") {
           isError = msg.subtype !== "success";
-          finalText = msg.subtype === "success" ? msg.result : `June hit an error: ${msg.subtype}`;
+          if (msg.subtype === "success") finalText = msg.result;
+          else if (msg.subtype === "error_max_turns")
+            // Hit the tool-loop bound (1.6): speak a short, actionable line rather
+            // than the raw subtype.
+            finalText = "I worked on that for a while without finishing. Ask me to keep going, or narrow it down.";
+          else finalText = `June hit an error: ${msg.subtype}`;
           break;
         }
       }
