@@ -62,13 +62,30 @@ const cannedSet = new Set<string>(Object.values(CANNED_PHRASES));
 // change re-synthesizes rather than replaying the old voice.
 const cannedCache = new Map<string, Promise<SpeechAudio>>();
 
+/** Per-synth barge-in control (3.11): a `SpeechQueue`'s `stop()` cancels the cloud
+ *  request in flight (via `cancelToken`) and skips a not-yet-started local Kokoro
+ *  run (via `signal`). Absent = uncancelable (canned phrases, one-off tests). */
+export interface SynthCancel {
+  signal?: AbortSignal;
+  cancelToken?: number;
+}
+
+// Monotonic token generator: one per SpeechQueue, so a barge-in cancels only that
+// queue's cloud synths and never a sibling queue's (e.g. the real reply's sentences).
+let nextCancelToken = 1;
+/** A fresh cancel token for one SpeechQueue. */
+export function newCancelToken(): number {
+  return nextCancelToken++;
+}
+
 /** Synthesize one chunk of text. A local `choice.provider` runs on-device
  *  (local-tts.ts); everything else calls cloud OpenAI in Rust, which validates
  *  voice/model and falls back if unset. Empty text yields no audio. Rejects with a
- *  human-readable message on failure. Canned phrases (§CANNED_PHRASES) are memoized. */
-export function synthesize(text: string, choice?: TtsChoice): Promise<SpeechAudio> {
+ *  human-readable message on failure. Canned phrases (§CANNED_PHRASES) are memoized
+ *  (and never carry a cancel token - they're tiny and shared across queues). */
+export function synthesize(text: string, choice?: TtsChoice, cancel?: SynthCancel): Promise<SpeechAudio> {
   const trimmed = text.trim();
-  if (!cannedSet.has(trimmed)) return synthesizeRaw(text, choice);
+  if (!cannedSet.has(trimmed)) return synthesizeRaw(text, choice, cancel);
   const key = `${choice?.provider ?? ""}|${choice?.model ?? ""}|${choice?.voice ?? ""}|${trimmed}`;
   let hit = cannedCache.get(key);
   if (!hit) {
@@ -79,12 +96,20 @@ export function synthesize(text: string, choice?: TtsChoice): Promise<SpeechAudi
   return hit;
 }
 
-async function synthesizeRaw(text: string, choice?: TtsChoice): Promise<SpeechAudio> {
+async function synthesizeRaw(text: string, choice?: TtsChoice, cancel?: SynthCancel): Promise<SpeechAudio> {
   if (choice && resolveProvider("tts", choice.provider)?.kind === "local") {
+    // Kokoro can't be interrupted mid-run, but a queued sentence whose generation
+    // hasn't started yet is skipped on barge-in rather than burning the worker.
+    if (cancel?.signal?.aborted) return { bytes: new Uint8Array(), mime: "audio/wav" };
     const { synthesizeLocal } = await import("./local-tts.ts");
-    return { bytes: await synthesizeLocal(text, choice.voice, choice.model ?? ""), mime: "audio/wav" };
+    return { bytes: await synthesizeLocal(text, choice.voice, choice.model ?? "", cancel?.signal), mime: "audio/wav" };
   }
-  const bytes = await invoke<number[]>("synthesize", { text, voice: choice?.voice, model: choice?.model });
+  const bytes = await invoke<number[]>("synthesize", {
+    text,
+    voice: choice?.voice,
+    model: choice?.model,
+    cancelToken: cancel?.cancelToken,
+  });
   return { bytes: new Uint8Array(bytes), mime: "audio/mpeg" };
 }
 
@@ -145,6 +170,10 @@ export class SpeechQueue {
   #spoke = false;
   #erred = false;
   #audio: HTMLAudioElement | null = null;
+  // Barge-in cancellation (3.11): one token per queue cancels its in-flight cloud
+  // synths in Rust; the signal skips a not-yet-started local Kokoro run.
+  readonly #cancelToken = newCancelToken();
+  readonly #abort = new AbortController();
   readonly #onIdle: () => void;
   readonly #onFirstAudio: () => void;
   readonly #onError: (e: unknown) => void;
@@ -186,7 +215,7 @@ export class SpeechQueue {
 
   enqueue(text: string): void {
     if (this.#stopped || !text.trim()) return;
-    const audio = synthesize(text, this.#tts);
+    const audio = synthesize(text, this.#tts, { signal: this.#abort.signal, cancelToken: this.#cancelToken });
     audio.catch(() => {}); // failures are handled at play time; don't leak rejections
     this.#pending.push(audio);
     void this.#pump();
@@ -253,10 +282,14 @@ export class SpeechQueue {
     });
   }
 
-  /** Barge-in: stop now, drop everything pending, speak nothing more. */
+  /** Barge-in: stop now, drop everything pending, speak nothing more. Also cancels
+   *  synthesis already in flight (3.11) - the cloud request in Rust and any queued
+   *  local run - so it stops spending the moment the next capture needs the machine. */
   stop(): void {
     this.#stopped = true;
     this.#pending = [];
+    this.#abort.abort();
+    void invoke("cancel_synthesis", { token: this.#cancelToken }).catch(() => {});
     if (this.#audio) {
       this.#audio.pause();
       this.#audio = null;

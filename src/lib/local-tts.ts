@@ -56,10 +56,18 @@ export function pickKokoroVoice(voice: string | undefined, available: Iterable<s
 }
 
 /** Synthesize one chunk of text locally to WAV bytes the webview can play as-is
- *  (mime audio/wav). Empty text yields no audio, matching the cloud contract. */
-export async function synthesizeLocal(text: string, voice: string | undefined, model: string): Promise<Uint8Array> {
+ *  (mime audio/wav). Empty text yields no audio, matching the cloud contract. A
+ *  barge-in `signal` (3.11) skips generation if it fires before the run starts -
+ *  Kokoro itself can't be interrupted once generating. */
+export async function synthesizeLocal(
+  text: string,
+  voice: string | undefined,
+  model: string,
+  signal?: AbortSignal,
+): Promise<Uint8Array> {
   if (!text.trim()) return new Uint8Array();
   const tts = await getModel(model);
+  if (signal?.aborted) return new Uint8Array(); // barged in while the model loaded
   const v = pickKokoroVoice(voice, Object.keys(tts.voices));
   // v is validated against the model's own voice table above; `never` bridges to
   // kokoro's `keyof typeof VOICES` literal type without re-stating the union.

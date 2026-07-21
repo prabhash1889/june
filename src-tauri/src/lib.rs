@@ -106,6 +106,7 @@ pub fn run() {
             logf::log_message,
             stt::transcribe,
             tts::synthesize,
+            tts::cancel_synthesis,
             dictation::inject_text,
             diagnostics::bridge_health,
             diagnostics::test_brain,

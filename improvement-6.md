@@ -330,11 +330,24 @@ round-trip + legacy migration (1.9).
     `hey_june.onnx` per the openWakeWord recipe, pin its SHA-256 in
     `scripts/fetch-models.mjs`, drop into `createWakeRunners`.
 
-3.11 **Abort in-flight synthesis on barge-in** | P3 | S
+3.11 **Abort in-flight synthesis on barge-in** | P3 | S - DONE
     `SpeechQueue.stop()` drops the queue but running synth promises keep spending cloud
     tokens and burning the main thread right when the next capture needs it. Thread an
     aborted flag + cancel down to Rust `synthesize`. `src/lib/tts.ts`, `local-tts.ts`,
     `src-tauri/src/tts.rs`.
+    Each `SpeechQueue` owns a cancel token (`newCancelToken`) + an `AbortController`.
+    Rust `tts.rs` gained a per-token cancellation registry (refcounted `Notify` per
+    token, reaped when the last synth releases) and a `cancel_synthesis(token)`
+    command; the `synthesize` command now takes a `cancel_token` and, when set, races
+    the request against `notify.notified()` in a `biased tokio::select!` so a barge-in
+    drops the network read mid-flight instead of finishing an mp3 no one hears. Scoped
+    to the token (not a global signal) so stopping the "On it" backchannel - which
+    happens the instant the real reply starts speaking - never cancels the reply's own
+    in-flight sentences. `stop()` calls `cancel_synthesis` + aborts the signal; the
+    local Kokoro path skips a not-yet-started run on the signal (Kokoro can't be
+    interrupted mid-run). tokio declared directly in Cargo.toml (already in the tree
+    via tauri - no new build cost) for `select!`/`Notify`. cargo test pins the
+    registry refcount reaping; 240 vitest + 41 cargo green, clippy `-D warnings` clean.
 
 3.12 **Stream cloud TTS playback** | P3 | M
     First audio waits for the complete first-sentence mp3. Chunk the response body over a

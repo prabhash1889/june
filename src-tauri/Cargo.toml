@@ -32,6 +32,9 @@ enigo = "0.2"
 chrono = "0.4"
 # OS notification when an unattended run finishes or pauses (Phase 18.1/18.2).
 tauri-plugin-notification = "2"
+# Already in the tree via tauri's runtime; named here for select!/Notify to race a
+# synthesis against a barge-in cancel (3.11). No new build cost.
+tokio = { version = "1", features = ["macros", "sync"] }
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 # Opening the app again focuses the existing window instead of starting a second process.
