@@ -8,7 +8,7 @@ import capabilities from "./examples/capabilities.json";
 import commandSuccess from "./examples/command-success.json";
 import commandRejected from "./examples/command-rejected.json";
 import observe from "./examples/observe.json";
-import { ACTIONS, ERROR_CODES } from "./types.ts";
+import { ACTIONS, ERROR_CODES, MUTATING_ACTIONS } from "./types.ts";
 import {
   validateCapabilities,
   validateCommandRequest,
@@ -20,6 +20,14 @@ describe("golden examples conform to the contract", () => {
   it("capabilities()", () => {
     const c = validateCapabilities(capabilities);
     expect(c.actions).toEqual([...ACTIONS]);
+  });
+
+  it("read_terminal is a non-mutating observe action (4.9)", () => {
+    // A terminal read carries no request_id dedupe - it must be in ACTIONS but NOT
+    // MUTATING_ACTIONS, so it validates without a request_id like get_swarm_status.
+    expect(ACTIONS).toContain("read_terminal");
+    expect(MUTATING_ACTIONS).not.toContain("read_terminal");
+    validateCommandRequest({ request_id: "corr-1", workspace_id: "w", action: "read_terminal", arguments: { pane_id: "p3" } });
   });
 
   it("a successful command carries batch counts that sum", () => {

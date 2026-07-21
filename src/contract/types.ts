@@ -44,6 +44,7 @@ export const ACTIONS = [
   "open_browser", // open/navigate a browser tab
   "close_browser", // close a browser tab
   "get_swarm_status", // observe: read the roster (non-mutating)
+  "read_terminal", // observe: read a terminal pane's recent output (non-mutating)
 ] as const;
 
 export type Action = (typeof ACTIONS)[number];

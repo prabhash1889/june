@@ -58,6 +58,10 @@ const ACTION_CLASS: Record<string, SafetyClass> = {
   send_to_terminal: "destructive",
   open_browser: "reversible", // opening/focusing a URL is auto - the conservative-but-not-paranoid case
   get_swarm_status: "observe", // read-only roster
+  // Reading a terminal pane's output (improvement-6 4.9) is a non-mutating observe,
+  // like get_swarm_status - it lets June answer "what is agent 3 doing?" and lets a
+  // mission grade actual output, not just the agent's reply. Read-only, so auto-run.
+  read_terminal: "observe",
   // files capability (Phase 9): reads are automatic; a write is an external
   // effect (§5) - it overwrites a file - so it must be confirmed before it runs.
   list_files: "observe",
@@ -275,6 +279,8 @@ export function summarize(action: string, input: Record<string, unknown>): strin
       return `Open browser at ${s("url") || "?"}`;
     case "get_swarm_status":
       return "Read swarm status";
+    case "read_terminal":
+      return `Read terminal ${s("pane_id") || "?"}`;
     case "remember":
       return `Remember: ${s("fact") || "?"}`;
     case "record_lesson":

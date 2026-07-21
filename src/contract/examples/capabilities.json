@@ -8,7 +8,8 @@
     "close_terminal",
     "open_browser",
     "close_browser",
-    "get_swarm_status"
+    "get_swarm_status",
+    "read_terminal"
   ],
   "limits": {
     "max_concurrent_agents": 16,

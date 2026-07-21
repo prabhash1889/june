@@ -565,11 +565,25 @@ round-trip + legacy migration (1.9).
     `@version` for uvx as well as npx. mcp-servers suite green, full typecheck + eslint
     clean.
 
-4.9 **Read agent/terminal output through the bridge** | P2 | M
+4.9 **Read agent/terminal output through the bridge** | P2 | M - DONE (June side; bridge endpoint external)
     June can spawn agents but cannot answer "what is agent 3 doing?", and mission verify
     grades replies, never actual output. Observe-class `read_terminal(pane_id, tail)` in
     the contract + bridge server; needs the matching saple-bridge endpoint first.
     `src/contract/types.ts`, `mcp/saple-bridge-control/`.
+    Added `read_terminal` to the frozen contract `ACTIONS` (NOT `MUTATING_ACTIONS` - it
+    is non-mutating like `get_swarm_status`, so it needs no request_id dedupe, only a
+    correlation id) and to the golden `capabilities.json` (the contract test pins the
+    two in step). New `read_terminal(pane_id, tail?)` MCP tool on saple-bridge-control
+    mirrors get_swarm_status: it sends the contract command and passes bridge's response
+    verbatim; `tail` is capped at 2000 lines so a huge scrollback can't flood the pipe.
+    Classified `observe` in policy (auto-runs, and safe unattended - it is a LOCAL bridge
+    read, so a mission can grade actual terminal output, not just the agent's reply) with
+    a summarize case ("Read terminal p3"). The June side is complete; the actual read is
+    served by saple-bridge, whose matching `read_terminal` endpoint is external to this
+    repo (bridge returns `invalid_request` until it ships it - the frozen error path).
+    Pinned: contract.test (read_terminal in ACTIONS, not mutating, validates w/o
+    request_id), policy.test (observe + auto-run + unattended-allowed + summary). Full
+    contract + policy suites green, typecheck + eslint clean.
 
 4.10 **Start missions by voice** | P2 | M
     The flagship autonomy feature still starts from a textarea (deferred twice). Add a

@@ -163,6 +163,29 @@ server.registerTool(
     send("get_swarm_status", {}, workspace_id ?? DEFAULT_WORKSPACE, randomUUID()),
 );
 
+server.registerTool(
+  "read_terminal",
+  {
+    title: "Read terminal output",
+    description:
+      "Read the recent output of a terminal pane (e.g. what an agent has printed so far). Non-mutating. Use to answer 'what is agent 3 doing?' or to check a build's real output rather than just the agent's reply.",
+    inputSchema: {
+      pane_id: z.string().describe("Id of the terminal pane to read (from get_swarm_status)"),
+      tail: z
+        .number()
+        .int()
+        .positive()
+        .max(2000)
+        .optional()
+        .describe("How many trailing lines to return (default: bridge's own cap)"),
+      ...workspaceArg,
+    },
+  },
+  ({ pane_id, tail, workspace_id }) =>
+    // Non-mutating: no dedupe, but a correlation id is still required.
+    send("read_terminal", { pane_id, tail }, workspace_id ?? DEFAULT_WORKSPACE, randomUUID()),
+);
+
 async function main(): Promise<void> {
   // Fail fast with a clear message if the SDK/transport can't start. A dead
   // bridge is NOT a startup error - tools report it per-call as bridge_unavailable.

@@ -161,6 +161,14 @@ describe("gate policy", () => {
     );
   });
 
+  it("read_terminal is an observe read that auto-runs and is safe unattended (4.9)", () => {
+    expect(classify("read_terminal", "saple-bridge-control")).toBe("observe");
+    expect(isGated(classify("read_terminal", "saple-bridge-control"))).toBe(false);
+    // Local bridge read -> allowed unattended (a mission can grade actual output).
+    expect(unattendedBlockReason({ cls: "observe", action: "read_terminal", server: "saple-bridge-control" }, new Set())).toBeNull();
+    expect(summarize("read_terminal", { pane_id: "p3" })).toBe("Read terminal p3");
+  });
+
   it("clipboard: read is observe but hard-blocked unattended; write is reversible (4.7)", () => {
     // Reading is auto-run when the user is present (local observe)...
     expect(classify("read_clipboard", "system")).toBe("observe");
