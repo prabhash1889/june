@@ -129,6 +129,8 @@ pub fn run() {
             agent_runner::read_runs,
             missions::start_mission,
             missions::stop_mission,
+            missions::set_mission_paused,
+            missions::mission_paused,
             scheduler::run_schedule_now,
             agent_runner::record_latency,
             agent_runner::latency_samples,

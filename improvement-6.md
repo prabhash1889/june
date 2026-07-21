@@ -635,22 +635,47 @@ round-trip + legacy migration (1.9).
     lost without the gap, honoured with it; stale/not-yet-due not fired; once
     honoured through the same gap). 13 scheduler tests + clippy `-D warnings` green.
 
-5.2 **"Retry failed tasks" on a finished board** | P2 | S
+5.2 **"Retry failed tasks" on a finished board** | P2 | S - DONE
     A failed mission offers only "Clear" - the user re-types everything even though the
     board holds the failed titles and notes. Button that calls `start_mission` with just
     the failed tasks, notes appended as context. `src/app/MissionBoard.tsx`.
+    A finished board with any failed task now shows "Retry failed task(s)" beside
+    Clear. It calls `start_mission` with the same outcome and this mission's
+    `toolsetIds`, passing ONLY the failed titles - each carrying its verify note as
+    context ("(A previous attempt failed: <note>)"), not an instruction. Verify is
+    on so the retried tasks are re-checked. The runner's double-start guard makes it
+    safe (the board is terminal, so the runner is idle); the new board replaces the
+    old via `mission://updated`. A start error surfaces inline.
 
-5.3 **Pause/resume a mission** | P3 | M
+5.3 **Pause/resume a mission** | P3 | M - DONE
     Stop is destructive (fails the active task, closes the board) - "hold on while I take
     this call" costs the mission, even though the runner already resumes across restarts.
     Paused flag on `MissionRunner`, board stays `active` and persisted.
     `src-tauri/src/missions.rs`, `MissionBoard.tsx`.
+    New `paused: Arc<AtomicBool>` on `MissionRunner`. `run_board` waits BETWEEN
+    tasks via a widened `wait_until_ready` (holds while the session is busy OR
+    paused, returns at once on cancel), so an in-flight task finishes and the NEXT
+    won't start until resumed - the board stays `active` and persisted, nothing
+    fails. New `set_mission_paused(paused)` + `mission_paused()` commands; the toggle
+    emits `mission://paused` and `spawn`/`stop` reset it (a fresh mission never
+    inherits a stale pause; Stop wakes a paused loop so it can close out). Frontend:
+    `useMissionPaused` hook (seeds via `mission_paused`, tracks the event) drives a
+    Pause/Resume button beside Stop and a "Paused - will resume after: <task>"
+    status. Memory-only, so a restart resumes unpaused (the runner already resumes
+    the active board).
 
-5.4 **Single writer for the mission board** | P3 | S
+5.4 **Single writer for the mission board** | P3 | S - DONE
     `stop_mission` read-modify-writes june-mission.json from the command thread while
     `run_board`'s thread persists per task - an interleave can resurrect a stopped board.
     Make Stop flag-only; `run_board` writes the terminal board itself.
     `src-tauri/src/missions.rs`.
+    `stop_mission` now only flags `cancelled` (+ aborts the in-flight turn, clears
+    pause) when a runner thread is alive; that thread, seeing `cancelled` after its
+    loop, calls `stop_board` + `persist` ITSELF - so no command-thread write can
+    interleave with a per-task persist and resurrect a stopped board. Only when NO
+    runner is alive (a stale `active` board from a dead session) does Stop do the
+    read-modify-write, where there is no competing writer. A normal finish still
+    reaches terminal via `advance`; the cancel-path write is guarded on `cancelled`.
 
 5.5 **Plan-confirm polish: editable toolset + per-watch cap** | P3 | S
     Toolset list becomes checkboxes over enabled server ids (a wrong `TOOLS:` guess can't

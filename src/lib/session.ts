@@ -196,6 +196,33 @@ export function runScheduleNow(id: string): Promise<void> {
   return invoke("run_schedule_now", { id });
 }
 
+/** Pause or resume the running mission (5.3): holds the board BETWEEN tasks so
+ *  "hold on while I take this call" costs nothing, unlike Stop. */
+export function setMissionPaused(paused: boolean): Promise<void> {
+  return invoke("set_mission_paused", { paused });
+}
+
+/** Whether the running mission is paused (5.3), shared across windows. Seeds from
+ *  the backend on mount, then tracks `mission://paused`. Memory-only on the Rust
+ *  side (a restart resumes unpaused), so this reflects the live session's flag. */
+export function useMissionPaused(): boolean {
+  const [paused, setPaused] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    void invoke<boolean>("mission_paused")
+      .then((p) => {
+        if (alive) setPaused(!!p);
+      })
+      .catch(() => {});
+    const unlisten = listen<boolean>("mission://paused", (e) => setPaused(!!e.payload));
+    return () => {
+      alive = false;
+      void unlisten.then((f) => f());
+    };
+  }, []);
+  return paused;
+}
+
 /** The current mission, shared across windows. Seeds from the backend on mount,
  *  then tracks `mission://updated`, so the widget's chip and the app's board
  *  render the same live board. */

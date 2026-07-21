@@ -2,7 +2,7 @@ import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
 import { activeTask, decomposePrompt, type Mission, missionProgress, parseTaskList, parseToolsets } from "../lib/missions.ts";
-import { allocTurn, newConversation, useMission, writeMission } from "../lib/session.ts";
+import { allocTurn, newConversation, setMissionPaused, useMission, useMissionPaused, writeMission } from "../lib/session.ts";
 import { DEFAULT_SETTINGS, loadSettings } from "../lib/settings.ts";
 import { runAgent } from "../lib/stt.ts";
 
@@ -23,6 +23,7 @@ interface Plan {
 
 export function MissionBoard() {
   const mission = useMission();
+  const paused = useMissionPaused();
   const [outcome, setOutcome] = useState("");
   // Per-task verify → retry loop (improvement-5 P1.4), on by default.
   const [verify, setVerify] = useState(true);
@@ -96,9 +97,17 @@ export function MissionBoard() {
             {planning ? "Planning…" : running ? "Working the mission…" : "Plan mission"}
           </button>
           {running && (
-            <button className="danger" onClick={stop}>
-              Stop
-            </button>
+            <>
+              <button
+                onClick={() => void setMissionPaused(!paused).catch((e) => setError(e instanceof Error ? e.message : String(e)))}
+                title={paused ? "Resume the mission" : "Hold the mission after the current task"}
+              >
+                {paused ? "Resume" : "Pause"}
+              </button>
+              <button className="danger" onClick={stop}>
+                Stop
+              </button>
+            </>
           )}
           <label className="wake-toggle" title="After each task, June checks it succeeded and retries once if not.">
             <input
@@ -145,15 +154,34 @@ export function MissionBoard() {
         </div>
       )}
 
-      {mission ? <Board mission={mission} running={running} /> : !plan && <p className="empty">No mission yet.</p>}
+      {mission ? <Board mission={mission} running={running} paused={paused} /> : !plan && <p className="empty">No mission yet.</p>}
     </div>
   );
 }
 
-function Board({ mission, running }: { mission: Mission; running: boolean }) {
+function Board({ mission, running, paused = false }: { mission: Mission; running: boolean; paused?: boolean }) {
   const { done, failed, total } = missionProgress(mission);
   const current = activeTask(mission);
   const [clearFailed, setClearFailed] = useState(false);
+  const [retryError, setRetryError] = useState<string | null>(null);
+
+  // Re-run just the failed tasks (5.2): a failed board holds the titles and the
+  // verify notes, so the user needn't re-type anything. Each failed title carries
+  // its prior failure note as context (not an instruction), and the retry reuses
+  // this mission's toolset. Verify is on so the retried tasks are re-checked.
+  const retryFailed = () => {
+    const tasks = mission.tasks
+      .filter((t) => t.status === "failed")
+      .map((t) => (t.note ? `${t.title}\n\n(A previous attempt failed: ${t.note})` : t.title));
+    if (tasks.length === 0) return;
+    setRetryError(null);
+    void invoke("start_mission", {
+      outcome: mission.outcome,
+      tasks,
+      toolsetIds: mission.toolsetIds,
+      verify: true,
+    }).catch((e) => setRetryError(e instanceof Error ? e.message : String(e)));
+  };
   return (
     <div className="mission-board">
       <div className="mission-head">
@@ -178,16 +206,28 @@ function Board({ mission, running }: { mission: Mission; running: boolean }) {
       </ul>
       {running && current && (
         <p className="status" role="status">
-          Working: {current.title}
+          {paused ? `Paused - will resume after: ${current.title}` : `Working: ${current.title}`}
         </p>
       )}
       {!running && (
-        <button
-          className="mission-clear"
-          onClick={() => void writeMission(null).then(() => setClearFailed(false), () => setClearFailed(true))}
-        >
-          Clear mission
-        </button>
+        <div className="row">
+          {failed > 0 && (
+            <button className="primary" onClick={retryFailed}>
+              Retry failed {failed === 1 ? "task" : "tasks"}
+            </button>
+          )}
+          <button
+            className="mission-clear"
+            onClick={() => void writeMission(null).then(() => setClearFailed(false), () => setClearFailed(true))}
+          >
+            Clear mission
+          </button>
+        </div>
+      )}
+      {retryError && (
+        <p className="err" role="alert">
+          {retryError}
+        </p>
       )}
       {clearFailed && (
         <p className="err" role="alert">

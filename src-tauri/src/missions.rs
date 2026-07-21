@@ -21,7 +21,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Emitter, State};
 
 use crate::agent_runner::{
     append_run, cancel_turn, cap_chars, read_mission, reset_conversation, run_attended,
@@ -87,12 +87,14 @@ pub struct Mission {
 
 /// The Rust-side runner state, `.manage`d by Tauri. One mission at a time (a
 /// voice agent works one mission at a time); `running` is the double-start guard,
-/// `cancelled` is Stop's flag, `active_turn` lets Stop abort the in-flight turn.
+/// `cancelled` is Stop's flag, `active_turn` lets Stop abort the in-flight turn,
+/// `paused` (5.3) holds the board BETWEEN tasks without failing anything.
 #[derive(Default, Clone)]
 pub struct MissionRunner {
     running: Arc<AtomicBool>,
     cancelled: Arc<AtomicBool>,
     active_turn: Arc<AtomicU64>,
+    paused: Arc<AtomicBool>,
 }
 
 impl MissionRunner {
@@ -280,12 +282,16 @@ fn persist(app: &AppHandle, mission: &Mission) {
     }
 }
 
-/// Wait for the interactive session to go quiet before dispatching a task (5.2):
-/// a mission schedules around the user instead of preempting them. A turn that
-/// still slips in mid-task preempts that one dispatch (serve.ts barge-in), which
-/// lands as a failed attempt and rides the existing retry.
-fn wait_until_idle(session: &AgentSession, runner: &MissionRunner) {
-    while session.is_busy() && !runner.cancelled.load(Ordering::SeqCst) {
+/// Wait between tasks until the mission may proceed (5.2 + 5.3): hold while the
+/// interactive session is busy (a mission schedules around the user instead of
+/// preempting them) OR the runner is paused ("hold on while I take this call").
+/// Returns as soon as the runner is cancelled so Stop is never blocked. A turn
+/// that still slips in mid-task preempts that one dispatch (serve.ts barge-in),
+/// which lands as a failed attempt and rides the existing retry.
+fn wait_until_ready(session: &AgentSession, runner: &MissionRunner) {
+    while (session.is_busy() || runner.paused.load(Ordering::SeqCst))
+        && !runner.cancelled.load(Ordering::SeqCst)
+    {
         std::thread::sleep(std::time::Duration::from_millis(500));
     }
 }
@@ -395,7 +401,7 @@ fn run_board(app: &AppHandle, session: &AgentSession, runner: &MissionRunner, mu
         if runner.cancelled.load(Ordering::SeqCst) {
             break;
         }
-        wait_until_idle(session, runner);
+        wait_until_ready(session, runner);
         if runner.cancelled.load(Ordering::SeqCst) {
             break;
         }
@@ -437,6 +443,15 @@ fn run_board(app: &AppHandle, session: &AgentSession, runner: &MissionRunner, mu
         advance(&mut mission, ok, note);
         persist(app, &mission);
     }
+    // Single writer for the board (5.4): if Stop cancelled us, THIS thread writes
+    // the terminal (failed) board - Stop only sets the flag. That closes the race
+    // where Stop's own read-modify-write from the command thread could interleave
+    // with this thread's per-task persist and resurrect a stopped board. On a
+    // normal finish `advance` already drove the board terminal and persisted it.
+    if runner.cancelled.load(Ordering::SeqCst) {
+        stop_board(&mut mission);
+        persist(app, &mission);
+    }
     if filtered {
         // Restore the full tool surface for the next interactive turn.
         session.set_mcp_filter(None);
@@ -457,6 +472,9 @@ fn spawn(
         return Err("A mission is already running.".to_string());
     }
     runner.cancelled.store(false, Ordering::SeqCst);
+    // A fresh mission never inherits a stale pause (5.3); tell any open board too.
+    runner.paused.store(false, Ordering::SeqCst);
+    let _ = app.emit("mission://paused", false);
     if persist_first {
         let content = serde_json::to_string(&mission).map_err(|e| e.to_string())?;
         if let Err(e) = write_mission_inner(&app, &content) {
@@ -546,10 +564,14 @@ pub(crate) fn start_mission_from(
     spawn(app, session, runner, mission, true)
 }
 
-/// Stop the running mission (B3.5, now Rust-side): flag the runner, abort the
-/// in-flight turn so it stops spending tokens, and close the board to `failed` so
-/// Clear renders. Also closes a stale `active` board with no live runner, so Stop
-/// always leaves a terminal board.
+/// Stop the running mission (B3.5, now Rust-side): flag the runner and abort the
+/// in-flight turn so it stops spending tokens. The board's terminal (failed) write
+/// is the RUNNER thread's job (5.4 single writer) - it sees `cancelled` and closes
+/// the board itself, so Stop's flag can't interleave with a per-task persist and
+/// resurrect a stopped board. Clearing pause lets a paused mission's loop wake and
+/// reach that terminal write. Only when NO runner thread is alive (a stale `active`
+/// board left by a dead session) does Stop close the board here - no competing
+/// writer then, so the read-modify-write is safe.
 #[tauri::command]
 pub fn stop_mission(
     app: AppHandle,
@@ -557,19 +579,41 @@ pub fn stop_mission(
     runner: State<'_, MissionRunner>,
 ) -> Result<(), String> {
     runner.cancelled.store(true, Ordering::SeqCst);
+    runner.paused.store(false, Ordering::SeqCst); // wake a paused loop so it can close out
+    let _ = app.emit("mission://paused", false);
     let turn = runner.active_turn.load(Ordering::Relaxed);
     if turn != 0 {
         cancel_turn(session.inner(), turn);
     }
-    if let Ok(raw) = read_mission(app.clone()) {
-        if let Ok(mut mission) = serde_json::from_str::<Mission>(&raw) {
-            if mission.status == "active" {
-                stop_board(&mut mission);
-                persist(&app, &mission);
+    if !runner.running() {
+        if let Ok(raw) = read_mission(app.clone()) {
+            if let Ok(mut mission) = serde_json::from_str::<Mission>(&raw) {
+                if mission.status == "active" {
+                    stop_board(&mut mission);
+                    persist(&app, &mission);
+                }
             }
         }
     }
     Ok(())
+}
+
+/// Pause or resume the running mission (5.3): a paused runner holds BETWEEN tasks
+/// (an in-flight task finishes; the next won't start until resumed) so "hold on
+/// while I take this call" costs nothing - unlike Stop, which fails the active
+/// task. The board stays `active` and persisted; `mission://paused` tells both
+/// faces to reflect the pause. A no-op-safe flag flip either way.
+#[tauri::command]
+pub fn set_mission_paused(app: AppHandle, runner: State<'_, MissionRunner>, paused: bool) {
+    runner.paused.store(paused, Ordering::SeqCst);
+    let _ = app.emit("mission://paused", paused);
+}
+
+/// Whether the mission is paused (5.3), for a surface seeding on mount before any
+/// `mission://paused` event arrives.
+#[tauri::command]
+pub fn mission_paused(runner: State<'_, MissionRunner>) -> bool {
+    runner.paused.load(Ordering::SeqCst)
 }
 
 /// Resume an `active` board on startup (5.2): the previous app session died (or
