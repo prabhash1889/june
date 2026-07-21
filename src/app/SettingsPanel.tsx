@@ -153,19 +153,77 @@ export function SettingsPanel() {
       {saveFailed && (
         <p className="err">Couldn't save your settings - recent changes may not persist. They'll retry on your next edit.</p>
       )}
-      <ModelsSection settings={settings} update={update} />
-      <KeysSection />
-      <PrivacySection settings={settings} update={update} />
-      <ActivationSection settings={settings} update={update} />
-      <HandsFreeSection settings={settings} update={update} />
-      <TranscriptSection settings={settings} update={update} />
-      <ConversationSection settings={settings} update={update} />
-      <MemorySection />
-      <LessonsSection />
-      <CapabilitiesSection settings={settings} update={update} />
-      <AutomationSection settings={settings} update={update} />
-      <DiagnosticsSection />
+      <SectionNav />
+      <div id="sec-models" className="settings-anchor">
+        <ModelsSection settings={settings} update={update} />
+      </div>
+      <div id="sec-keys" className="settings-anchor">
+        <KeysSection />
+      </div>
+      <div id="sec-privacy" className="settings-anchor">
+        <PrivacySection settings={settings} update={update} />
+      </div>
+      <div id="sec-activation" className="settings-anchor">
+        <ActivationSection settings={settings} update={update} />
+      </div>
+      <div id="sec-handsfree" className="settings-anchor">
+        <HandsFreeSection settings={settings} update={update} />
+      </div>
+      <div id="sec-transcript" className="settings-anchor">
+        <TranscriptSection settings={settings} update={update} />
+      </div>
+      <div id="sec-conversation" className="settings-anchor">
+        <ConversationSection settings={settings} update={update} />
+      </div>
+      <div id="sec-memory" className="settings-anchor">
+        <MemorySection />
+      </div>
+      <div id="sec-lessons" className="settings-anchor">
+        <LessonsSection />
+      </div>
+      <div id="sec-capabilities" className="settings-anchor">
+        <CapabilitiesSection settings={settings} update={update} />
+      </div>
+      <div id="sec-automation" className="settings-anchor">
+        <AutomationSection settings={settings} update={update} />
+      </div>
+      <div id="sec-diagnostics" className="settings-anchor">
+        <DiagnosticsSection />
+      </div>
     </div>
+  );
+}
+
+// Sticky in-page section nav (6.1): twelve sections were one endless scroll with
+// no way to jump. Anchor buttons scroll to each section (scroll-margin-top on
+// `.settings-anchor` clears the sticky bar). Pure layout - no routing, no state.
+const NAV_SECTIONS: { id: string; label: string }[] = [
+  { id: "sec-models", label: "Models" },
+  { id: "sec-keys", label: "API keys" },
+  { id: "sec-privacy", label: "Privacy" },
+  { id: "sec-activation", label: "Activation" },
+  { id: "sec-handsfree", label: "Hands-free" },
+  { id: "sec-transcript", label: "Dictation" },
+  { id: "sec-conversation", label: "Conversation" },
+  { id: "sec-memory", label: "Memory" },
+  { id: "sec-lessons", label: "Lessons" },
+  { id: "sec-capabilities", label: "Capabilities" },
+  { id: "sec-automation", label: "Automation" },
+  { id: "sec-diagnostics", label: "Diagnostics" },
+];
+
+function SectionNav() {
+  return (
+    <nav className="settings-nav" aria-label="Settings sections">
+      {NAV_SECTIONS.map((s) => (
+        <button
+          key={s.id}
+          onClick={() => document.getElementById(s.id)?.scrollIntoView({ behavior: "smooth", block: "start" })}
+        >
+          {s.label}
+        </button>
+      ))}
+    </nav>
   );
 }
 

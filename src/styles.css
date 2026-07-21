@@ -887,6 +887,38 @@ button {
   scrollbar-color: var(--bg2) transparent;
 }
 
+/* Sticky in-page section nav (6.1): jump between the twelve sections instead of
+   one endless scroll. Sticks to the top of the .settings-view scroll container. */
+.settings-nav {
+  position: sticky;
+  top: calc(-1 * var(--sp-5));
+  z-index: 2;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1);
+  margin: calc(-1 * var(--sp-5)) calc(-1 * var(--sp-5)) 0;
+  padding: var(--sp-2) var(--sp-5);
+  background: color-mix(in srgb, var(--bg0) 92%, transparent);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--line);
+}
+
+.settings-nav button {
+  padding: 3px 10px;
+  font-size: var(--fs-s);
+  color: var(--dim);
+}
+
+.settings-nav button:hover {
+  color: var(--ink);
+}
+
+/* Anchor target for each section: clear the sticky nav so a jumped-to heading
+   isn't hidden underneath it. */
+.settings-anchor {
+  scroll-margin-top: 52px;
+}
+
 .settings-section {
   display: flex;
   flex-direction: column;
