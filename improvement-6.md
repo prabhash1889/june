@@ -1000,11 +1000,29 @@ round-trip + legacy migration (1.9).
     clean. Mirrors the 3.12 stance (don't ship an unverifiable gate-bound change).
     cargo build + clippy `-D warnings` + typecheck + eslint green.
 
-7.13 **Guard the seams with cheap tests** | P3 | S
+7.13 **Guard the seams with cheap tests** | P3 | S - DONE (metadata pin); E2E DEFERRED
     Provider/keychain-service metadata is duplicated across Rust and TS with only a
     comment keeping it honest - a vitest that greps the Rust source pins it. One
     tauri-driver E2E smoke spec (launch, both windows respond, one stubbed turn) catches
     the orphaned-webview class no unit test can. `src/lib/providers.test.ts`, new `e2e/`.
+    The cheap metadata pin shipped. `providers.test.ts` (switched to `@vitest-environment
+    node` for fs access - its existing pure-function tests have no DOM deps) greps
+    `key_service_for`'s match arms out of `diagnostics.rs` and asserts, in BOTH
+    directions, that they match `PROVIDERS[].keyService` in providers.ts: every Rust arm
+    has the same TS keyService and every keyed TS provider is mapped by Rust. A rename or
+    an added/removed keyed provider on either side now fails CI instead of silently
+    drifting into a probe that reads the wrong keychain entry. A guard test also fails if
+    the parse comes back empty (the fn was renamed/moved) so the pins can't trivially pass.
+    5 tests green, typecheck + eslint clean.
+    E2E DEFERRED: a real tauri-driver smoke spec is NOT a "cheap test". It needs a built
+    app binary, `tauri-driver` + the matching `msedgedriver` (WebView2), and a CI runner
+    with a display - Windows-specific, historically flaky, and exactly the WebView2
+    orphaned-webview surface the memory note flags as fragile. Scaffolding a skipped-by-
+    default `e2e/` now would be committing unrunnable, unverified infra (the scaffolding-
+    for-later ponytail forbids). To add it later: install `tauri-driver` + a WebdriverIO
+    harness under `e2e/`, `tauri build --debug`, drive a launch that asserts both windows
+    (`main` + `app`) respond and one stubbed turn round-trips, and gate it to a Windows CI
+    job with WebView2 present.
 
 ---
 
