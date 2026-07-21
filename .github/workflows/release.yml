@@ -1,0 +1,68 @@
+# Release build + publish (improvement-7 1.2). Tag `vX.Y.Z` -> Windows `tauri
+# build` (NSIS + updater artifacts, signed with the minisign key in
+# TAURI_SIGNING_PRIVATE_KEY) -> GitHub Release with latest.json, which the
+# in-app updater polls at startup.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  version-check:
+    name: One version everywhere
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: tauri.conf.json, package.json, Cargo.toml and the tag must agree
+        run: |
+          node -e '
+          const fs = require("fs");
+          const pkg = JSON.parse(fs.readFileSync("package.json", "utf8")).version;
+          const conf = JSON.parse(fs.readFileSync("src-tauri/tauri.conf.json", "utf8")).version;
+          const cargo = /^version\s*=\s*"(.+?)"/m.exec(fs.readFileSync("src-tauri/Cargo.toml", "utf8"))[1];
+          const ref = process.env.GITHUB_REF_NAME;
+          const bad = pkg !== conf || pkg !== cargo || (ref.startsWith("v") && ref !== `v${pkg}`);
+          console.log({ pkg, conf, cargo, ref });
+          if (bad) { console.error("Version mismatch - bump all three (and tag v<version>)."); process.exit(1); }
+          '
+
+  release:
+    name: Build and publish (Windows)
+    needs: version-check
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build and publish
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "June ${{ github.ref_name }}"
+          releaseBody: "See the commit log for what changed."
+          releaseDraft: false
+          prerelease: false

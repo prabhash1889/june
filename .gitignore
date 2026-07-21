@@ -19,3 +19,6 @@ public/models/
 # improvement-7 1.1 sidecar-bundle artifacts (rebuilt by scripts/bundle-agent.mjs).
 src-tauri/resources/
 src-tauri/binaries/
+
+# improvement-7 1.2 updater signing private key (public half is in tauri.conf.json).
+src-tauri/.tauri-signing.key

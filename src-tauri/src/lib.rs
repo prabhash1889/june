@@ -33,6 +33,9 @@ pub fn run() {
                 .with_state_flags(tauri_plugin_window_state::StateFlags::POSITION)
                 .build(),
         );
+        // Auto-update (improvement-7 1.2): startup check against GitHub Releases,
+        // signed artifacts. Rust-only - no JS capability exposed.
+        builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
     }
 
     builder
@@ -91,6 +94,15 @@ pub fn run() {
                     }
                 })
                 .build(app)?;
+
+            // Check GitHub Releases for a newer signed build once, in the background
+            // (improvement-7 1.2). Release builds only: a dev checkout is its own
+            // update channel, and 0.1.0-dev would otherwise "update" to any release.
+            #[cfg(all(desktop, not(debug_assertions)))]
+            {
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move { apply_update(handle).await });
+            }
 
             // Push-to-talk (Phase 4) + quick-capture (improvement-6 4.5): the two real
             // global hold-to-talk hotkeys. The plugin's Pressed/Released states give
@@ -156,6 +168,31 @@ pub fn run() {
                 }
             }
         });
+}
+
+/// Startup auto-update (improvement-7 1.2): if GitHub Releases holds a newer
+/// signed build, download and install it. On Windows the NSIS installer takes
+/// over (the app exits, the passive installer relaunches it), so the "installing"
+/// notification is the last thing this process says. Failures are logged, never
+/// surfaced as errors - an assistant that can't reach GitHub must still start.
+#[cfg(all(desktop, not(debug_assertions)))]
+async fn apply_update(app: tauri::AppHandle) {
+    use tauri_plugin_updater::UpdaterExt;
+    let Ok(updater) = app.updater() else { return };
+    match updater.check().await {
+        Ok(Some(update)) => {
+            scheduler::notify(
+                &app,
+                "June update",
+                &format!("Installing June {}…", update.version),
+            );
+            if let Err(e) = update.download_and_install(|_, _| {}, || {}).await {
+                logf::log(&app, &format!("[updater] install failed: {e}"));
+            }
+        }
+        Ok(None) => {}
+        Err(e) => logf::log(&app, &format!("[updater] check failed: {e}")),
+    }
 }
 
 /// Brings the always-on widget to the front (tray click / tray menu).

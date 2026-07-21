@@ -31,7 +31,11 @@ every other improvement multiplies in value once the app is installable.
     `src-tauri/src/agent_runner.rs`, `agent/core.ts`, new `scripts/bundle-agent.mjs`,
     `src-tauri/tauri.conf.json` (resources + externalBin).
 
-1.2 **Signed installer + auto-update** | P0 | M
+1.2 **Signed installer + auto-update** | P0 | M - DONE
+    (Updater keypair generated; private key stays in src-tauri/.tauri-signing.key,
+    git-ignored - add it as the TAURI_SIGNING_PRIVATE_KEY GitHub Actions secret.
+    Authenticode code-signing needs a purchased cert; the update channel is signed
+    via the tauri/minisign keypair.)
     `tauri-plugin-updater` + NSIS target, update manifest on GitHub Releases, a CI
     release job (`tauri build` on a Windows runner, upload artifacts). Version bump
     discipline: one `version` source (tauri.conf.json) checked against package.json in CI.

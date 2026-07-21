@@ -32,9 +32,21 @@
       "iconPath": "icons/icon.png"
     }
   },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEMwMjU5QUM0QjcyMzk1OEUKUldTT2xTTzN4Sm9sd0VjeXkvaDdkV0s1RGM4TWVDeDZEZTNjemhtZ1Y4WXBHSFNIZndhZUJGMG8K",
+      "endpoints": [
+        "https://github.com/prabhash1889/june/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  },
   "bundle": {
     "active": true,
     "targets": "all",
+    "createUpdaterArtifacts": true,
     "resources": ["resources/agent"],
     "externalBin": ["binaries/node"],
     "icon": [
