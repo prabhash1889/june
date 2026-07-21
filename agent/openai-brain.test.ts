@@ -3,7 +3,14 @@ import { describe, expect, it, vi } from "vitest";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 
-import { namespaceTools, OpenAiCompatBrain, toOpenAiTool, transportFor, trimTurnHistory } from "./openai-brain.ts";
+import {
+  foldStreamChunk,
+  namespaceTools,
+  OpenAiCompatBrain,
+  toOpenAiTool,
+  transportFor,
+  trimTurnHistory,
+} from "./openai-brain.ts";
 import { type ToolGate } from "./brain.ts";
 import { actionOf, classify, isGated, serverOf, setServerDefaults } from "./policy.ts";
 
@@ -189,6 +196,78 @@ describe("transient-error retry (3.7)", () => {
       const result = await brain().run("hi", { gate: allowAll });
       expect(calls).toBe(1);
       expect(result.isError).toBe(true);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
+// 3.1: SSE streaming. foldStreamChunk is the pure reassembly of OpenAI's streamed
+// chunks - text deltas concatenate, tool-call arguments arrive a few chars at a
+// time keyed by index, and usage rides the terminal chunk.
+describe("foldStreamChunk (3.1)", () => {
+  it("concatenates text deltas and returns each increment to emit", () => {
+    const acc: Parameters<typeof foldStreamChunk>[0] = { content: "", toolCalls: [] };
+    expect(foldStreamChunk(acc, { choices: [{ delta: { content: "Hel" } }] })).toBe("Hel");
+    expect(foldStreamChunk(acc, { choices: [{ delta: { content: "lo" } }] })).toBe("lo");
+    expect(acc.content).toBe("Hello");
+  });
+
+  it("reassembles a fragmented tool call across chunks by index", () => {
+    const acc: Parameters<typeof foldStreamChunk>[0] = { content: "", toolCalls: [] };
+    foldStreamChunk(acc, {
+      choices: [{ delta: { tool_calls: [{ index: 0, id: "call_1", function: { name: "spawn_agents", arguments: '{"co' } }] } }],
+    });
+    foldStreamChunk(acc, { choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: 'unt":2}' } }] } }] });
+    expect(acc.toolCalls[0]).toMatchObject({ id: "call_1", function: { name: "spawn_agents", arguments: '{"count":2}' } });
+  });
+
+  it("captures usage from the terminal chunk and emits nothing for it", () => {
+    const acc: Parameters<typeof foldStreamChunk>[0] = { content: "", toolCalls: [] };
+    expect(foldStreamChunk(acc, { choices: [], usage: { prompt_tokens: 7, completion_tokens: 3 } })).toBe("");
+    expect(acc.usage).toEqual({ inputTokens: 7, outputTokens: 3 });
+  });
+});
+
+// 3.1: the brain must parse a real text/event-stream body - firing onText per
+// delta (so TTS starts early) and NOT re-emitting the assembled text at the end.
+describe("streaming completion (3.1)", () => {
+  const brain = () =>
+    new OpenAiCompatBrain({
+      id: "test",
+      model: "m",
+      baseUrl: "http://localhost/v1",
+      apiKey: "k",
+      systemPrompt: "sys",
+      mcpServers: {},
+    });
+  const sse = (...frames: string[]) => ({
+    ok: true,
+    status: 200,
+    headers: { get: (h: string) => (h.toLowerCase() === "content-type" ? "text/event-stream" : null) },
+    body: new ReadableStream<Uint8Array>({
+      start(c) {
+        const enc = new TextEncoder();
+        for (const f of frames) c.enqueue(enc.encode(f));
+        c.close();
+      },
+    }),
+  });
+
+  it("emits deltas as they stream and returns the assembled reply once", async () => {
+    vi.stubGlobal("fetch", async () =>
+      sse(
+        'data: {"choices":[{"delta":{"content":"Hello "}}]}\n\n',
+        'data: {"choices":[{"delta":{"content":"there."}}]}\n\n',
+        'data: {"choices":[],"usage":{"prompt_tokens":5,"completion_tokens":2}}\n\n',
+        "data: [DONE]\n\n",
+      ),
+    );
+    try {
+      const said: string[] = [];
+      const result = await brain().run("hi", { gate: allowAll, onText: (t) => said.push(t) });
+      expect(said).toEqual(["Hello ", "there."]); // per-delta, and not re-emitted whole
+      expect(result).toMatchObject({ text: "Hello there.", isError: false, usage: { inputTokens: 5, outputTokens: 2 } });
     } finally {
       vi.unstubAllGlobals();
     }

@@ -162,6 +162,16 @@ re-discovered.
     parsing (fetch + ReadableStream, no new dep), delta into the existing SentenceBuffer,
     keep non-streaming as fallback.
     `agent/openai-brain.ts` (+ tests mirroring claude-brain's delta/fallback pins).
+    **DONE.** `#complete` now requests `stream: true` + `stream_options: {include_usage: true}`
+    and dispatches on the response content-type: a `text/event-stream` body is read
+    through `#readStream` (native fetch `ReadableStream`, no new dep), which folds each
+    `data:` frame via the pure, tested `foldStreamChunk` (text deltas concatenate,
+    tool-call arguments reassemble by index, usage rides the terminal chunk) and fires
+    `onText` per delta so TTS starts on the first sentence. A server that ignores
+    `stream: true` and returns a whole JSON completion falls through to the original
+    non-streaming path unchanged. run() carries a `streamed` flag so the assembled reply
+    is never re-emitted on top of the deltas. Added `foldStreamChunk` unit tests + a
+    real-`ReadableStream` round-trip test; 340 TS tests green.
 
 3.2 **Claude-brain in-session context trim** (c/o 7-2.5) | P1 | S
     The OpenAI path trims at 60 messages; the Claude path grows unbounded until the 10-min

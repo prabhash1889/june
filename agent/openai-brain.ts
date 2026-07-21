@@ -13,9 +13,11 @@
 // hold "regardless of provider" (Phase 3/7 exit): swapping Claude for GPT cannot
 // skip a gate because the gate lives here in the loop, not in the model.
 //
-// ponytail: non-streaming completions - onText fires once per assistant message.
-// The sentence buffer downstream still splits it for speech, and Claude covers
-// the streaming path. SSE streaming for non-Claude brains is a later refinement.
+// Streaming (3.1): the completion is requested with `stream: true` and the SSE
+// deltas are fed to onText as they arrive, so the first sentence reaches TTS well
+// before the whole message finishes - the same time-to-first-audio win the Claude
+// path already has. A server that ignores `stream: true` and answers with a plain
+// JSON completion is handled transparently by the content-type fallback.
 //
 // Phase 11.1/11.2: long-lived like ClaudeBrain. MCP servers are connected once
 // and kept warm across turns; the `messages` array persists so the conversation
@@ -63,6 +65,52 @@ interface OpenAiMessage {
 interface OpenAiTool {
   type: "function";
   function: { name: string; description?: string; parameters: Record<string, unknown> };
+}
+
+/** The running assembly of one streamed completion (3.1): text so far, tool calls
+ *  by their stream index, and the usage block once the terminal chunk carries it. */
+interface StreamAccum {
+  content: string;
+  toolCalls: OpenAiToolCall[];
+  usage?: TokenUsage;
+}
+
+/** One `data:` frame of a streamed chat completion. `delta` carries the increment;
+ *  tool-call fragments are keyed by `index` and their `function.arguments` arrive a
+ *  few characters at a time, so they must be concatenated per index. */
+interface StreamChunk {
+  choices?: {
+    delta?: {
+      content?: string | null;
+      tool_calls?: { index?: number; id?: string; type?: string; function?: { name?: string; arguments?: string } }[];
+    };
+  }[];
+  usage?: { prompt_tokens?: number; completion_tokens?: number };
+}
+
+/** Fold one streamed chunk into the running message, returning the text delta to
+ *  emit (or "" for a chunk that carries only tool-call fragments or usage). Pure,
+ *  so the delta/tool-call reassembly - the fiddly part of OpenAI streaming - is
+ *  unit-tested without a live stream. */
+export function foldStreamChunk(acc: StreamAccum, chunk: StreamChunk): string {
+  if (chunk.usage) {
+    acc.usage = { inputTokens: chunk.usage.prompt_tokens ?? 0, outputTokens: chunk.usage.completion_tokens ?? 0 };
+  }
+  const delta = chunk.choices?.[0]?.delta;
+  if (!delta) return "";
+  let emit = "";
+  if (typeof delta.content === "string" && delta.content) {
+    acc.content += delta.content;
+    emit = delta.content;
+  }
+  for (const tc of delta.tool_calls ?? []) {
+    const i = tc.index ?? 0;
+    const slot = (acc.toolCalls[i] ??= { id: "", type: "function", function: { name: "", arguments: "" } });
+    if (tc.id) slot.id = tc.id;
+    if (tc.function?.name) slot.function.name += tc.function.name;
+    if (tc.function?.arguments) slot.function.arguments += tc.function.arguments;
+  }
+  return emit;
 }
 
 /** One connected MCP capability server, its tools translated to OpenAI schema
@@ -156,7 +204,12 @@ export class OpenAiCompatBrain implements Brain {
       // several round-trips, and only the total is meaningful for the ledger (2.6).
       const usage: TokenUsage = { inputTokens: 0, outputTokens: 0 };
       for (let step = 0; step < MAX_STEPS; step++) {
-        const { message: reply, usage: u } = await this.#complete(history, tools, abort.signal);
+        const { message: reply, usage: u, streamed } = await this.#complete(
+          history,
+          tools,
+          hooks.onText,
+          abort.signal,
+        );
         if (u) {
           usage.inputTokens += u.inputTokens;
           usage.outputTokens += u.outputTokens;
@@ -164,7 +217,8 @@ export class OpenAiCompatBrain implements Brain {
         history.push(reply);
         if (reply.content) {
           finalText = reply.content;
-          hooks.onText?.(reply.content);
+          // When streamed, onText already fired per-delta - don't speak it twice.
+          if (!streamed) hooks.onText?.(reply.content);
         }
         const calls = reply.tool_calls ?? [];
         if (calls.length === 0) break;
@@ -258,21 +312,30 @@ export class OpenAiCompatBrain implements Brain {
     }
   }
 
-  /** One chat-completions round-trip. Returns the assistant message plus this
-   *  call's token usage (when the server reports it - some local servers omit the
-   *  usage block, hence optional). The abort signal lets a barge-in/cancel stop
-   *  token spend mid-flight. */
+  /** One chat-completions round-trip, streamed (3.1). Requests `stream: true` and
+   *  feeds each text delta to `onText` as it arrives so the first sentence reaches
+   *  TTS early. Returns the assembled assistant message, this call's token usage
+   *  (when the server reports it - some local servers omit it), and `streamed` so
+   *  the caller doesn't re-emit the text. A server that ignores `stream: true` and
+   *  answers with a plain JSON completion is handled by the content-type fallback.
+   *  The abort signal lets a barge-in/cancel stop token spend mid-flight. */
   async #complete(
     messages: OpenAiMessage[],
     tools: OpenAiTool[],
+    onText?: (t: string) => void,
     signal?: AbortSignal,
-  ): Promise<{ message: OpenAiMessage; usage?: TokenUsage }> {
+  ): Promise<{ message: OpenAiMessage; usage?: TokenUsage; streamed: boolean }> {
     const headers: Record<string, string> = { "content-type": "application/json" };
     if (this.#apiKey) headers.authorization = `Bearer ${this.#apiKey}`;
     const payload = JSON.stringify({
       model: this.model,
       messages,
       ...(tools.length ? { tools, tool_choice: "auto" } : {}),
+      stream: true,
+      // Ask for the usage block on the terminal chunk; ignored by servers that
+      // don't support it (usage then stays undefined, same as a non-streaming
+      // server that omits it).
+      stream_options: { include_usage: true },
     });
 
     // Retry a transient blip a couple of times (3.7): one 429/5xx or a dropped
@@ -280,6 +343,13 @@ export class OpenAiCompatBrain implements Brain {
     // user's problem, not transient - fail it at once. An abort (barge-in/cancel)
     // is terminal too and propagates unchanged so run() rolls the turn back.
     const resp = await this.#fetchWithRetry(`${this.#baseUrl}/chat/completions`, headers, payload, signal);
+
+    const contentType = resp.headers.get("content-type") ?? "";
+    if (contentType.includes("text/event-stream") && resp.body) {
+      return this.#readStream(resp.body, onText);
+    }
+
+    // Fallback: the server ignored `stream: true` and returned a whole completion.
     const json = (await resp.json()) as {
       choices?: { message?: OpenAiMessage }[];
       usage?: { prompt_tokens?: number; completion_tokens?: number };
@@ -293,7 +363,55 @@ export class OpenAiCompatBrain implements Brain {
       : undefined;
     return {
       message: { role: "assistant", content: message.content ?? null, tool_calls: message.tool_calls },
+      streamed: false,
       usage,
+    };
+  }
+
+  /** Read an SSE body, folding each `data:` chunk into the running message and
+   *  emitting text deltas to `onText` as they land (3.1). The abort signal already
+   *  rejects the underlying `read()`, so a barge-in propagates without extra
+   *  wiring. Returns the assembled message + usage, marked `streamed`. */
+  async #readStream(
+    body: ReadableStream<Uint8Array>,
+    onText?: (t: string) => void,
+  ): Promise<{ message: OpenAiMessage; usage?: TokenUsage; streamed: boolean }> {
+    const reader = body.getReader();
+    const decoder = new TextDecoder();
+    const acc: StreamAccum = { content: "", toolCalls: [] };
+    let buf = "";
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      // SSE frames are newline-delimited `data:` lines; process every complete
+      // line and keep the trailing partial in `buf` for the next chunk.
+      let nl: number;
+      while ((nl = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, nl).trim();
+        buf = buf.slice(nl + 1);
+        if (!line.startsWith("data:")) continue;
+        const data = line.slice(5).trim();
+        if (data === "[DONE]") continue;
+        let chunk: StreamChunk;
+        try {
+          chunk = JSON.parse(data) as StreamChunk;
+        } catch {
+          continue; // a keep-alive / malformed frame - skip it, keep streaming
+        }
+        const emit = foldStreamChunk(acc, chunk);
+        if (emit) onText?.(emit);
+      }
+    }
+    const toolCalls = acc.toolCalls.filter(Boolean);
+    return {
+      message: {
+        role: "assistant",
+        content: acc.content || null,
+        tool_calls: toolCalls.length ? toolCalls : undefined,
+      },
+      streamed: true,
+      usage: acc.usage,
     };
   }
 
