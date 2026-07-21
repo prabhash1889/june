@@ -5,6 +5,9 @@ const invoke = vi.hoisted(() => vi.fn());
 vi.mock("@tauri-apps/api/core", () => ({ invoke }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: () => Promise.resolve(() => {}) }));
 
+const runAgent = vi.hoisted(() => vi.fn(() => Promise.resolve({ text: "", isError: false })));
+vi.mock("../lib/stt.ts", () => ({ runAgent }));
+
 import { AppWindow } from "./AppWindow.tsx";
 
 function mockCommands(history: Array<{ name: string; payload: Record<string, unknown> }>) {
@@ -43,6 +46,19 @@ it("routes views with Ctrl+1..4 and focuses the composer with '/' (6.6)", async 
   // "/" while already typing in the field must not be hijacked.
   fireEvent.keyDown(composer, { key: "/" });
   expect(composer).toHaveFocus();
+});
+
+it("dispatches exactly one turn when a typed command is sent with Enter", async () => {
+  runAgent.mockClear();
+  mockCommands([]);
+  render(<AppWindow />);
+  const composer = await screen.findByLabelText("Type a command for June");
+  fireEvent.change(composer, { target: { value: "open two agents" } });
+  fireEvent.keyDown(composer, { key: "Enter" });
+
+  await vi.waitFor(() => expect(runAgent).toHaveBeenCalledTimes(1));
+  expect(runAgent).toHaveBeenCalledWith("open two agents", expect.any(Number));
+  expect(composer).toHaveValue(""); // cleared after send
 });
 
 it("replays the recorded session when opened mid-session", async () => {
