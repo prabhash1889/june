@@ -35,11 +35,41 @@ export function setOutputVolume(v: number): void {
   outputVolume = Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : 1;
 }
 
+/** Fixed backchannel/approval phrases June speaks constantly. These - and only
+ *  these - are memoized by `synthesize` (3.5): re-running the cloud round-trip or a
+ *  Kokoro pass for "On it." on every turn is pure waste. Callers reference these
+ *  constants so the cache key stays in sync with what's actually spoken; arbitrary
+ *  reply text is never cached, so the memo can't grow unbounded. */
+export const CANNED_PHRASES = {
+  onIt: "On it.",
+  cancelled: "Okay, cancelled.",
+  noYesCancel: "I didn't catch a yes, so I cancelled that.",
+  micFailCancel: "I couldn't open the microphone, so I cancelled that.",
+} as const;
+
+const cannedSet = new Set<string>(Object.values(CANNED_PHRASES));
+// Keyed by the full TTS stack (provider|model|voice|text) so a voice/provider
+// change re-synthesizes rather than replaying the old voice.
+const cannedCache = new Map<string, Promise<SpeechAudio>>();
+
 /** Synthesize one chunk of text. A local `choice.provider` runs on-device
  *  (local-tts.ts); everything else calls cloud OpenAI in Rust, which validates
  *  voice/model and falls back if unset. Empty text yields no audio. Rejects with a
- *  human-readable message on failure. */
-export async function synthesize(text: string, choice?: TtsChoice): Promise<SpeechAudio> {
+ *  human-readable message on failure. Canned phrases (§CANNED_PHRASES) are memoized. */
+export function synthesize(text: string, choice?: TtsChoice): Promise<SpeechAudio> {
+  const trimmed = text.trim();
+  if (!cannedSet.has(trimmed)) return synthesizeRaw(text, choice);
+  const key = `${choice?.provider ?? ""}|${choice?.model ?? ""}|${choice?.voice ?? ""}|${trimmed}`;
+  let hit = cannedCache.get(key);
+  if (!hit) {
+    hit = synthesizeRaw(trimmed, choice);
+    hit.catch(() => cannedCache.delete(key)); // never cache a failed synthesis
+    cannedCache.set(key, hit);
+  }
+  return hit;
+}
+
+async function synthesizeRaw(text: string, choice?: TtsChoice): Promise<SpeechAudio> {
   if (choice && resolveProvider("tts", choice.provider)?.kind === "local") {
     const { synthesizeLocal } = await import("./local-tts.ts");
     return { bytes: await synthesizeLocal(text, choice.voice, choice.model ?? ""), mime: "audio/wav" };

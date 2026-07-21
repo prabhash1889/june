@@ -250,14 +250,28 @@ round-trip + legacy migration (1.9).
     (not observable in CI). Warm-`MicVAD` reuse (vs. one `MicVAD` per consumer) is the
     other deferred half. Do both in a device session.
 
-3.4 **Barge-in while thinking** | P2 | S
+3.4 **Barge-in while thinking** | P2 | S - DONE
     The barge monitor only arms on `speaking`; during long tool calls speech does nothing.
     Extend the condition to `thinking || speaking` - the callback already handles both.
     `src/voice/VoicePanel.tsx`.
+    The barge-monitor effect's guard is now
+    `(phase.s !== "speaking" && phase.s !== "thinking") || approval`, so the
+    echo-cancelled monitor mic opens during long tool calls too. `bargeIn` already
+    cancels the turn and starts a new capture regardless of phase, and the effect
+    deps (`phase.s`) already re-run on the thinking->speaking transition, so no
+    monitor churn. Approval-pending still owns the mic (spoken-approval flow).
 
-3.5 **Cache canned TTS phrases** | P2 | S
+3.5 **Cache canned TTS phrases** | P2 | S - DONE
     "On it." / "Okay, cancelled." are re-synthesized (cloud round-trip or Kokoro run) on
     every occurrence. Small keyed memo in `synthesize()`. `src/lib/tts.ts`.
+    New exported `CANNED_PHRASES` constant (onIt / cancelled / noYesCancel /
+    micFailCancel) is the single source of truth for the fixed backchannel/approval
+    lines; `VoicePanel` now references it instead of string literals so the cache key
+    can't drift from what's spoken. `synthesize` memoizes ONLY these phrases, keyed by
+    `provider|model|voice|text` (a voice/provider change re-synthesizes); a failed
+    synthesis is evicted so it isn't cached. Arbitrary reply text bypasses the cache
+    (`synthesizeRaw`), so the memo can't grow unbounded. `tts.test.ts` pins
+    cache-hit-once, non-canned-always-synthesizes, and voice-change-re-synthesizes.
 
 3.6 **Claude streaming: real deltas, not whole blocks** | P2 | M
     `onText` fires once per finished block, inflating time-to-first-audio against the

@@ -15,7 +15,7 @@ import { followBottom } from "../lib/scroll.ts";
 import { DEFAULT_SETTINGS, type HandsFreeConfig, type JuneSettings, loadSettings, saveSettings, voiceAllowed, voiceNeedsOpenAiKey, type WakeConfig } from "../lib/settings.ts";
 import { captureCorrections, cleanTranscript } from "../lib/transcript.ts";
 import { recordLatency, TurnTimer } from "../lib/latency.ts";
-import { SentenceBuffer, setOutputVolume, SpeechQueue } from "../lib/tts.ts";
+import { CANNED_PHRASES, SentenceBuffer, setOutputVolume, SpeechQueue } from "../lib/tts.ts";
 import { LEVEL_GAIN, startBargeMonitor, startCapture, type CaptureError, type CaptureHandle } from "../lib/voice-capture.ts";
 import { startWakeListener } from "../lib/wake.ts";
 
@@ -467,21 +467,23 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
       ackTurnRef.current = e.payload.turn;
       const ack = new SpeechQueue(() => {}, settingsRef.current.tts);
       ackRef.current = ack;
-      ack.enqueue("On it.");
+      ack.enqueue(CANNED_PHRASES.onIt);
     });
     return () => {
       void unlisten.then((f) => f());
     };
   }, []);
 
-  // Open an echo-cancelled monitor mic only while June is speaking, so the user's
-  // voice can barge in. June's own audio is removed by the browser's AEC, so it
-  // can't trip the monitor (PLAN.md Phase 5: "June's own audio must never be
-  // picked up"). No mic for barge-in? Press-to-interrupt still works.
+  // Open an echo-cancelled monitor mic while June is thinking OR speaking, so the
+  // user's voice can barge in. Arming during `thinking` too (3.4) lets speech
+  // interrupt a long tool call, not just playback - `bargeIn` already handles both
+  // phases. June's own audio is removed by the browser's AEC, so it can't trip the
+  // monitor (PLAN.md Phase 5: "June's own audio must never be picked up"). No mic
+  // for barge-in? Press-to-interrupt still works.
   useEffect(() => {
     // Not while an approval is pending: the mic then belongs to the spoken-approval
     // flow (14.2), and answering a gate isn't barging into a reply.
-    if (phase.s !== "speaking" || approval) return;
+    if ((phase.s !== "speaking" && phase.s !== "thinking") || approval) return;
     let active = true;
     let stop = () => {};
     startBargeMonitor({ onSpeech: () => active && bargeIn(), deviceId: settingsRef.current.micDeviceId || undefined })
@@ -693,8 +695,8 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
         decision = await transcribe(audio, mime, settingsRef.current.stt).then(matchApproval).catch(() => null);
       }
       if (decision === "allow") finish("allow");
-      else if (decision === "deny") finish("deny", "Okay, cancelled.");
-      else finish("deny", "I didn't catch a yes, so I cancelled that.");
+      else if (decision === "deny") finish("deny", CANNED_PHRASES.cancelled);
+      else finish("deny", CANNED_PHRASES.noYesCancel);
     };
 
     // Speak the repeat-back, then start listening once it drains (onIdle).
@@ -707,7 +709,7 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
         deviceId: settingsRef.current.micDeviceId || undefined,
       })
         .then((h) => (alive ? (cap = h) : h.cancel()))
-        .catch(() => finish("deny", "I couldn't open the microphone, so I cancelled that."));
+        .catch(() => finish("deny", CANNED_PHRASES.micFailCancel));
     }, tts);
     prompt.enqueue(`${approval.summary}. Say yes to approve, or no to cancel.`);
 

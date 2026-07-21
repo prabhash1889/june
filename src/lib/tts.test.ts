@@ -1,6 +1,29 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
-import { SentenceBuffer } from "./tts.ts";
+const invoke = vi.fn(async (..._a: unknown[]) => [1, 2, 3]);
+vi.mock("@tauri-apps/api/core", () => ({ invoke: (...a: unknown[]) => invoke(...a) }));
+
+import { CANNED_PHRASES, SentenceBuffer, synthesize } from "./tts.ts";
+
+describe("synthesize canned-phrase memo (3.5)", () => {
+  it("synthesizes a canned phrase once and replays it, but re-synthesizes other text", async () => {
+    invoke.mockClear();
+    await synthesize(CANNED_PHRASES.onIt);
+    await synthesize(CANNED_PHRASES.onIt); // served from cache
+    expect(invoke).toHaveBeenCalledTimes(1);
+
+    await synthesize("A unique reply sentence.");
+    await synthesize("A unique reply sentence."); // not canned -> synthesized again
+    expect(invoke).toHaveBeenCalledTimes(3);
+  });
+
+  it("re-synthesizes a canned phrase when the voice/provider changes", async () => {
+    invoke.mockClear();
+    await synthesize(CANNED_PHRASES.cancelled, { provider: "openai", voice: "alloy" });
+    await synthesize(CANNED_PHRASES.cancelled, { provider: "openai", voice: "nova" });
+    expect(invoke).toHaveBeenCalledTimes(2);
+  });
+});
 
 describe("SentenceBuffer", () => {
   it("flushes a sentence only once its terminator is followed by whitespace", () => {
