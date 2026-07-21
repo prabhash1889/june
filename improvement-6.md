@@ -824,10 +824,21 @@ round-trip + legacy migration (1.9).
     the three `read_schedules/triggers/watches(&settings)` call sites drop the extra
     borrow. Clippy `-D warnings` + 13 scheduler tests green.
 
-7.5 **Isolate the 11Hz waveform re-render** | P2 | M
+7.5 **Isolate the 11Hz waveform re-render** | P2 | M - DONE
     The level-poll re-renders all of VoicePanel (transcript, chips, approvals) every 90ms
     while listening. Extract waveform + orb glow into a child that owns the interval.
     Same pattern for the SettingsPanel mic meter. `src/voice/VoicePanel.tsx`.
+    New `<LiveWaveform>` child (mounted only during "listening") owns the 90ms poll and
+    its `levels` state, so the tick re-renders ONLY it - VoicePanel's transcript, tool
+    line, chips, and approval card no longer re-render 11x/sec. It also drives the orb's
+    `--level` glow var IMPERATIVELY through a new `orbRef` (`style.setProperty` each
+    tick, removed on unmount so the glow is off at rest), so the orb element doesn't
+    re-render either; the orb's inline `--level` style prop is gone (CSS already falls
+    back to 0 when unset). Dropped the panel-level `levels` state, the `level` derived
+    value, and the poll effect. Same pattern applied to SettingsPanel's mic-test meter:
+    a new `<MicMeter>` child owns that poll (gated by a `recording` bool + a capture
+    ref) so the 90ms `setLevel` re-renders only the meter, not the whole SttCard.
+    Typecheck + eslint + 294 vitest + vite build all green.
 
 7.6 **`read_runs`: parse the tail, not 4MB** | P2 | S
     Both ledger generations are fully read and every line JSON-parsed to keep 200 records.

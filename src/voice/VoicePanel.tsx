@@ -1,4 +1,4 @@
-import { type CSSProperties, useCallback, useEffect, useRef, useState } from "react";
+import { type RefObject, useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 
 import { humanizeAction } from "../lib/actions.ts";
@@ -101,7 +101,6 @@ function sameHandsFree(a: HandsFreeConfig, b: HandsFreeConfig): boolean {
 // size the window to fit instead of opening a fixed mostly-empty slab.
 export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boolean, cardPx: number) => void }) {
   const [phase, setPhase] = useState<Phase>({ s: "idle" });
-  const [levels, setLevels] = useState<number[]>([]);
   const { approval, decide, expired } = usePendingApproval();
   // A local model download in flight (first run of Moonshine/Kokoro), shown as a
   // status line so the pipeline doesn't look hung (improvement-5 P0.5).
@@ -122,6 +121,9 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
   // The scrolling card element: streamed replies follow its bottom (P0.8) and
   // the shell sizes the window from its content height (6.11).
   const cardRef = useRef<HTMLDivElement>(null);
+  // The orb button, so the ~11Hz level poll can drive its glow ring imperatively
+  // (7.5) without re-rendering VoicePanel every 90ms.
+  const orbRef = useRef<HTMLButtonElement>(null);
   const capture = useRef<CaptureHandle | null>(null);
   // Guard the async open path (improvement-5 P0.6): two overlapping startCapture
   // calls both open getUserMedia, and the second overwrites `capture.current` -
@@ -554,21 +556,9 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
     };
   }, [phase.s, approval, bargeIn]);
 
-  // Poll the input level while listening: the newest sample drives the orb's
-  // glow ring, the trailing window renders as the live waveform.
-  useEffect(() => {
-    if (phase.s !== "listening") {
-      setLevels([]);
-      return;
-    }
-    setLevels(Array(WAVE_BARS).fill(0));
-    const id = window.setInterval(() => {
-      const v = capture.current?.level() ?? 0;
-      setLevels((xs) => [...xs.slice(1 - WAVE_BARS), v]);
-    }, 90);
-    return () => window.clearInterval(id);
-  }, [phase.s]);
-  const level = levels.length > 0 ? levels[levels.length - 1] : 0;
+  // The input-level poll (~11Hz while listening) lives in <LiveWaveform> now (7.5),
+  // so it re-renders only that child, not the whole panel; it drives the orb glow
+  // via orbRef imperatively.
 
   // Clear the "sent to your app" dictation note (15.4) or the "Jotted" capture note
   // (4.5) after a moment, returning the widget to rest. A new press cancels it early.
@@ -1022,14 +1012,16 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
                 {phase.message}
               </p>
             )}
-            {phase.s === "listening" && <Waveform levels={levels} />}
+            {phase.s === "listening" && <LiveWaveform capture={capture} orbRef={orbRef} />}
           </>
         )}
       </div>
 
       <button
+        ref={orbRef}
         className={`orb ${orbState}`}
-        style={phase.s === "listening" ? ({ "--level": Math.min(level * LEVEL_GAIN, 1) } as CSSProperties) : undefined}
+        // The `--level` glow var is written imperatively by <LiveWaveform> while
+        // listening (7.5); CSS falls back to 0 when it's unset (at rest).
         // Disabled in dictation mode: injection must come only from a held PTT
         // press (never a click, which would focus June and mis-target the text).
         disabled={phase.s === "need-key" || dictation}
@@ -1081,6 +1073,34 @@ function MissionChip({ mission }: { mission: NonNullable<ReturnType<typeof useMi
       </span>
     </div>
   );
+}
+
+/** Owns the ~11Hz input-level poll while listening (7.5). Mounted only during the
+ *  "listening" phase, so its interval starts/stops with the capture and its state
+ *  updates re-render ONLY this child - not VoicePanel's transcript, chips, or
+ *  approvals. It renders the waveform and writes the orb's `--level` glow var
+ *  imperatively through `orbRef`, so neither the poll touches parent state. */
+function LiveWaveform({
+  capture,
+  orbRef,
+}: {
+  capture: RefObject<CaptureHandle | null>;
+  orbRef: RefObject<HTMLButtonElement | null>;
+}) {
+  const [levels, setLevels] = useState<number[]>(() => Array(WAVE_BARS).fill(0));
+  useEffect(() => {
+    const orb = orbRef.current;
+    const id = window.setInterval(() => {
+      const v = capture.current?.level() ?? 0;
+      setLevels((xs) => [...xs.slice(1 - WAVE_BARS), v]);
+      orb?.style.setProperty("--level", String(Math.min(v * LEVEL_GAIN, 1)));
+    }, 90);
+    return () => {
+      window.clearInterval(id);
+      orb?.style.removeProperty("--level"); // glow off at rest
+    };
+  }, [capture, orbRef]);
+  return <Waveform levels={levels} />;
 }
 
 /** The trailing input-level window as a live gradient waveform (the sample's

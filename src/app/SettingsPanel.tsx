@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { type RefObject, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 
 import { MapTextarea } from "./MapTextarea.tsx";
@@ -50,7 +50,7 @@ import {
 } from "../lib/settings.ts";
 import { transcribe } from "../lib/stt.ts";
 import { synthesize } from "../lib/tts.ts";
-import { LEVEL_GAIN, startCapture } from "../lib/voice-capture.ts";
+import { type CaptureHandle, LEVEL_GAIN, startCapture } from "../lib/voice-capture.ts";
 
 // The full settings surface (PLAN.md §3-§4, Phase 7). This is the window's
 // second face: choose the STT / brain / TTS stack, verify each stage, manage
@@ -371,18 +371,38 @@ function DevicePicker({
   );
 }
 
+/** The live "speak now" input meter shown during the mic test (7.5). Owns the
+ *  ~11Hz level poll so it re-renders only itself, not the whole SttCard. Mounted
+ *  only while recording; reads the level off the capture ref. */
+function MicMeter({ capture }: { capture: RefObject<CaptureHandle | null> }) {
+  const [level, setLevel] = useState(0);
+  useEffect(() => {
+    const id = window.setInterval(() => setLevel(capture.current?.level() ?? 0), 90);
+    return () => window.clearInterval(id);
+  }, [capture]);
+  return (
+    <span className="stt-live" role="status">
+      Speak now…
+      <span className="stt-meter" aria-hidden="true">
+        <span style={{ width: `${Math.min(level * LEVEL_GAIN, 1) * 100}%` }} />
+      </span>
+    </span>
+  );
+}
+
 function SttCard({ settings, update }: { settings: JuneSettings; update: (s: JuneSettings) => void }) {
   const provider = resolveProvider("stt", settings.stt.provider);
   const [busy, setBusy] = useState(false);
-  // Live input level while the test records (improvement-5 P2 6.8): null when not
-  // recording. Without it the 2.5s capture had no "speak now" indication at all.
-  const [level, setLevel] = useState<number | null>(null);
+  // While the test records, show a live input meter (improvement-5 P2 6.8) - the
+  // ~11Hz poll lives in <MicMeter> (7.5) so it re-renders only that child, not the
+  // whole card. `recording` gates it; the handle is read off a ref by the child.
+  const [recording, setRecording] = useState(false);
+  const captureRef = useRef<CaptureHandle | null>(null);
   const [result, setResult] = useState<ProbeResult | null>(null);
 
   const runTest = async () => {
     setBusy(true);
     setResult(null);
-    let meter: number | null = null;
     try {
       const t0 = performance.now();
       const handle = await startCapture({
@@ -390,12 +410,10 @@ function SttCard({ settings, update }: { settings: JuneSettings; update: (s: Jun
         maxMs: 3000,
         deviceId: settings.micDeviceId || undefined,
       });
-      setLevel(0);
-      meter = window.setInterval(() => setLevel(handle.level()), 90);
+      captureRef.current = handle;
+      setRecording(true);
       await new Promise((r) => setTimeout(r, 2500));
-      window.clearInterval(meter);
-      meter = null;
-      setLevel(null);
+      setRecording(false);
       const { audio, mime } = await handle.stop();
       if (audio.length === 0) {
         setResult({ ok: false, detail: "No audio captured - is the microphone allowed?", ms: 0 });
@@ -411,8 +429,8 @@ function SttCard({ settings, update }: { settings: JuneSettings; update: (s: Jun
     } catch (e) {
       setResult({ ok: false, detail: msg(e), ms: 0 });
     } finally {
-      if (meter != null) window.clearInterval(meter);
-      setLevel(null);
+      setRecording(false);
+      captureRef.current = null;
       setBusy(false);
     }
   };
@@ -444,14 +462,7 @@ function SttCard({ settings, update }: { settings: JuneSettings; update: (s: Jun
         <button onClick={runTest} disabled={busy}>
           {busy ? "Testing…" : "Test"}
         </button>
-        {level !== null && (
-          <span className="stt-live" role="status">
-            Speak now…
-            <span className="stt-meter" aria-hidden="true">
-              <span style={{ width: `${Math.min(level * LEVEL_GAIN, 1) * 100}%` }} />
-            </span>
-          </span>
-        )}
+        {recording && <MicMeter capture={captureRef} />}
         {result && (
           <span className={`test-result ${result.ok ? "ok" : "bad"}`}>
             {result.ok ? "✓" : "✗"} {result.detail}
