@@ -42,6 +42,7 @@ import {
   privacyViolations,
   readLessons,
   readMemory,
+  saveAutomations,
   saveSettings,
   setKey,
   voiceAllowed,
@@ -62,6 +63,22 @@ import { type CaptureHandle, LEVEL_GAIN, startCapture } from "../lib/voice-captu
 const EFFORTS: Effort[] = ["low", "medium", "high"];
 const TEST_SAMPLE = "June is ready when you are.";
 const SAVE_DEBOUNCE_MS = 800; // B2.3: coalesce keystroke-driven saves
+
+/** A coalesced pending write (7.7): the latest settings plus which write path(s) are
+ *  dirty. General settings and automation lists persist through separate commands so
+ *  neither clobbers the other's keys. */
+interface PendingSave {
+  next: JuneSettings;
+  general: boolean;
+  automation: boolean;
+}
+
+/** Run whichever write paths a coalesced save marked dirty. Sequential so both land
+ *  under the Rust write lock without interleaving. */
+async function persistPending(p: PendingSave): Promise<void> {
+  if (p.general) await saveSettings(p.next);
+  if (p.automation) await saveAutomations(p.next.schedules, p.next.triggers, p.next.watches);
+}
 
 function msg(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
@@ -105,13 +122,19 @@ export function SettingsPanel() {
   // and each save respawns the resident and re-broadcasts settings://changed
   // (which churns the wake mic). Coalesce to one save after typing settles; flush
   // any pending save if the window closes so a last change isn't lost.
+  //
+  // A pending save tracks WHICH kind of edit is dirty (7.7): general settings go
+  // through `saveSettings` (which preserves automation keys from disk), automation
+  // lists through `saveAutomations` (which preserves everything else). Each writes
+  // only its own keys, so a window mixing both edits runs both - never a whole-bag
+  // overwrite that could drop a concurrently voice-created schedule.
   const saveTimer = useRef<number | null>(null);
-  const pendingSave = useRef<JuneSettings | null>(null);
+  const pendingSave = useRef<PendingSave | null>(null);
   useEffect(
     () => () => {
       if (saveTimer.current != null && pendingSave.current) {
         clearTimeout(saveTimer.current);
-        void saveSettings(pendingSave.current).catch(() => {});
+        void persistPending(pendingSave.current).catch(() => {});
       }
     },
     [],
@@ -135,19 +158,29 @@ export function SettingsPanel() {
 
   if (!settings) return <div className="settings-view">Loading settings…</div>;
 
-  const update = (next: JuneSettings) => {
+  const scheduleSave = (next: JuneSettings, kind: "general" | "automation") => {
     setSettings(next); // UI stays responsive immediately; the write is debounced
-    pendingSave.current = next;
+    const prev = pendingSave.current;
+    pendingSave.current = {
+      next,
+      general: (prev?.general ?? false) || kind === "general",
+      automation: (prev?.automation ?? false) || kind === "automation",
+    };
     if (saveTimer.current != null) clearTimeout(saveTimer.current);
     saveTimer.current = window.setTimeout(() => {
       saveTimer.current = null;
+      const pending = pendingSave.current;
       pendingSave.current = null;
-      void saveSettings(next).then(
-        () => setSaveFailed(false),
-        () => setSaveFailed(true),
-      );
+      if (pending) {
+        void persistPending(pending).then(
+          () => setSaveFailed(false),
+          () => setSaveFailed(true),
+        );
+      }
     }, SAVE_DEBOUNCE_MS);
   };
+  const update = (next: JuneSettings) => scheduleSave(next, "general");
+  const updateAutomations = (next: JuneSettings) => scheduleSave(next, "automation");
 
   return (
     <div className="settings-view">
@@ -186,7 +219,7 @@ export function SettingsPanel() {
         <CapabilitiesSection settings={settings} update={update} />
       </div>
       <div id="sec-automation" className="settings-anchor">
-        <AutomationSection settings={settings} update={update} />
+        <AutomationSection settings={settings} update={updateAutomations} />
       </div>
       <div id="sec-diagnostics" className="settings-anchor">
         <DiagnosticsSection />

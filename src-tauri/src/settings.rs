@@ -2,12 +2,63 @@ use serde_json::Value;
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use tauri::{Emitter, Manager};
+
+/// Serializes every Rust read-modify-write of settings.json (7.7) so two Tauri
+/// commands (a general save racing a schedule edit, or the scheduler retiring a
+/// watch) can't interleave their read+write and clobber each other. The automation
+/// MCP server is a separate process and can't share this lock - but it re-reads the
+/// file immediately before each write, so the only residual race is a voice write
+/// landing in the exact window of a panel automation edit (rare, both human-paced).
+static SETTINGS_WRITE_LOCK: Mutex<()> = Mutex::new(());
+
+/// Keys the automation MCP server and scheduler own out-of-band: voice-created
+/// schedules/watches/triggers and the pending-mission queue. The general
+/// `save_settings` (a whole-bag write from a webview snapshot that may be stale
+/// relative to a concurrent voice write) must NOT author these - a last-writer-wins
+/// overwrite would silently drop a just-created schedule (7.7). They are written
+/// only by `save_automations` (the panel) or the automation server (voice).
+const AUTOMATION_KEYS: [&str; 4] = ["schedules", "watches", "triggers", "pendingMissions"];
 
 fn settings_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     Ok(dir.join("settings.json"))
+}
+
+/// A general settings save (7.7): overlay `incoming` (the webview's whole bag) but
+/// keep the automation-owned keys from the freshly-read `disk` bag, so a stale
+/// snapshot can't drop a concurrently voice-created schedule/watch/trigger/mission.
+/// Pure.
+fn merge_general_save(disk: &Value, incoming: Value) -> Value {
+    let mut out = incoming;
+    if let Value::Object(map) = &mut out {
+        for key in AUTOMATION_KEYS {
+            match disk.get(key) {
+                Some(v) => {
+                    map.insert(key.to_string(), v.clone());
+                }
+                None => {
+                    map.remove(key);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The panel's dedicated automation save (7.7): overlay only the three panel-editable
+/// lists onto the freshly-read `disk` bag, preserving every other key (including the
+/// automation-server-owned `pendingMissions`, which the webview never authors). Pure.
+fn merge_automation_save(disk: &Value, schedules: Value, watches: Value, triggers: Value) -> Value {
+    let mut out = disk.clone();
+    if let Value::Object(map) = &mut out {
+        map.insert("schedules".into(), schedules);
+        map.insert("watches".into(), watches);
+        map.insert("triggers".into(), triggers);
+    }
+    out
 }
 
 /// Absolute path to settings.json for the resident's automation capability
@@ -49,6 +100,7 @@ pub fn load_settings(app: tauri::AppHandle) -> Result<Value, String> {
 /// own mtime watch emits `settings://changed` so open windows reload.
 pub(crate) fn disable_watch(app: &tauri::AppHandle, id: &str) {
     let Ok(path) = settings_path(app) else { return };
+    let _guard = SETTINGS_WRITE_LOCK.lock().unwrap();
     let Ok(mut settings) = read_settings_file(&path) else {
         return;
     };
@@ -74,6 +126,7 @@ pub(crate) fn disable_watch(app: &tauri::AppHandle, id: &str) {
 /// enabled, and the scheduler's persisted `fired` map still stops the re-fire.
 pub(crate) fn disable_schedule(app: &tauri::AppHandle, id: &str) {
     let Ok(path) = settings_path(app) else { return };
+    let _guard = SETTINGS_WRITE_LOCK.lock().unwrap();
     let Ok(mut settings) = read_settings_file(&path) else {
         return;
     };
@@ -101,6 +154,7 @@ pub(crate) fn disable_schedule(app: &tauri::AppHandle, id: &str) {
 /// starting a mission it couldn't dequeue, which would loop it forever.
 pub(crate) fn take_pending_mission(app: &tauri::AppHandle) -> Option<Value> {
     let path = settings_path(app).ok()?;
+    let _guard = SETTINGS_WRITE_LOCK.lock().unwrap();
     let mut settings = read_settings_file(&path).ok()?;
     let queue = settings.get_mut("pendingMissions")?.as_array_mut()?;
     if queue.is_empty() {
@@ -135,7 +189,16 @@ pub(crate) fn cloud_voice_blocked(app: &tauri::AppHandle) -> bool {
 
 #[tauri::command]
 pub fn save_settings(app: tauri::AppHandle, settings: Value) -> Result<(), String> {
-    write_settings_file(&settings_path(&app)?, &settings)?;
+    let path = settings_path(&app)?;
+    // Merge-on-save (7.7): re-read disk under the write lock and keep the
+    // automation-owned keys from disk, so this whole-bag write (from a possibly
+    // stale webview snapshot) can't drop a concurrently voice-created schedule.
+    {
+        let _guard = SETTINGS_WRITE_LOCK.lock().unwrap();
+        let disk = read_settings_file(&path).unwrap_or_else(|_| Value::Object(Default::default()));
+        let merged = merge_general_save(&disk, settings);
+        write_settings_file(&path, &merged)?;
+    }
     // Live settings propagation (10.5): tell open windows to reload so wake/TTS/
     // privacy changes apply without an app restart. Best-effort broadcast.
     let _ = app.emit("settings://changed", ());
@@ -147,6 +210,33 @@ pub fn save_settings(app: tauri::AppHandle, settings: Value) -> Result<(), Strin
     if let Some(session) = app.try_state::<crate::agent_runner::AgentSession>() {
         session.request_respawn();
     }
+    Ok(())
+}
+
+/// The Settings panel's dedicated write path for the automation lists (7.7). Because
+/// the panel and the automation MCP server both author schedules/watches/triggers, a
+/// general whole-bag save can't own them (it would clobber a concurrent voice write);
+/// instead the panel calls this, which re-reads disk under the write lock and
+/// overlays only these three lists. Does NOT respawn the resident - automation lists
+/// aren't in its system prompt (matching disable_watch/disable_schedule), and a
+/// respawn would churn the wake mic on every schedule keystroke.
+#[tauri::command]
+pub fn save_automations(
+    app: tauri::AppHandle,
+    schedules: Value,
+    watches: Value,
+    triggers: Value,
+) -> Result<(), String> {
+    let path = settings_path(&app)?;
+    {
+        let _guard = SETTINGS_WRITE_LOCK.lock().unwrap();
+        let disk = read_settings_file(&path).unwrap_or_else(|_| Value::Object(Default::default()));
+        let merged = merge_automation_save(&disk, schedules, watches, triggers);
+        write_settings_file(&path, &merged)?;
+    }
+    // The scheduler re-reads settings each tick and open windows reload on this;
+    // best-effort broadcast so an idle panel reflects the change at once.
+    let _ = app.emit("settings://changed", ());
     Ok(())
 }
 
@@ -177,6 +267,64 @@ mod tests {
         assert_eq!(read_settings_file(&path).unwrap(), value);
 
         fs::remove_file(&path).unwrap();
+    }
+
+    /// A general save keeps the automation-owned keys from disk (7.7): a stale
+    /// webview snapshot writing an unrelated key can't drop a concurrently
+    /// voice-created schedule / pending mission.
+    #[test]
+    fn general_save_preserves_automation_keys_from_disk() {
+        let disk = serde_json::json!({
+            "privacyMode": "standard",
+            "schedules": [{ "id": "s1", "label": "Voice-added" }],
+            "pendingMissions": [{ "outcome": "queued" }],
+        });
+        // The webview loaded before the voice write, so its bag has no schedules and
+        // is changing only privacyMode.
+        let incoming = serde_json::json!({
+            "privacyMode": "local-voice",
+            "schedules": [],
+            "volume": 0.8,
+        });
+        let merged = merge_general_save(&disk, incoming);
+        // Webview-owned keys win...
+        assert_eq!(merged["privacyMode"], "local-voice");
+        assert_eq!(merged["volume"], 0.8);
+        // ...but the automation keys are taken from disk, not the stale payload.
+        assert_eq!(merged["schedules"][0]["id"], "s1");
+        assert_eq!(merged["pendingMissions"][0]["outcome"], "queued");
+    }
+
+    /// A general save whose disk bag has no automation key must not carry a stale
+    /// automation key in from the payload either - it's dropped to match disk.
+    #[test]
+    fn general_save_drops_automation_key_absent_from_disk() {
+        let disk = serde_json::json!({ "privacyMode": "standard" });
+        let incoming = serde_json::json!({ "privacyMode": "standard", "schedules": [{ "id": "stale" }] });
+        let merged = merge_general_save(&disk, incoming);
+        assert!(merged.get("schedules").is_none());
+    }
+
+    /// The panel's automation save overlays only the three lists and preserves every
+    /// other key - notably the automation-server-owned pendingMissions (7.7).
+    #[test]
+    fn automation_save_overlays_lists_and_preserves_the_rest() {
+        let disk = serde_json::json!({
+            "privacyMode": "standard",
+            "schedules": [{ "id": "old" }],
+            "pendingMissions": [{ "outcome": "queued" }],
+        });
+        let merged = merge_automation_save(
+            &disk,
+            serde_json::json!([{ "id": "edited" }]),
+            serde_json::json!([]),
+            serde_json::json!([]),
+        );
+        assert_eq!(merged["schedules"][0]["id"], "edited");
+        assert_eq!(merged["watches"].as_array().unwrap().len(), 0);
+        // Non-automation-list keys survive untouched.
+        assert_eq!(merged["privacyMode"], "standard");
+        assert_eq!(merged["pendingMissions"][0]["outcome"], "queued");
     }
 
     /// The pending-mission dequeue is FIFO, pops exactly one, persists the shortened

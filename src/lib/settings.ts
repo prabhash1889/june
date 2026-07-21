@@ -248,6 +248,18 @@ export async function saveSettings(settings: JuneSettings): Promise<void> {
   await invoke("save_settings", { settings: { ...raw, ...settings } });
 }
 
+/** Persist ONLY the automation lists (7.7). The panel and the voice automation
+ *  server both author schedules/watches/triggers, so a general whole-bag save can't
+ *  own them (it would clobber a concurrent voice write); this dedicated command
+ *  re-reads disk and overlays just these three lists. */
+export async function saveAutomations(
+  schedules: Schedule[],
+  triggers: FileTrigger[],
+  watches: WatchLoop[],
+): Promise<void> {
+  await invoke("save_automations", { schedules, watches, triggers });
+}
+
 // --- Keychain (secrets never touch settings.json; they live in the OS keychain) ---
 
 export function hasKey(service: string): Promise<boolean> {

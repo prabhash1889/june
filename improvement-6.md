@@ -854,12 +854,35 @@ round-trip + legacy migration (1.9).
     widen the window if 200 maxed records ever exceed it. 45 cargo tests + clippy
     `-D warnings` green.
 
-7.7 **Single writer for settings.json** (x2: rust + reliability) | P2 | M
+7.7 **Single writer for settings.json** (x2: rust + reliability) | P2 | M - DONE
     Rust `save_settings` (whole-bag, last-writer-wins) races the automation server's
     out-of-band writes - a voice-created schedule can be silently dropped by a concurrent
     Settings save. Merge-on-save: re-read disk and overlay only webview-owned keys (or
     route automation mutations through a Rust command); emit `settings://changed` from
     Rust on disk change. `src-tauri/src/settings.rs`, `mcp/automation/store.ts`.
+    Split the writers by key ownership. `save_settings` now re-reads disk under a new
+    process-wide `SETTINGS_WRITE_LOCK` and keeps the automation-owned keys
+    (`schedules`/`watches`/`triggers`/`pendingMissions`) from disk (pure
+    `merge_general_save`), so a stale whole-bag webview snapshot can no longer clobber a
+    concurrently voice-created schedule or the mission queue. Because the panel and the
+    voice server BOTH author the three list keys, the panel gets a dedicated
+    `save_automations(schedules, watches, triggers)` command (pure `merge_automation_save`
+    overlays only those three, preserving `pendingMissions` and every other key) that does
+    NOT respawn the resident (automation lists aren't in the system prompt - matches
+    disable_watch, and avoids wake-mic churn on every schedule keystroke). The three
+    existing RMW helpers (disable_watch/disable_schedule/take_pending_mission) now also
+    take the lock so no two Rust writers interleave. Frontend: a coalesced save tracks
+    which path is dirty (general vs automation) and runs the matching command(s) - a
+    window mixing both edits runs both, each writing only its own keys. New
+    `saveAutomations` client; `AutomationSection` persists through it. The automation
+    server's own out-of-band write already reaches idle windows via the scheduler's
+    mtime-watch `settings://changed` emit (7.4), so the "emit on disk change" half was
+    already satisfied. ponytail: the residual race is a voice write landing in the exact
+    window of a panel automation edit (both human-paced, and an idle panel reloads within
+    a tick) - a 3-way baseline merge would close it but isn't worth the machinery. Pinned:
+    3 settings.rs merge tests (general preserves/drops automation keys, automation save
+    overlays + preserves the rest). 45 cargo tests + 294 vitest + clippy `-D warnings` +
+    typecheck + eslint green.
 
 7.8 **Consolidate duplicated plumbing** | P2 | S-M
     (a) One `fsutil` module for the 5x hand-rolled atomic write (fixed tmp names can
