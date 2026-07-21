@@ -698,31 +698,70 @@ round-trip + legacy migration (1.9).
 
 ## Phase 6 - UI/UX polish
 
-6.1 **Settings navigation** | P1 | M
+6.1 **Settings navigation** | P1 | M - DONE
     Twelve sections in one endless scroll. Sticky in-page section nav (anchors +
     `scroll-margin-top`) or 3-4 sub-tabs (Voice / Conversation / Capabilities /
     Automation). Pure layout. `src/app/SettingsPanel.tsx`, `src/styles.css`.
+    Went with the sticky anchor nav (simpler than sub-tabs, keeps one scroll and
+    zero routing state). Each of the twelve sections is wrapped in a
+    `.settings-anchor` (id + `scroll-margin-top: 52px` so a jumped-to heading clears
+    the bar); a new `SectionNav` renders a `position: sticky; top` bar of buttons
+    driven by a `NAV_SECTIONS` list, each calling `scrollIntoView({behavior:"smooth"})`.
+    The bar bleeds to the scroll-container edges (negative margins) with a blurred
+    translucent background. Pure layout, no state.
 
-6.2 **Automation cards: next-fire time + last outcome** | P2 | S/M
+6.2 **Automation cards: next-fire time + last outcome** | P2 | S/M - DONE
     Cards are write-only - no confirmation the config parses into what was meant, no idea
     whether last night's run worked. Pure `describeNext(schedule, now)` in
     `src/lib/schedules.ts` (unit-testable TS mirror of `is_due`) + last matching ledger
     entry per card. `SettingsPanel.tsx`, `src/lib/runs.ts`.
+    New pure `describeNext(schedule, now)` in schedules.ts: a forward-looking mirror of
+    the Rust `is_due` clock - `daily` resolves the next matching-weekday "HH:MM" to
+    "Next today/tomorrow/Fri 09:00", `once` renders "Reminder <when>" (or "already fired
+    or missed"), `every` reports its interval (no clock anchor the UI can know). New
+    `lastRunFor(runs, source)` + shared `relativeTime(ts)` in runs.ts (the latter hoisted
+    out of RunsPanel so both surfaces share it). A `CardStatus` component under each
+    schedule/trigger/watch card shows the next fire (schedules + watch interval) and the
+    last matching ledger outcome ("✓ last ran 5m ago", "✗ ... (2 blocked)", or "no runs
+    yet"), matched by the `schedule:`/`trigger:`/`watch: <label>` source prefix (a
+    "(run now)" suffix still matches). A `useRuns` hook refreshes on `runs://updated`.
+    Pinned: schedules.test (describeNext daily/tomorrow-roll/weekday/every/once-future+past).
 
-6.3 **Composer: grow with content, keep newlines, recall history** | P2 | S
+6.3 **Composer: grow with content, keep newlines, recall history** | P2 | S - DONE
     `rows={1}` with a fixed 38px box hides the second line Shift+Enter creates, and
     `.turn.you` lacks `white-space: pre-wrap` so sent newlines collapse. Add
     `field-sizing: content`, the missing CSS rule, and ArrowUp-recalls-last-command.
     `src/app/AppWindow.tsx`, `src/styles.css`.
+    `field-sizing: content` on the composer textarea (bounded by the existing
+    min/max-height) grows it to fit a multi-line draft; `.turn.you` gained
+    `white-space: pre-wrap` so a sent Shift+Enter newline survives. ArrowUp from an
+    EMPTY box recalls the last sent command (kept in a `lastSent` ref, raw text with
+    newlines) - guarded on empty so ArrowUp still navigates lines within a draft.
 
-6.4 **First-run onboarding** | P2 | M
+6.4 **First-run onboarding** | P2 | M - DONE
     A fresh install is an unexplained floating dot. One-time welcome card (a
     `firstRunDone` flag): test your mic, verify the PTT chord, pick a privacy mode - all
     reusing existing SettingsPanel controls. `src/app/AppWindow.tsx`, `src/lib/settings.ts`.
+    New `firstRunDone` setting (false on a fresh install or a pre-flag file, coerced
+    like the other bools). A modal `Onboarding` card over the app window shows while
+    it's false: what June is + how to talk to it (the live PTT chord via `usePttLabel`),
+    a privacy-mode radio group up front (the one choice that changes what leaves the
+    device - written straight through `saveSettings`), and two dismiss buttons ("Open
+    Settings to test your mic" routes into the Settings view, which already owns the mic
+    test - so we reuse that control rather than duplicate it; "Start using June" just
+    dismisses). Either dismiss flips `firstRunDone` and persists, so it never shows again.
+    ponytail: the mic test lives one click away in Settings rather than inlined into the
+    card - the card points at it instead of re-mounting the capture control.
 
-6.5 **Bubble timestamps + copy button** | P3 | S
+6.5 **Bubble timestamps + copy button** | P3 | S - DONE
     Replies contain paths and commands; the only route out is manual selection.
     Hover-revealed copy + small timestamp on `.turn.june`. `src/app/AppWindow.tsx`.
+    Each `june` entry now carries an `at` epoch stamped when the bubble is first
+    created (delta or final). A `JuneBubble` renders the reply plus a `.turn-meta` row:
+    an always-visible small local-time stamp and a Copy button revealed on hover/
+    focus-within (`navigator.clipboard.writeText`, flips to "Copied" for ~1.2s). The
+    bubble became a flex column so the meta reserves its own row - no layout shift on
+    hover, and the copy button stays keyboard-reachable via `:focus-within`.
 
 6.6 **Keyboard routes between views** | P3 | S
     Ctrl+1..4 for the four tabs, `/` to focus the composer. One window-level keydown
