@@ -1,5 +1,15 @@
-import { type RefObject, useCallback, useEffect, useRef, useState } from "react";
+import { type RefObject, useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
+
+import {
+  autoExpireMs,
+  isActivePhase,
+  isBusy,
+  type Phase,
+  phaseReducer,
+  speakingText as selectSpeakingText,
+  statusHint,
+} from "./voice-phase.ts";
 
 import { humanizeAction } from "../lib/actions.ts";
 import { matchApproval } from "../lib/approval-voice.ts";
@@ -27,19 +37,6 @@ import { startWakeListener } from "../lib/wake.ts";
 // (echo-cancelled monitor mic) or by pressing to talk - to interrupt and start a
 // new command. Barge-in only stops audio; it never re-runs a turn, so an
 // interrupted command never executes twice.
-
-type Phase =
-  | { s: "need-key" }
-  | { s: "idle" }
-  | { s: "listening" }
-  | { s: "transcribing" }
-  | { s: "review"; transcript: string }
-  | { s: "thinking" }
-  | { s: "speaking"; text: string }
-  | { s: "reply"; text: string }
-  | { s: "dictated"; text: string } // Phase 15.4: text was injected into the focused app
-  | { s: "captured"; text: string } // improvement-6 4.5: text was jotted to june-inbox.md
-  | { s: "error"; message: string };
 
 // A short confirmation chime for a quick-capture jot (improvement-6 4.5): no brain,
 // no TTS voice - just a brief blip so the user knows the note landed. Plays on the
@@ -73,11 +70,8 @@ const WAVE_BARS = 28;
 const AUTO_ACCEPT_SECONDS = 2; // 14.1: review-card countdown before auto-send
 const FOLLOWUP_WINDOW_MS = 6_000; // 14.3: how long the mic stays armed after a reply
 const SPOKEN_APPROVAL_MS = 8_000; // 14.2: how long to listen for a spoken yes/no
-const DICTATED_CONFIRM_MS = 2_500; // 15.4: how long the "sent to your app" note lingers
-const ERROR_EXPIRE_MS = 4_000; // B2.5: how long an error lingers before returning to idle
-// improvement-5 P0.2: how long a reply lingers before returning to idle. Must be
-// longer than FOLLOWUP_WINDOW_MS so follow-up mode gets its full window first.
-const REPLY_EXPIRE_MS = 12_000;
+// The phase auto-expiry timings (dictated/captured/error/reply -> idle) live in
+// voice-phase.ts alongside autoExpireMs, which the single expire effect reads.
 
 // Compare the effects-driving voice configs by value (B2.3): a settings save that
 // didn't touch these must not hand the wake/hands-free effects a new object, or
@@ -100,7 +94,11 @@ function sameHandsFree(a: HandsFreeConfig, b: HandsFreeConfig): boolean {
 // reports the card's content height (improvement-5 P2 6.11) so the shell can
 // size the window to fit instead of opening a fixed mostly-empty slab.
 export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boolean, cardPx: number) => void }) {
-  const [phase, setPhase] = useState<Phase>({ s: "idle" });
+  // Phase state runs through phaseReducer (voice-phase.ts): it warns in dev on an
+  // unexpected transition but always applies it. useReducer's dispatch is stable,
+  // so `setPhase` keeps the same call sites (including the functional update in
+  // refreshSettings) and doesn't enter any callback's dependency array.
+  const [phase, setPhase] = useReducer(phaseReducer, { s: "idle" } as Phase);
   const { approval, decide, expired } = usePendingApproval();
   // A local model download in flight (first run of Moonshine/Kokoro), shown as a
   // status line so the pipeline doesn't look hung (improvement-5 P0.5).
@@ -566,32 +564,16 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
   // so it re-renders only that child, not the whole panel; it drives the orb glow
   // via orbRef imperatively.
 
-  // Clear the "sent to your app" dictation note (15.4) or the "Jotted" capture note
-  // (4.5) after a moment, returning the widget to rest. A new press cancels it early.
+  // Auto-return a lingering phase to rest (autoExpireMs in voice-phase.ts). The
+  // dictated/captured confirmation notes (15.4 / 4.5), a transient error (B2.5),
+  // and a finished reply (improvement-5 P0.2) all park until they expire; the
+  // wake listener only arms while idle and the card only collapses at rest, so a
+  // phase that never expires kills hands-free after the first answer and pins the
+  // widget open. A press clears any of them sooner.
   useEffect(() => {
-    if (phase.s !== "dictated" && phase.s !== "captured") return;
-    const id = window.setTimeout(() => setPhase({ s: "idle" }), DICTATED_CONFIRM_MS);
-    return () => window.clearTimeout(id);
-  }, [phase.s]);
-
-  // Auto-recover from a transient error back to rest (B2.5). One "I didn't hear a
-  // command" otherwise parks in `error` forever, which permanently disables the
-  // hands-free wake listener (it only runs while idle) until the orb is clicked.
-  // Expire to idle after a few seconds so wake re-arms; a press clears it sooner.
-  useEffect(() => {
-    if (phase.s !== "error") return;
-    const id = window.setTimeout(() => setPhase({ s: "idle" }), ERROR_EXPIRE_MS);
-    return () => window.clearTimeout(id);
-  }, [phase.s]);
-
-  // Expire a finished reply back to rest (improvement-5 P0.2, the same bug class
-  // as B2.5): the wake listener only arms while idle and the card only collapses
-  // at rest, so a reply that never expires kills hands-free after the first
-  // answer and pins the widget open. Long enough for follow-up mode (14.3) to get
-  // its full window first; the reply itself stays in the app window's transcript.
-  useEffect(() => {
-    if (phase.s !== "reply") return;
-    const id = window.setTimeout(() => setPhase({ s: "idle" }), REPLY_EXPIRE_MS);
+    const ms = autoExpireMs(phase.s);
+    if (ms == null) return;
+    const id = window.setTimeout(() => setPhase({ s: "idle" }), ms);
     return () => window.clearTimeout(id);
   }, [phase.s]);
 
@@ -807,7 +789,7 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
   // Dictation is included (B2.6): latched-and-idle, the card must stay visible so
   // its on/off toggle and "dictation on" status are reachable (the orb is disabled
   // in this mode), matching 15.4's "visible indicator throughout".
-  const active = phase.s !== "idle" || approval != null || missionActive || dictation;
+  const active = isActivePhase(phase.s, { hasApproval: approval != null, missionActive, dictation });
   // No dependency array (improvement-5 P2 6.11): the card's content height moves
   // with every render (streamed text, status changes), and reading scrollHeight
   // is cheap. The shell quantizes and dedupes before touching the window. The
@@ -872,7 +854,7 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
     if (phase.s === "speaking") followBottom(cardRef.current);
   }, [phase]);
 
-  const speakingText = phase.s === "speaking" ? phase.text : phase.s === "reply" ? phase.text : "";
+  const speakingText = selectSpeakingText(phase);
   const orbState =
     phase.s === "listening"
       ? "listening"
@@ -1146,29 +1128,12 @@ function Status({
         June needs your OK before it can continue.
       </p>
     );
-  // Dictation mode (15.4) rewords the resting/listening prompts: the target is the
-  // user's focused app, and the orb is disabled, so the hint points at the hotkey.
-  const text: Record<Phase["s"], string> = {
-    "need-key": "",
-    idle: dictation
-      ? `Dictation on - hold ${pttLabel} and speak; text goes to your focused app.`
-      : `Hold ${pttLabel}, or click the orb, and speak.`,
-    listening: dictation ? "Dictating…" : "Listening…",
-    transcribing: dictation ? "Writing it out…" : "Transcribing… press the orb to start over.",
-    review: "Is this right?",
-    thinking: "Working on it…",
-    speaking: "Speaking… talk or press to interrupt.",
-    reply: "",
-    dictated: "",
-    captured: "",
-    error: "",
-  };
-  const busy = phase.s === "listening" || phase.s === "transcribing" || phase.s === "thinking" || phase.s === "speaking";
-  if (!text[phase.s]) return null;
+  const hint = statusHint(phase.s, { dictation, pttLabel });
+  if (!hint) return null;
   return (
     <p className="status" role="status">
-      {busy && <span className="status-dot busy" aria-hidden="true" />}
-      {text[phase.s]}
+      {isBusy(phase.s) && <span className="status-dot busy" aria-hidden="true" />}
+      {hint}
     </p>
   );
 }
