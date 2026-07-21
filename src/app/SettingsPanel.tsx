@@ -890,6 +890,23 @@ function ActivationSection({ settings, update }: { settings: JuneSettings; updat
         <label className="wake-toggle">
           <input
             type="checkbox"
+            checked={settings.launchAtLogin}
+            onChange={(e) => update({ ...settings, launchAtLogin: e.target.checked })}
+          />
+          <span>
+            <span className="privacy-name">Start June at login</span>
+            <span className="privacy-desc">
+              Launch the widget automatically when you sign in, so wake word, push to talk and schedules survive a
+              reboot.
+            </span>
+          </span>
+        </label>
+      </div>
+
+      <div className="stage-card">
+        <label className="wake-toggle">
+          <input
+            type="checkbox"
             checked={wake.enabled}
             disabled={voiceOff}
             onChange={(e) => setWake({ enabled: e.target.checked })}

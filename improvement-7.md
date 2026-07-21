@@ -42,7 +42,7 @@ every other improvement multiplies in value once the app is installable.
     An assistant that self-updates is table stakes for trusting it with automations.
     `.github/workflows/release.yml`, `src-tauri/tauri.conf.json`, `Cargo.toml`.
 
-1.3 **Autostart + start-in-tray** | P1 | S
+1.3 **Autostart + start-in-tray** | P1 | S - DONE
     `tauri-plugin-autostart` behind a `launchAtLogin` setting (default off, offered once
     during onboarding). A voice assistant that dies at reboot is not an assistant.
     `src-tauri/src/lib.rs`, `src/lib/settings.ts`, `SettingsPanel.tsx`, onboarding card.

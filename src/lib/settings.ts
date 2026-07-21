@@ -99,6 +99,10 @@ export interface JuneSettings {
    *  a fresh install (or a settings file predating this flag), so onboarding shows
    *  once, then never again. */
   firstRunDone: boolean;
+  /** Launch June at login (improvement-7 1.3, tauri-plugin-autostart). Off by
+   *  default and offered once during onboarding - a voice assistant that dies at
+   *  reboot is not an assistant, but autostart is still the user's call. */
+  launchAtLogin: boolean;
   wake: WakeConfig;
   handsFree: HandsFreeConfig;
   transcript: TranscriptConfig;
@@ -127,6 +131,7 @@ export const DEFAULT_SETTINGS: JuneSettings = {
   conversationIdleMinutes: 10,
   privacyMode: "standard",
   firstRunDone: false,
+  launchAtLogin: false,
   wake: { enabled: false, phrase: "hey june", sensitivity: 0.5 },
   handsFree: { autoAccept: false, spokenApprovals: false, followUp: false, backchannel: false },
   transcript: { autoEdit: false, dictionary: {}, snippets: {} },
@@ -209,6 +214,7 @@ function coerce(raw: RawSettings): JuneSettings {
     conversationIdleMinutes: nonNegInt(raw.conversationIdleMinutes, d.conversationIdleMinutes),
     privacyMode: modes.includes(mode as PrivacyMode) ? (mode as PrivacyMode) : d.privacyMode,
     firstRunDone: bool(raw.firstRunDone, d.firstRunDone),
+    launchAtLogin: bool(raw.launchAtLogin, d.launchAtLogin),
     wake: {
       enabled: typeof wake.enabled === "boolean" ? wake.enabled : d.wake.enabled,
       phrase: str(wake.phrase, d.wake.phrase),

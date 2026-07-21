@@ -36,6 +36,12 @@ pub fn run() {
         // Auto-update (improvement-7 1.2): startup check against GitHub Releases,
         // signed artifacts. Rust-only - no JS capability exposed.
         builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
+        // Launch at login (improvement-7 1.3), driven by the `launchAtLogin`
+        // setting - applied at startup and on every settings change below.
+        builder = builder.plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ));
     }
 
     builder
@@ -94,6 +100,17 @@ pub fn run() {
                     }
                 })
                 .build(app)?;
+
+            // Keep the OS login item in step with the `launchAtLogin` setting
+            // (improvement-7 1.3): reconcile once at startup (the registry entry may
+            // have been removed out-of-band) and on every settings change.
+            #[cfg(desktop)]
+            {
+                use tauri::Listener;
+                apply_autostart(app.handle());
+                let handle = app.handle().clone();
+                app.listen("settings://changed", move |_| apply_autostart(&handle));
+            }
 
             // Check GitHub Releases for a newer signed build once, in the background
             // (improvement-7 1.2). Release builds only: a dev checkout is its own
@@ -192,6 +209,28 @@ async fn apply_update(app: tauri::AppHandle) {
         }
         Ok(None) => {}
         Err(e) => logf::log(&app, &format!("[updater] check failed: {e}")),
+    }
+}
+
+/// Enable/disable the OS login item to match the `launchAtLogin` setting
+/// (improvement-7 1.3). Best-effort and idempotent - a failure (e.g. registry
+/// access denied) is logged, never fatal, and the next settings change retries.
+#[cfg(desktop)]
+fn apply_autostart(app: &tauri::AppHandle) {
+    use tauri_plugin_autostart::ManagerExt;
+    let want = settings::read_settings(app)
+        .get("launchAtLogin")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let manager = app.autolaunch();
+    // Skip the no-op case so "off" (the default) never churns the registry or
+    // logs a spurious error on machines that never enabled it.
+    if manager.is_enabled().unwrap_or(false) == want {
+        return;
+    }
+    let result = if want { manager.enable() } else { manager.disable() };
+    if let Err(e) = result {
+        logf::log(app, &format!("[autostart] could not apply launchAtLogin={want}: {e}"));
     }
 }
 

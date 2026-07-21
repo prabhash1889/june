@@ -299,6 +299,14 @@ export function AppWindow() {
               return next;
             })
           }
+          onLaunchAtLogin={(on) =>
+            setSettings((s) => {
+              if (!s) return s;
+              const next = { ...s, launchAtLogin: on };
+              void saveSettings(next).catch(() => {});
+              return next;
+            })
+          }
           onDone={finishOnboarding}
         />
       )}
@@ -381,11 +389,13 @@ function Onboarding({
   settings,
   pttLabel,
   onPrivacy,
+  onLaunchAtLogin,
   onDone,
 }: {
   settings: JuneSettings;
   pttLabel: string;
   onPrivacy: (mode: PrivacyMode) => void;
+  onLaunchAtLogin: (on: boolean) => void;
   onDone: (openSettings: boolean) => void;
 }) {
   return (
@@ -415,6 +425,20 @@ function Onboarding({
             </label>
           ))}
         </div>
+
+        {/* Offered once at first run (improvement-7 1.3); changeable any time in
+            Settings -> Activation. Default off - autostart is the user's call. */}
+        <label className="wake-toggle onboarding-autostart">
+          <input
+            type="checkbox"
+            checked={settings.launchAtLogin}
+            onChange={(e) => onLaunchAtLogin(e.target.checked)}
+          />
+          <span>
+            <span className="privacy-name">Start June at login</span>
+            <span className="privacy-desc">So wake word, push to talk and schedules survive a reboot.</span>
+          </span>
+        </label>
 
         <div className="onboarding-actions">
           <button className="primary" onClick={() => onDone(true)}>

@@ -44,6 +44,8 @@ tauri-plugin-window-state = "2"
 # Auto-update from GitHub Releases (improvement-7 1.2): startup check, signed
 # artifacts (minisign keypair; pubkey pinned in tauri.conf.json).
 tauri-plugin-updater = "2"
+# Launch at login (improvement-7 1.3), behind the `launchAtLogin` setting.
+tauri-plugin-autostart = "2"
 
 # Release profile (7.1): cargo's defaults leave the exe fat (no LTO, 16 codegen
 # units, no strip). Fold the crate graph with LTO, one codegen unit for max
