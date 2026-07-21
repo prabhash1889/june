@@ -969,11 +969,36 @@ round-trip + legacy migration (1.9).
     client in session.ts; `.clear-activity` layout in styles.css (reuses the existing
     `.danger` button). typecheck + eslint + cargo build green.
 
-7.12 **Keychain hygiene + CSP tightening** | P3 | S
+7.12 **Keychain hygiene + CSP tightening** | P3 | S - DONE (keychain); CSP DEFERRED
     Toast on `keychain://changed`, restrict key mutation to the app window; gate the four
     wildcard huggingface `connect-src` origins behind the model-download flow and try
     dropping `style-src 'unsafe-inline'`. `src-tauri/src/keychain.rs`,
     `src-tauri/tauri.conf.json`.
+    Keychain hygiene shipped. `set_api_key` and `delete_api_key` now emit
+    `keychain://changed` (`{service, action}`, no secret in the payload); the app window
+    reuses its transient-note pattern for a positive `flash` toast ("API key saved." /
+    "API key removed.", 3s, a new `.app-flash` style distinct from the red failure note)
+    so a key change is never silent, cross-window. Key DELETION is now restricted to the
+    full Settings window: `delete_api_key` takes the caller `Window` and refuses any label
+    other than "app" - only Settings ever deletes, whereas the widget's onboarding KeyGate
+    legitimately ADDS a key, so `set_api_key` stays available to both windows (a blanket
+    app-only mutation lock would break first-run key entry from the orb). DEVIATION from
+    "restrict key MUTATION": mutation splits - add is needed in the widget, delete is not,
+    so least-privilege applies to delete only.
+    CSP DEFERRED (both halves). (1) Gating the four HF `connect-src` origins "behind the
+    model-download flow" is not expressible in the static config CSP - the webview fetches
+    local models (Moonshine/Kokoro/Silero/wake) from HF at RUNTIME, so those origins are
+    load-bearing whenever a model downloads; per-flow gating would need a dynamic-CSP
+    mechanism Tauri's static `csp` field doesn't offer, and simply removing them breaks
+    on-device model download. (2) Dropping `style-src 'unsafe-inline'` is plausibly safe
+    (the built index.html carries no `<style>` tag or inline `style=` attribute, and React
+    sets `style={{}}`/CSS vars via the CSSOM, which CSP doesn't gate) BUT a wrong call
+    blanks the always-on-top widget in production, and that can only be confirmed by
+    launching the built Tauri app on Windows and exercising every model-load path - not
+    observable in CI. To finish: build+run on a device, watch the console for a
+    style-src violation across a full voice turn + settings render, and drop the token if
+    clean. Mirrors the 3.12 stance (don't ship an unverifiable gate-bound change).
+    cargo build + clippy `-D warnings` + typecheck + eslint green.
 
 7.13 **Guard the seams with cheap tests** | P3 | S
     Provider/keychain-service metadata is duplicated across Rust and TS with only a
