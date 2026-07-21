@@ -11,22 +11,64 @@ import {
   statusHint,
 } from "./voice-phase.ts";
 
+import { followUpMayArm, wakeMayArm } from "./mic-ownership.ts";
+
 import { humanizeAction } from "../lib/actions.ts";
 import { matchApproval } from "../lib/approval-voice.ts";
 import { useApprovalKeys } from "../lib/approval-hooks.ts";
 import { ApprovalMeta } from "../lib/approval-ui.tsx";
 import { hotkeyLabel } from "../lib/hotkey.ts";
-import { appendInbox, hasOpenAiKey, injectText, runAgent, setOpenAiKey, transcribe } from "../lib/stt.ts";
-import { type Approval, cancelAgent, interactiveTurnBase, newConversation, openApp, useMission, usePendingApproval } from "../lib/session.ts";
+import {
+  appendInbox,
+  hasOpenAiKey,
+  injectText,
+  runAgent,
+  setOpenAiKey,
+  transcribe,
+} from "../lib/stt.ts";
+import {
+  type Approval,
+  cancelAgent,
+  interactiveTurnBase,
+  newConversation,
+  openApp,
+  useMission,
+  usePendingApproval,
+} from "../lib/session.ts";
 import { missionProgress } from "../lib/missions.ts";
-import { formatModelProgress, MODEL_PROGRESS_EVENT, type ModelProgress } from "../lib/model-progress.ts";
+import {
+  formatModelProgress,
+  MODEL_PROGRESS_EVENT,
+  type ModelProgress,
+} from "../lib/model-progress.ts";
 import { resolveProvider } from "../lib/providers.ts";
 import { followBottom } from "../lib/scroll.ts";
-import { DEFAULT_SETTINGS, type HandsFreeConfig, type JuneSettings, loadSettings, saveSettings, voiceAllowed, voiceNeedsOpenAiKey, type WakeConfig } from "../lib/settings.ts";
+import {
+  DEFAULT_SETTINGS,
+  type HandsFreeConfig,
+  type JuneSettings,
+  loadSettings,
+  saveSettings,
+  voiceAllowed,
+  voiceNeedsOpenAiKey,
+  type WakeConfig,
+} from "../lib/settings.ts";
 import { captureCorrections, cleanTranscript } from "../lib/transcript.ts";
 import { recordLatency, TurnTimer } from "../lib/latency.ts";
-import { CANNED_PHRASES, SentenceBuffer, setOutputDevice, setOutputVolume, SpeechQueue } from "../lib/tts.ts";
-import { LEVEL_GAIN, startBargeMonitor, startCapture, type CaptureError, type CaptureHandle } from "../lib/voice-capture.ts";
+import {
+  CANNED_PHRASES,
+  SentenceBuffer,
+  setOutputDevice,
+  setOutputVolume,
+  SpeechQueue,
+} from "../lib/tts.ts";
+import {
+  LEVEL_GAIN,
+  startBargeMonitor,
+  startCapture,
+  type CaptureError,
+  type CaptureHandle,
+} from "../lib/voice-capture.ts";
 import { startWakeListener } from "../lib/wake.ts";
 
 // The voice surface: hold Ctrl+Shift+Space (or press the orb), speak, review the
@@ -93,7 +135,11 @@ function sameHandsFree(a: HandsFreeConfig, b: HandsFreeConfig): boolean {
 // geometry, VoicePanel owns the pipeline (PLAN.md Phase 6 widget spec). It also
 // reports the card's content height (improvement-5 P2 6.11) so the shell can
 // size the window to fit instead of opening a fixed mostly-empty slab.
-export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boolean, cardPx: number) => void }) {
+export function VoicePanel({
+  onActiveChange,
+}: {
+  onActiveChange?: (active: boolean, cardPx: number) => void;
+}) {
   // Phase state runs through phaseReducer (voice-phase.ts): it warns in dev on an
   // unexpected transition but always applies it. useReducer's dispatch is stable,
   // so `setPhase` keeps the same call sites (including the functional update in
@@ -257,7 +303,11 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
       // auto-send that phantom command. The VAD already tracks whether real speech
       // was heard (the same signal the spoken-approval path trusts).
       if (audio.length === 0 || !handle.heardSpeech()) {
-        setPhase(brainless ? { s: "idle" } : { s: "error", message: "I didn't hear a command. Try again." });
+        setPhase(
+          brainless
+            ? { s: "idle" }
+            : { s: "error", message: "I didn't hear a command. Try again." },
+        );
         return;
       }
       // Belt-and-braces over the backend's own timeout: if the invoke never
@@ -273,7 +323,12 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
               transcribe(audio, mime, stt),
               new Promise<string>((_, reject) =>
                 window.setTimeout(
-                  () => reject(new Error("Transcription took too long. Check your connection and try again.")),
+                  () =>
+                    reject(
+                      new Error(
+                        "Transcription took too long. Check your connection and try again.",
+                      ),
+                    ),
                   20_000,
                 ),
               ),
@@ -285,7 +340,11 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
       if (!cleaned.trim()) {
         // Nothing usable: a brainless clip (dictation/capture) just stands down
         // quietly; a command surfaces the same "try again" it always has.
-        setPhase(brainless ? { s: "idle" } : { s: "error", message: "I didn't hear a command. Try again." });
+        setPhase(
+          brainless
+            ? { s: "idle" }
+            : { s: "error", message: "I didn't hear a command. Try again." },
+        );
         return;
       }
       // Phase 15.4: dictation injects into the focused app instead of the agent.
@@ -336,7 +395,8 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
     if (voiceBlockedRef.current) {
       setPhase({
         s: "error",
-        message: "Voice is off in your current privacy mode. Switch to Standard or add a local voice provider in settings.",
+        message:
+          "Voice is off in your current privacy mode. Switch to Standard or add a local voice provider in settings.",
       });
       return;
     }
@@ -412,74 +472,80 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
     await saveSettings(next).catch(() => {});
   }, []);
 
-  const accept = useCallback(async (transcript: string, original?: string) => {
-    const turn = (turnRef.current += 1);
-    splitterRef.current = new SentenceBuffer();
-    streamTextRef.current = "";
-    replyRef.current = "";
-    spokeRef.current = false;
-    // Latency (Phase 11.5): the brain clock starts now (Send), so the review
-    // pause is excluded; first audio closes the turn's voice-to-voice path.
-    const timer = timerRef.current;
-    timer?.sent();
-    // The turn is over only when BOTH the agent has resolved and the speech
-    // queue has drained - either can finish first. A drain alone means speech
-    // merely caught up with the token stream (e.g. during a slow tool call).
-    let agentDone = false;
-    setTtsIssue(null); // a fresh turn gets a fresh chance to speak
-    const queue = new SpeechQueue(
-      () => {
-        if (turnRef.current === turn && agentDone) setPhase({ s: "reply", text: replyRef.current });
-      },
-      settingsRef.current.tts,
-      () => {
-        // The real reply is starting: silence any lingering "on it" backchannel
-        // (14.4) so the two never overlap, and mark voice-to-voice latency.
-        ackRef.current?.stop();
-        ackRef.current = null;
-        const sample = timer?.firstAudio();
-        if (sample) void recordLatency(sample).catch(() => {});
-      },
-      () => {
-        if (turnRef.current === turn)
-          setTtsIssue("June couldn't speak that reply - check the text-to-speech settings. The text is below.");
-      },
-    );
-    queueRef.current = queue;
-    setToolLine(null); // a fresh turn hasn't called any tool yet (6.7)
-    setPhase({ s: "thinking" });
-    try {
-      const { text: reply } = await runAgent(transcript, turn);
-      if (turnRef.current !== turn) return; // barged in while generating
-      setToolLine(null); // the turn is over; drop the tool line (6.7)
-      // Learn the review-gate correction only now the turn is dispatched and done
-      // (B2.2): growing the dictionary persists settings, which respawns the
-      // resident - doing it before the turn killed the very command being sent.
-      if (original) void learnCorrections(original, transcript);
-      timer?.firstToken(); // no-op if a text delta already marked it (no-delta brains)
-      replyRef.current = reply;
-      agentDone = true;
-      const tail = splitterRef.current.flush();
-      if (tail) {
-        queue.enqueue(tail);
-        spokeRef.current = true;
+  const accept = useCallback(
+    async (transcript: string, original?: string) => {
+      const turn = (turnRef.current += 1);
+      splitterRef.current = new SentenceBuffer();
+      streamTextRef.current = "";
+      replyRef.current = "";
+      spokeRef.current = false;
+      // Latency (Phase 11.5): the brain clock starts now (Send), so the review
+      // pause is excluded; first audio closes the turn's voice-to-voice path.
+      const timer = timerRef.current;
+      timer?.sent();
+      // The turn is over only when BOTH the agent has resolved and the speech
+      // queue has drained - either can finish first. A drain alone means speech
+      // merely caught up with the token stream (e.g. during a slow tool call).
+      let agentDone = false;
+      setTtsIssue(null); // a fresh turn gets a fresh chance to speak
+      const queue = new SpeechQueue(
+        () => {
+          if (turnRef.current === turn && agentDone)
+            setPhase({ s: "reply", text: replyRef.current });
+        },
+        settingsRef.current.tts,
+        () => {
+          // The real reply is starting: silence any lingering "on it" backchannel
+          // (14.4) so the two never overlap, and mark voice-to-voice latency.
+          ackRef.current?.stop();
+          ackRef.current = null;
+          const sample = timer?.firstAudio();
+          if (sample) void recordLatency(sample).catch(() => {});
+        },
+        () => {
+          if (turnRef.current === turn)
+            setTtsIssue(
+              "June couldn't speak that reply - check the text-to-speech settings. The text is below.",
+            );
+        },
+      );
+      queueRef.current = queue;
+      setToolLine(null); // a fresh turn hasn't called any tool yet (6.7)
+      setPhase({ s: "thinking" });
+      try {
+        const { text: reply } = await runAgent(transcript, turn);
+        if (turnRef.current !== turn) return; // barged in while generating
+        setToolLine(null); // the turn is over; drop the tool line (6.7)
+        // Learn the review-gate correction only now the turn is dispatched and done
+        // (B2.2): growing the dictionary persists settings, which respawns the
+        // resident - doing it before the turn killed the very command being sent.
+        if (original) void learnCorrections(original, transcript);
+        timer?.firstToken(); // no-op if a text delta already marked it (no-delta brains)
+        replyRef.current = reply;
+        agentDone = true;
+        const tail = splitterRef.current.flush();
+        if (tail) {
+          queue.enqueue(tail);
+          spokeRef.current = true;
+        }
+        // Fallback: the brain streamed no deltas -> speak the whole reply at once.
+        if (!spokeRef.current && reply.trim()) {
+          queue.enqueue(reply);
+          spokeRef.current = true;
+          streamTextRef.current = reply;
+        }
+        // Speech may already be done (it drained before the agent resolved and
+        // nothing was left to flush) - then the drain callback will never fire
+        // again, so finish the turn here instead of parking in "speaking".
+        if (queue.idle) setPhase({ s: "reply", text: reply });
+        else setPhase({ s: "speaking", text: streamTextRef.current });
+      } catch (e) {
+        if (turnRef.current !== turn) return;
+        setPhase({ s: "error", message: e instanceof Error ? e.message : String(e) });
       }
-      // Fallback: the brain streamed no deltas -> speak the whole reply at once.
-      if (!spokeRef.current && reply.trim()) {
-        queue.enqueue(reply);
-        spokeRef.current = true;
-        streamTextRef.current = reply;
-      }
-      // Speech may already be done (it drained before the agent resolved and
-      // nothing was left to flush) - then the drain callback will never fire
-      // again, so finish the turn here instead of parking in "speaking".
-      if (queue.idle) setPhase({ s: "reply", text: reply });
-      else setPhase({ s: "speaking", text: streamTextRef.current });
-    } catch (e) {
-      if (turnRef.current !== turn) return;
-      setPhase({ s: "error", message: e instanceof Error ? e.message : String(e) });
-    }
-  }, [learnCorrections]);
+    },
+    [learnCorrections],
+  );
 
   // Stream text deltas from the running turn into speech, sentence by sentence.
   useEffect(() => {
@@ -551,7 +617,10 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
     if ((phase.s !== "speaking" && phase.s !== "thinking") || approval) return;
     let active = true;
     let stop = () => {};
-    startBargeMonitor({ onSpeech: () => active && bargeIn(), deviceId: settingsRef.current.micDeviceId || undefined })
+    startBargeMonitor({
+      onSpeech: () => active && bargeIn(),
+      deviceId: settingsRef.current.micDeviceId || undefined,
+    })
       .then((s) => (active ? (stop = s) : s()))
       .catch(() => {});
     return () => {
@@ -662,7 +731,15 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
   // June is already capturing, thinking, or speaking; the effect tears the
   // listener down the moment activation moves us out of "idle".
   useEffect(() => {
-    if (!wake.enabled || micMuted || voiceBlocked || approval || dictation || phase.s !== "idle") return;
+    if (
+      !wakeMayArm(wake.enabled, phase.s, {
+        micMuted,
+        voiceBlocked,
+        hasApproval: approval != null,
+        dictation,
+      })
+    )
+      return;
     let alive = true;
     let stop = () => {};
     startWakeListener({
@@ -689,7 +766,15 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
   // ponytail: the first ~200ms of the follow-up can clip while the capture opens
   // after onset; acceptable for v1, a continuous rolling buffer is the upgrade.
   useEffect(() => {
-    if (!handsFree.followUp || micMuted || voiceBlocked || approval || dictation || phase.s !== "reply") return;
+    if (
+      !followUpMayArm(handsFree.followUp, phase.s, {
+        micMuted,
+        voiceBlocked,
+        hasApproval: approval != null,
+        dictation,
+      })
+    )
+      return;
     let alive = true;
     let stop = () => {};
     const timer = window.setTimeout(() => {
@@ -727,7 +812,8 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
     // Bail under a voice-off privacy mode (B2.9): with no usable STT this flow
     // would open no mic and silently auto-deny the gate ~8s in, racing the user's
     // click. Leave the decision entirely to the approval card in that mode.
-    if (!approval || !handsFree.spokenApprovals || approval.cls !== "expensive" || voiceBlocked) return;
+    if (!approval || !handsFree.spokenApprovals || approval.cls !== "expensive" || voiceBlocked)
+      return;
     // Silence any lingering "on it" backchannel before the repeat-back so the two
     // never overlap (B4.10); the guard in the backchannel listener stops a new one.
     ackRef.current?.stop();
@@ -756,7 +842,9 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
       // "Okay." on pure silence, which would approve a paid action with no human
       // input. Only a clip the VAD actually heard speech in reaches the matcher.
       if (audio.length > 0 && heardSpeech) {
-        decision = await transcribe(audio, mime, settingsRef.current.stt).then(matchApproval).catch(() => null);
+        decision = await transcribe(audio, mime, settingsRef.current.stt)
+          .then(matchApproval)
+          .catch(() => null);
       }
       if (decision === "allow") finish("allow");
       else if (decision === "deny") finish("deny", CANNED_PHRASES.cancelled);
@@ -789,7 +877,11 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
   // Dictation is included (B2.6): latched-and-idle, the card must stay visible so
   // its on/off toggle and "dictation on" status are reachable (the orb is disabled
   // in this mode), matching 15.4's "visible indicator throughout".
-  const active = isActivePhase(phase.s, { hasApproval: approval != null, missionActive, dictation });
+  const active = isActivePhase(phase.s, {
+    hasApproval: approval != null,
+    missionActive,
+    dictation,
+  });
   // No dependency array (improvement-5 P2 6.11): the card's content height moves
   // with every render (streamed text, status changes), and reading scrollHeight
   // is cheap. The shell quantizes and dedupes before touching the window. The
@@ -800,10 +892,13 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
   });
 
   // Stop any audio if the panel unmounts mid-reply.
-  useEffect(() => () => {
-    queueRef.current?.stop();
-    ackRef.current?.stop();
-  }, []);
+  useEffect(
+    () => () => {
+      queueRef.current?.stop();
+      ackRef.current?.stop();
+    },
+    [],
+  );
 
   const cancel = useCallback(() => {
     void cancelAgent(turnRef.current); // abort any in-flight turn on the backend (Phase 11.3)
@@ -888,7 +983,15 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
             onClick={() => setDictation((d) => !d)}
           >
             <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-              <rect x="1" y="4" width="14" height="8" rx="1.5" stroke="currentColor" strokeWidth="1.2" />
+              <rect
+                x="1"
+                y="4"
+                width="14"
+                height="8"
+                rx="1.5"
+                stroke="currentColor"
+                strokeWidth="1.2"
+              />
               <path
                 d="M3.5 6.5h.01M6 6.5h.01M8.5 6.5h.01M11 6.5h.01M3.5 9h.01M13 9h.01M5.5 9.5h5"
                 stroke="currentColor"
@@ -918,7 +1021,9 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
             title="Open the full June window"
             aria-label="Open the full June window"
             onClick={() =>
-              void openApp().catch(() => setPhase({ s: "error", message: "Couldn't open the June window." }))
+              void openApp().catch(() =>
+                setPhase({ s: "error", message: "Couldn't open the June window." }),
+              )
             }
           >
             <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
@@ -1046,7 +1151,12 @@ export function VoicePanel({ onActiveChange }: { onActiveChange?: (active: boole
       >
         <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">
           <rect x="9" y="3" width="6" height="11" rx="3" stroke="currentColor" strokeWidth="1.8" />
-          <path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+          <path
+            d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3"
+            stroke="currentColor"
+            strokeWidth="1.8"
+            strokeLinecap="round"
+          />
         </svg>
       </button>
     </div>
@@ -1065,7 +1175,9 @@ function MissionChip({ mission }: { mission: NonNullable<ReturnType<typeof useMi
         {done + failed}/{total}
       </span>
       <span className="mission-chip-text">
-        {mission.status === "active" ? (current?.title ?? mission.outcome) : `Mission ${mission.status}`}
+        {mission.status === "active"
+          ? (current?.title ?? mission.outcome)
+          : `Mission ${mission.status}`}
       </span>
     </div>
   );
@@ -1141,7 +1253,13 @@ function Status({
 // The visible approval gate (PLAN.md §5): the exact action and count June is
 // about to take, with an explicit yes/no. Rendered in the widget and the full
 // app alike - either can approve, because the pending approval is shared state.
-function ApprovalCard({ approval, onDecide }: { approval: Approval; onDecide: (d: "allow" | "deny") => void }) {
+function ApprovalCard({
+  approval,
+  onDecide,
+}: {
+  approval: Approval;
+  onDecide: (d: "allow" | "deny") => void;
+}) {
   // Keyboard path (improvement-5 P0.9): focus lands on the safe Reject button,
   // Esc rejects from anywhere in the window.
   const rejectRef = useApprovalKeys(approval.id, onDecide);
@@ -1199,7 +1317,8 @@ function ReviewCard({
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onCancel();
-      else if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && text.trim()) onAccept(text.trim(), transcript);
+      else if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && text.trim())
+        onAccept(text.trim(), transcript);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -1232,7 +1351,11 @@ function ReviewCard({
         rows={3}
       />
       <div className="row">
-        <button className="primary" disabled={!text.trim()} onClick={() => onAccept(text.trim(), transcript)}>
+        <button
+          className="primary"
+          disabled={!text.trim()}
+          onClick={() => onAccept(text.trim(), transcript)}
+        >
           {paused ? "Send to June" : `Sending in ${remaining}…`}
         </button>
         <button
@@ -1271,7 +1394,9 @@ function KeyGate({ onSaved }: { onSaved: () => void }) {
   };
   return (
     <div className="keygate">
-      <p className="status">Add an OpenAI API key to enable speech. It's stored in your OS keychain.</p>
+      <p className="status">
+        Add an OpenAI API key to enable speech. It's stored in your OS keychain.
+      </p>
       <input
         type="password"
         placeholder="sk-…"
