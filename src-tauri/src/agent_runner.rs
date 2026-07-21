@@ -1440,6 +1440,32 @@ pub fn read_runs(app: AppHandle) -> Vec<serde_json::Value> {
     out
 }
 
+/// Purge all recorded activity (7.11): the run ledger and the audit log, both
+/// generations. These hold verbatim prompts/params (redacted only under on-device
+/// privacy modes) indefinitely, and this is the user's explicit "forget what I've
+/// done" - invoked from the "Clear recorded activity" button by the privacy picker.
+/// Emits `runs://updated` so an open Runs tab empties at once. A missing file is not
+/// an error (nothing to clear); a real delete failure is reported so the user knows
+/// data may remain.
+#[tauri::command]
+pub fn clear_recorded_data(app: AppHandle) -> Result<(), String> {
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let mut errors = Vec::new();
+    for name in ["june-runs.jsonl", "june-runs.jsonl.1", "audit.jsonl", "audit.jsonl.1"] {
+        match std::fs::remove_file(dir.join(name)) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => errors.push(format!("{name}: {e}")),
+        }
+    }
+    let _ = app.emit("runs://updated", ());
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("Could not clear some files: {}", errors.join("; ")))
+    }
+}
+
 /// Read only the tail of a JSONL ledger, not the whole (up to 2MB) file (7.6):
 /// seek to the last WINDOW bytes, drop the (likely truncated) first line when the
 /// window didn't reach the start, and keep the last `keep` lines - returned

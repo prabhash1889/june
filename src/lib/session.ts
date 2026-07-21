@@ -189,6 +189,14 @@ export async function readRuns(): Promise<RunRecord[]> {
   }
 }
 
+/** Purge all recorded activity (7.11): the run ledger and the audit log. The
+ *  user's explicit "forget what I've done"; the backend emits `runs://updated` so
+ *  an open Runs tab empties at once. Rejects with a message if a file couldn't be
+ *  deleted (e.g. locked), so the UI can say data may remain. */
+export function clearRecordedData(): Promise<void> {
+  return invoke("clear_recorded_data");
+}
+
 /** Fire a schedule on demand (2.4 "Run now"): a one-off unattended run so a user
  *  can test a 9am briefing without waiting for 9am or editing its time. Rejects
  *  if the schedule is gone or June is mid-turn. */

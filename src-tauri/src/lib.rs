@@ -129,6 +129,7 @@ pub fn run() {
             agent_runner::read_mission,
             agent_runner::write_mission,
             agent_runner::read_runs,
+            agent_runner::clear_recorded_data,
             missions::start_mission,
             missions::stop_mission,
             missions::set_mission_paused,

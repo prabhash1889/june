@@ -1217,6 +1217,20 @@ button {
   gap: var(--sp-2);
 }
 
+/* 7.11: retention controls sit under the privacy picker, spaced off the modes. */
+.clear-activity {
+  margin-top: var(--sp-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  align-items: flex-start;
+}
+
+.clear-activity-confirm {
+  display: flex;
+  gap: var(--sp-2);
+}
+
 .wake-toggle {
   display: flex;
   gap: var(--sp-2);

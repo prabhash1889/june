@@ -935,11 +935,23 @@ round-trip + legacy migration (1.9).
     import.meta.url) + mcp-servers.test (scrubbedEnv blanks/lets-delta-win, user stdio
     server scrubbed). 298 vitest + typecheck + eslint green.
 
-7.10 **Bind `inject_text` to a live PTT session** | P2 | S
+7.10 **Bind `inject_text` to a live PTT session** | P2 | S - DONE
     The command types into whatever has OS focus and is invokable by any webview script -
     the "only after PTT" safety is convention, not enforced. Atomic flag set on
     `ptt://down`, cleared after `ptt://up`; refuse otherwise. `src-tauri/src/dictation.rs`,
     `lib.rs`.
+    A module-level `AtomicU64` injection deadline (dictation.rs) is the enforcement.
+    `note_ptt_edge(down)` - called from the one global-shortcut handler in lib.rs, but
+    ONLY for the PTT chord (quick capture never injects) - opens a generous while-held
+    window on `ptt://down` and shortens it to a 30s grace on `ptt://up`. The grace is
+    load-bearing: the real dictation inject happens AFTER key release (STT's 20s-timeout
+    transcription + transcript cleaning run post-release), so an immediate clear would
+    refuse every legitimate injection. `inject_text` now checks `now <= deadline` and
+    returns "Dictation only works during a push-to-talk press." otherwise, so a rogue
+    webview script can no longer type into the focused app at an arbitrary time (empty
+    clips stay a no-op success, before the gate). Pinned: dictation.rs test
+    (un-pressed refused / held permitted / grace permitted / past-grace refused).
+    1 cargo test green.
 
 7.11 **Retention controls for recorded activity** | P2 | S
     audit.jsonl and june-runs.jsonl hold verbatim params/prompts indefinitely with no view

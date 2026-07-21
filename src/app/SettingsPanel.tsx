@@ -22,7 +22,7 @@ import {
 import { PRIVACY_MODES, type PrivacyMode } from "../lib/privacy.ts";
 import { lastRunFor, relativeTime, type RunRecord } from "../lib/runs.ts";
 import { describeNext, type FileTrigger, type Schedule, type WatchLoop } from "../lib/schedules.ts";
-import { readRuns, runScheduleNow } from "../lib/session.ts";
+import { clearRecordedData, readRuns, runScheduleNow } from "../lib/session.ts";
 import {
   defaultVoiceFor,
   keyedProviders,
@@ -724,7 +724,52 @@ function PrivacySection({ settings, update }: { settings: JuneSettings; update: 
           ))}
         </div>
       )}
+      <ClearActivity />
     </section>
+  );
+}
+
+// 7.11: the run ledger (Runs tab) and audit log keep verbatim prompts/params
+// (redacted only under on-device modes) indefinitely, and until now there was no
+// way to purge them. A two-click confirm (so a stray click can't wipe history)
+// clears both, stating what's retained.
+function ClearActivity() {
+  const [armed, setArmed] = useState(false);
+  const [status, setStatus] = useState<string | null>(null);
+  const clear = () => {
+    setArmed(false);
+    clearRecordedData()
+      .then(() => setStatus("Cleared."))
+      .catch((e) => setStatus(e instanceof Error ? e.message : String(e)));
+  };
+  return (
+    <div className="clear-activity">
+      <p className="privacy-desc">
+        June records your runs and an audit trail on this device (the Runs tab reads them). They're kept until you clear
+        them here; on-device privacy modes redact prompt and reply content.
+      </p>
+      {armed ? (
+        <div className="clear-activity-confirm">
+          <button type="button" className="danger" onClick={clear}>
+            Delete all recorded activity
+          </button>
+          <button type="button" onClick={() => setArmed(false)}>
+            Cancel
+          </button>
+        </div>
+      ) : (
+        <button
+          type="button"
+          onClick={() => {
+            setStatus(null);
+            setArmed(true);
+          }}
+        >
+          Clear recorded activity
+        </button>
+      )}
+      {status && <p className="settings-hint">{status}</p>}
+    </div>
   );
 }
 
