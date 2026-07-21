@@ -40,6 +40,11 @@ function automationServerPath(): string {
   return fileURLToPath(new URL("../mcp/automation/server.ts", import.meta.url));
 }
 
+/** Absolute path to improvement-6 4.3's system observe pack. */
+function systemServerPath(): string {
+  return fileURLToPath(new URL("../mcp/system/server.ts", import.meta.url));
+}
+
 /** The files capability (PLAN.md Phase 9), scoped to a single allowed root. Only
  *  attached when the user has enabled it and pointed it at a folder - proof that
  *  a capability is a server, not new core code. Local + offline-safe. */
@@ -106,6 +111,23 @@ export function automationMcpServer(settingsFile: string): Record<string, McpSer
       // tool-search can actually call add_schedule / add_watch.
       alwaysLoad: true,
       env: { JUNE_SETTINGS_FILE: settingsFile }, // see filesMcpServer: only the delta var (ENAMETOOLONG)
+    },
+  };
+}
+
+/** The system observe pack (improvement-6 4.3). Always attached: it is a purely
+ *  local, read-only capability (process list, machine stats), so like the files
+ *  reads it stays on in every privacy mode and needs no configuration - no env, no
+ *  allowed root. Its tools are classified `observe` in policy.ts, so they auto-run
+ *  and are usable on an unattended watch loop. */
+export function systemMcpServer(): Record<string, McpServerConfig> {
+  return {
+    system: {
+      command: "npx",
+      args: ["tsx", systemServerPath()],
+      // Keep the tools in the prompt (like the other built-ins) so a brain with no
+      // tool-search can actually call list_processes / process_running.
+      alwaysLoad: true,
     },
   };
 }
@@ -181,6 +203,7 @@ export interface JuneAgent {
 export function createJuneAgent(opts: JuneAgentOptions = {}): JuneAgent {
   const mcpServers = {
     ...defaultMcpServers(opts.workspaceId),
+    ...systemMcpServer(),
     ...(opts.filesRoot ? filesMcpServer(opts.filesRoot) : {}),
     ...(opts.memoryFile ? memoryMcpServer(opts.memoryFile) : {}),
     ...(opts.lessonsFile ? lessonsMcpServer(opts.lessonsFile) : {}),

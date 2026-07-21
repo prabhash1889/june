@@ -28,6 +28,7 @@ const BUILTIN_SERVERS: ReadonlySet<string> = new Set([
   "memory",
   "lessons",
   "automation",
+  "system",
 ]);
 
 /** The memory/lessons write tools - blocked on unattended runs (B1.3) so an
@@ -80,6 +81,13 @@ const ACTION_CLASS: Record<string, SafetyClass> = {
   // prompt can't silently disable June's own safety watches.
   set_automation_enabled: "reversible",
   remove_automation: "reversible",
+  // system observe pack (improvement-6 4.3): reading the process list, checking a
+  // process, and machine stats are all LOCAL read-only observes - they touch no
+  // network and change nothing, so they auto-run and are safe on an unattended
+  // watch loop ("watch until the build process exits").
+  list_processes: "observe",
+  process_running: "observe",
+  system_stats: "observe",
 };
 
 /**
@@ -275,6 +283,12 @@ export function summarize(action: string, input: Record<string, unknown>): strin
       return `Remove automation ${s("idOrLabel") || "?"}`;
     case "list_automations":
       return "List automations";
+    case "list_processes":
+      return "List running processes";
+    case "process_running":
+      return `Check if process ${s("name") || "?"} is running`;
+    case "system_stats":
+      return "Read system stats";
     default: {
       // An unknown gated tool (a generic server's action) still fails closed to
       // destructive, so the user WILL be asked to approve it - and must see what

@@ -428,12 +428,28 @@ round-trip + legacy migration (1.9).
     policy.test (reversible class + unattended-blocked + summarize). Full suite: 256
     vitest green, typecheck + eslint clean.
 
-4.3 **`mcp/system` observe pack** | P1 | M
+4.3 **`mcp/system` observe pack** | P1 | M - DONE
     Unattended watch loops may only call local observe tools, which today means the files
     root or the bridge roster - "watch until the build is green" barely has eyes. New
     built-in server: `list_processes`, `process_running(name)`, `system_stats`. Register
     in `BUILTIN_SERVERS`, `RESERVED_IDS`, `ACTION_CLASS` as observe.
     New `mcp/system/`, `agent/policy.ts`, `src/lib/mcp-servers.ts`, `agent/core.ts`.
+    New built-in `mcp/system/server.ts` with three LOCAL read-only tools; all three
+    classified `observe` in `ACTION_CLASS`, so they auto-run AND pass
+    `unattendedBlockReason` (local, non-networked, non-memory-write) - a watch loop can
+    finally ask "is the build process still alive". `system` is a built-in id in both
+    `BUILTIN_SERVERS` (policy) and `RESERVED_IDS` (mcp-servers), so a user-added server
+    can't shadow it with an ungated same-named tool. Wired always-on in `core.ts`
+    (`systemMcpServer()`, no env/root - it needs no config), so it stays available in
+    every privacy mode like the files reads. All the CSV/matching/rounding logic lives
+    in a pure `parse.ts` (`parseTasklistCsv` honors the comma-in-quoted-memory column,
+    `countProcesses` matches ".exe"-insensitive + case-insensitive, `summarizeStats`
+    rounds GiB/percent and omits the always-0 Windows load average). Process tools
+    shell `tasklist /FO CSV /NH` (Windows-first; other OSes get a clear error, not a
+    lying empty list); `system_stats` reads node's `os` module. Pinned: parse.test
+    (CSV quoting, N/A memory, non-numeric-PID skip, match count, stats rounding both
+    platforms). Full suite green, typecheck (+ new `mcp/system/tsconfig.json` in the
+    typecheck script) + eslint clean.
 
 4.4 **Foreground-context awareness (metadata, not pixels)** | P1 | S/M
     90% of "what am I looking at" is answerable from window metadata; no display capture

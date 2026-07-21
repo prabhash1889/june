@@ -92,6 +92,7 @@ describe("coerceMcpServers", () => {
         { id: "lessons", transport: { command: "x" } },
         { id: "files", transport: { command: "x" } },
         { id: "saple-bridge-control", transport: { command: "x" } },
+        { id: "system", transport: { command: "x" } },
         { id: "ok", transport: { command: "x" } },
       ]).map((e) => e.id),
     ).toEqual(["ok"]);
