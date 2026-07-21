@@ -6,6 +6,7 @@ import { humanizeAction } from "../lib/actions.ts";
 import { useApprovalKeys } from "../lib/approval-hooks.ts";
 import { ApprovalMeta } from "../lib/approval-ui.tsx";
 import { usePttLabel } from "../lib/hotkey.ts";
+import { Markdown } from "../lib/markdown.tsx";
 import { formatModelProgress, MODEL_PROGRESS_EVENT, type ModelProgress } from "../lib/model-progress.ts";
 import { PRIVACY_MODES, type PrivacyMode } from "../lib/privacy.ts";
 import { followBottom } from "../lib/scroll.ts";
@@ -547,7 +548,9 @@ function JuneBubble({ entry }: { entry: Extract<Entry, { kind: "june" }> }) {
   const time = new Date(entry.at).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
   return (
     <div className="turn june">
-      {entry.text}
+      <div className="md">
+        <Markdown text={entry.text} />
+      </div>
       <span className="turn-meta">
         <span className="turn-time">{time}</span>
         <button className="turn-copy" onClick={copy} title="Copy reply" aria-label="Copy reply">

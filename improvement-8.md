@@ -195,6 +195,16 @@ re-discovered.
     renderer (bold, inline/fenced code with a copy button, links via the validated
     `open_path` seam, lists); no raw-HTML path, no heavyweight dep.
     `src/app/AppWindow.tsx`, `styles.css`.
+    **DONE.** New `src/lib/markdown.tsx` `<Markdown>` renders the felt subset -
+    fenced code (lang line stripped, hover copy button), inline code, **bold**, `-/*/1.`
+    lists, and links - into real React elements (no raw-HTML path, so an injected
+    `<script>` is inert text) with zero deps. Links are click-to-copy rather than
+    open-in-browser: the webview has no opener seam and a Tauri opener plugin is a whole
+    dependency for one affordance; only http(s)/path targets render clickable at all,
+    gated by `src/lib/safe-link.ts` `isSafeLinkTarget` (mirrors mcp/system's
+    `validateOpenTarget`), so a `javascript:` link stays inert text (marked with a
+    ponytail note). Wired into `JuneBubble`; styles under `.md*` in styles.css; pinned
+    with a render test (code/bold/list/link/no-raw-HTML) + a `isSafeLinkTarget` unit test.
 
 3.4 **Light theme + accessibility pass** (c/o 7-7.3 / 7-7.4) | P2 | S/M
     `tauri.conf.json` hardpins dark and the palette is hardcoded; there are no visible focus
