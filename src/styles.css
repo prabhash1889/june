@@ -695,10 +695,45 @@ button {
 
 .turn.june {
   align-self: flex-start;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
   background: var(--bg1);
   border: 1px solid var(--line);
   border-bottom-left-radius: 4px;
   white-space: pre-wrap;
+}
+
+/* Reply meta (6.5): a small timestamp always shown, a copy button revealed on
+   hover/focus - replies carry paths and commands, so give a one-click copy. */
+.turn-meta {
+  display: flex;
+  align-self: flex-end;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-xs);
+  color: var(--dim);
+}
+
+.turn-time {
+  font-variant-numeric: tabular-nums;
+}
+
+.turn-copy {
+  padding: 1px 8px;
+  font-size: var(--fs-xs);
+  color: var(--dim);
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.turn.june:hover .turn-copy,
+.turn.june:focus-within .turn-copy {
+  opacity: 1;
+}
+
+.turn-copy:hover {
+  color: var(--ink);
 }
 
 /* Tool activity: a compact inline chip between bubbles, not a bubble itself. */

@@ -27,7 +27,7 @@ import { SettingsPanel } from "./SettingsPanel.tsx";
 
 type Entry =
   | { kind: "you"; key: string; turn: number; text: string }
-  | { kind: "june"; key: string; turn: number; text: string }
+  | { kind: "june"; key: string; turn: number; text: string; at: number }
   | { kind: "tool"; key: string; turn: number; action: string; result?: string; error?: boolean };
 
 /** Compact, human-readable outcome for a tool result - counts when the bridge
@@ -95,7 +95,7 @@ function useConversation(): { entries: Entry[]; working: boolean } {
               }
               if (x.turn === p.turn && x.kind === "tool") break; // a tool split the reply; new bubble
             }
-            return [...xs, { kind: "june", key: key(), turn: p.turn, text: p.delta }];
+            return [...xs, { kind: "june", key: key(), turn: p.turn, text: p.delta, at: Date.now() }];
           });
           break;
         }
@@ -134,7 +134,7 @@ function useConversation(): { entries: Entry[]; working: boolean } {
               }
             }
             if (!p.text.trim()) return xs;
-            return [...xs, { kind: "june", key: key(), turn: p.turn, text: p.text }];
+            return [...xs, { kind: "june", key: key(), turn: p.turn, text: p.text, at: Date.now() }];
           });
           break;
         }
@@ -426,7 +426,7 @@ function Composer({ onError }: { onError: (m: string) => void }) {
 
 function ConversationEntry({ entry }: { entry: Entry }) {
   if (entry.kind === "you") return <div className="turn you">{entry.text}</div>;
-  if (entry.kind === "june") return <div className="turn june">{entry.text}</div>;
+  if (entry.kind === "june") return <JuneBubble entry={entry} />;
   // Humanized name + a pulse while the call has no result yet (6.7): the chip
   // reads "read file", not raw snake_case, and running state is visible.
   const running = entry.result === undefined;
@@ -434,6 +434,33 @@ function ConversationEntry({ entry }: { entry: Entry }) {
     <div className={`turn tool ${entry.error ? "tool-error" : ""} ${running ? "tool-running" : ""}`}>
       <span className="tool-name">{humanizeAction(entry.action)}</span>
       {entry.result && <span className="tool-result"> - {entry.result}</span>}
+    </div>
+  );
+}
+
+/** A June reply bubble with a hover-revealed copy button + timestamp (6.5). Replies
+ *  carry paths and commands and the only route out was manual selection. */
+function JuneBubble({ entry }: { entry: Extract<Entry, { kind: "june" }> }) {
+  const [copied, setCopied] = useState(false);
+  const copy = () => {
+    void navigator.clipboard
+      ?.writeText(entry.text)
+      .then(() => {
+        setCopied(true);
+        window.setTimeout(() => setCopied(false), 1200);
+      })
+      .catch(() => {});
+  };
+  const time = new Date(entry.at).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+  return (
+    <div className="turn june">
+      {entry.text}
+      <span className="turn-meta">
+        <span className="turn-time">{time}</span>
+        <button className="turn-copy" onClick={copy} title="Copy reply" aria-label="Copy reply">
+          {copied ? "Copied" : "Copy"}
+        </button>
+      </span>
     </div>
   );
 }
