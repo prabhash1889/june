@@ -41,3 +41,14 @@ tokio = { version = "1", features = ["macros", "sync"] }
 tauri-plugin-single-instance = "2"
 # Restore the window's last size/position/maximized state on launch.
 tauri-plugin-window-state = "2"
+
+# Release profile (7.1): cargo's defaults leave the exe fat (no LTO, 16 codegen
+# units, no strip). Fold the crate graph with LTO, one codegen unit for max
+# inlining, strip symbols, abort on panic (no unwind tables), optimize for size.
+# Typically cuts the shipped exe 30-50%.
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
+opt-level = "s"

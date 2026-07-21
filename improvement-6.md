@@ -771,10 +771,15 @@ round-trip + legacy migration (1.9).
 
 ## Phase 7 - Performance and hardening
 
-7.1 **Add `[profile.release]` to Cargo.toml** | P1 | S
+7.1 **Add `[profile.release]` to Cargo.toml** | P1 | S - DONE
     There is none - cargo defaults (no LTO, 16 codegen units, no strip). `lto = true`,
     `codegen-units = 1`, `strip = true`, `panic = "abort"`, `opt-level = "s"`; typically
     cuts the exe 30-50%. `src-tauri/Cargo.toml`.
+    Added `[profile.release]` with exactly those five knobs. Confirmed a clean
+    `cargo build --release` still links (2m21s; LTO + one codegen unit + panic=abort
+    are all fine for the tauri graph). `panic = "abort"` only affects release builds -
+    cargo test runs under the dev/test profile (unwinding), so the 43 cargo tests are
+    untouched.
 
 7.2 **Gate wake-word inference behind VAD** | P1 | M
     The 3-model ONNX chain runs on every 80ms frame 24/7 even in silence - the dominant
