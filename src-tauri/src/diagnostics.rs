@@ -117,6 +117,30 @@ pub struct ProbeResult {
     ms: u64,
 }
 
+/// The keychain service name holding this provider's API key, or "" for a local
+/// provider (ollama / lmstudio) that needs none. Pure, so the mapping is tested.
+fn key_service_for(provider: &str) -> &'static str {
+    match provider {
+        "claude" => "june_provider_anthropic_api_key",
+        "openai" => "june_provider_openai_api_key",
+        "gemini" => "june_provider_google_api_key",
+        "custom" => "june_provider_custom_api_key",
+        _ => "", // ollama / lmstudio: local, no key
+    }
+}
+
+/// Turn a keychain read into the key to probe with, or a probe-failure reason
+/// (2.8). `Ok(None)` (no key set) is a legitimate empty key - Claude falls back to
+/// local sign-in; `Err` is a broken/locked keychain and must NOT read as "no key".
+/// Pure, so the "broken keychain is not an empty key" rule is unit-tested.
+fn resolve_key(read: Result<Option<String>, String>) -> Result<String, String> {
+    match read {
+        Ok(Some(k)) => Ok(k),
+        Ok(None) => Ok(String::new()),
+        Err(e) => Err(format!("Could not read the API key from the keychain: {e}")),
+    }
+}
+
 /// Verify the selected brain is reachable and authenticated, cheaply (a GET
 /// /models probe - no tokens spent). The key is read from the OS keychain HERE
 /// so it never crosses IPC; the webview only passes the non-secret provider id
@@ -128,17 +152,18 @@ pub async fn test_brain(provider: String, base_url: String) -> ProbeResult {
     let started = std::time::Instant::now();
     let elapsed = |t: std::time::Instant| t.elapsed().as_millis() as u64;
 
-    let key_service = match provider.as_str() {
-        "claude" => "june_provider_anthropic_api_key",
-        "openai" => "june_provider_openai_api_key",
-        "gemini" => "june_provider_google_api_key",
-        "custom" => "june_provider_custom_api_key",
-        _ => "", // ollama / lmstudio: local, no key
-    };
+    let key_service = key_service_for(&provider);
+    // Distinguish a broken/locked keychain from "no key set" (2.8): the old
+    // `.unwrap_or_default()` collapsed both to an empty string, so a keychain
+    // failure masqueraded as "no key" and Claude then reported success (falls back
+    // to local sign-in). A real read error now fails the probe with the reason.
     let key = if key_service.is_empty() {
         String::new()
     } else {
-        crate::keychain::get_api_key_inner(key_service.to_string()).unwrap_or_default()
+        match resolve_key(crate::keychain::get_api_key_opt(key_service.to_string())) {
+            Ok(k) => k,
+            Err(detail) => return ProbeResult { ok: false, detail, ms: elapsed(started) },
+        }
     };
 
     let client = match reqwest::Client::builder().timeout(PROBE_TIMEOUT).build() {
@@ -193,5 +218,41 @@ pub async fn test_brain(provider: String, base_url: String) -> ProbeResult {
             };
             ProbeResult { ok: false, detail, ms: elapsed(started) }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn key_service_maps_each_provider() {
+        assert_eq!(key_service_for("claude"), "june_provider_anthropic_api_key");
+        assert_eq!(key_service_for("openai"), "june_provider_openai_api_key");
+        assert_eq!(key_service_for("gemini"), "june_provider_google_api_key");
+        assert_eq!(key_service_for("custom"), "june_provider_custom_api_key");
+        // Local providers (ollama/lmstudio) and anything unknown need no key.
+        assert_eq!(key_service_for("ollama"), "");
+        assert_eq!(key_service_for("whatever"), "");
+    }
+
+    #[test]
+    fn resolve_key_passes_through_a_stored_key() {
+        assert_eq!(resolve_key(Ok(Some("sk-123".into()))), Ok("sk-123".into()));
+    }
+
+    #[test]
+    fn resolve_key_treats_no_entry_as_an_empty_key() {
+        // `Ok(None)` = no key set: a legitimate empty key, not a failure.
+        assert_eq!(resolve_key(Ok(None)), Ok(String::new()));
+    }
+
+    #[test]
+    fn resolve_key_reports_a_broken_keychain_instead_of_masking_it() {
+        // The whole point of 2.8: a keychain read error must NOT collapse to an
+        // empty key (which would report success), but surface as a probe failure.
+        let out = resolve_key(Err("keychain locked".into()));
+        assert!(out.is_err());
+        assert!(out.unwrap_err().contains("keychain locked"));
     }
 }

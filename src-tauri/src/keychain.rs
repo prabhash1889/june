@@ -46,6 +46,19 @@ pub(crate) fn get_api_key_inner(service: String) -> Result<String, String> {
     entry.get_password().map_err(|e| e.to_string())
 }
 
+/// Read a key, distinguishing "no key set" (`Ok(None)`) from an actual keychain
+/// failure (`Err`) - unlike `get_api_key_inner`, whose callers `.unwrap_or_default()`
+/// a broken/locked keychain into an empty string indistinguishable from no key
+/// (2.8). `Ok(Some(key))` when a key is stored.
+pub(crate) fn get_api_key_opt(service: String) -> Result<Option<String>, String> {
+    let entry = Entry::new(&service, KEYCHAIN_USER).map_err(|e| e.to_string())?;
+    match entry.get_password() {
+        Ok(k) => Ok(Some(k)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
 #[tauri::command]
 pub async fn has_api_key(service: String) -> Result<bool, String> {
     validate_service_name(&service)?;

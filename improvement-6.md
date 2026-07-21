@@ -169,10 +169,17 @@ round-trip + legacy migration (1.9).
     readout in Diagnostics shows each subsystem's live path (ok for local-first,
     bad + the load error for a fallback).
 
-2.8 **Distinguish keychain failure from "no key set"** | P2
+2.8 **Distinguish keychain failure from "no key set"** | P2 - DONE
     `test_brain` treats a broken/locked keychain as an empty key and reports success.
     Return `ok: false` with the keychain error; add the module's first tests.
     `src-tauri/src/diagnostics.rs`.
+    New `keychain::get_api_key_opt` returns `Ok(None)` for a genuinely-unset key vs
+    `Err` for a real read failure (the old `get_api_key_inner().unwrap_or_default()`
+    collapsed both to `""`). `test_brain` now fails the probe with the keychain error
+    instead of falling through to "no key - use local sign-in". Extracted two pure
+    helpers (`key_service_for`, `resolve_key`) and added diagnostics.rs's first tests,
+    pinning the "broken keychain is not an empty key" rule and the provider->service
+    mapping.
 
 2.9 **Test the untested trust paths** | P1-P2 | M
     (a) serve.ts protocol seam: turn framing, cancel, approval round-trip, malformed input
