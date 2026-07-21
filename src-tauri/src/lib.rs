@@ -123,6 +123,7 @@ pub fn run() {
             agent_runner::read_runs,
             missions::start_mission,
             missions::stop_mission,
+            scheduler::run_schedule_now,
             agent_runner::record_latency,
             agent_runner::latency_samples,
             show_app,

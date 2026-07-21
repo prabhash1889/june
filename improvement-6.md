@@ -111,13 +111,20 @@ round-trip + legacy migration (1.9).
     the verify note on failure, `isError = !ok`), keyed by the task's `active_turn`. A
     cleared mission now leaves durable history in the Runs tab.
 
-2.4 **Live Runs tab** (x2: missions + frontend) | P1 | S
+2.4 **Live Runs tab** (x2: missions + frontend) | P1 | S - DONE
     The trust surface is manual-refresh only, never shows the run's prompt, and has no
     unseen indicator. Emit `runs://updated` from `append_run`, listen in `RunsPanel`,
     render the prompt expandable, use relative times, badge the tab. Add a per-schedule
     "Run now" command so users can test a 9am briefing without editing the time.
     `src/app/RunsPanel.tsx`, `src/app/AppWindow.tsx`, `src-tauri/src/agent_runner.rs`,
     `src-tauri/src/scheduler.rs`.
+    `append_run` now emits `runs://updated`; `RunsPanel` auto-refreshes on it (silent,
+    no loading flash), shows relative times (absolute on hover), and an expandable
+    `<details>` prompt. `AppWindow` badges the Runs tab when a run lands off-tab. New
+    `scheduler::run_schedule_now(id)` command fires a saved schedule as a one-off
+    unattended run on a background thread (refuses while busy, leaves the daily
+    `fired` bookkeeping untouched); a "Run now" button per schedule card in
+    `SettingsPanel` drives it.
 
 2.5 **Spoken-friendly error messages** | P2
     Raw API JSON bodies are read aloud by TTS ("the model API returned 401: {...}").

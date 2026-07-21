@@ -20,7 +20,7 @@
 use std::collections::HashMap;
 
 use chrono::{Datelike, Local, NaiveDate, NaiveDateTime, NaiveTime};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, State};
 
 use crate::agent_runner::{run_unattended, AgentSession};
 
@@ -501,6 +501,30 @@ fn save_state(
     if let Err(e) = write {
         crate::logf::log(app, &format!("[scheduler] couldn't persist fired state: {e}"));
     }
+}
+
+/// Fire a schedule ON DEMAND (2.4 "Run now"), so a user can test a 9am briefing
+/// without waiting for 9am or editing the time. Looks the schedule up by id in
+/// settings.json and runs it as a one-off unattended run on a background thread
+/// (the run blocks the whole agent turn, so it must never run on the command
+/// thread). Does NOT touch the scheduler's `fired` bookkeeping - a manual test run
+/// leaves the real scheduled fire intact. Refuses while a turn is in flight so it
+/// can't preempt the user.
+#[tauri::command]
+pub fn run_schedule_now(app: AppHandle, session: State<'_, AgentSession>, id: String) -> Result<(), String> {
+    let settings = crate::settings::read_settings(&app);
+    let sc = read_schedules(&settings)
+        .into_iter()
+        .find(|s| s.id == id)
+        .ok_or("That schedule no longer exists.")?;
+    if session.is_busy() {
+        return Err("June is busy right now - try again in a moment.".to_string());
+    }
+    let session = session.inner().clone();
+    std::thread::spawn(move || {
+        let _ = fire(&app, &session, format!("schedule: {} (run now)", sc.label), sc.prompt, None);
+    });
+    Ok(())
 }
 
 /// Start the scheduler's background thread (Phase 18). Reads settings each tick, so

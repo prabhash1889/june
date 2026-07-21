@@ -189,6 +189,13 @@ export async function readRuns(): Promise<RunRecord[]> {
   }
 }
 
+/** Fire a schedule on demand (2.4 "Run now"): a one-off unattended run so a user
+ *  can test a 9am briefing without waiting for 9am or editing its time. Rejects
+ *  if the schedule is gone or June is mid-turn. */
+export function runScheduleNow(id: string): Promise<void> {
+  return invoke("run_schedule_now", { id });
+}
+
 /** The current mission, shared across windows. Seeds from the backend on mount,
  *  then tracks `mission://updated`, so the widget's chip and the app's board
  *  render the same live board. */

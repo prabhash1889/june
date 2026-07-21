@@ -20,6 +20,7 @@ import {
 } from "../lib/mcp-servers.ts";
 import { PRIVACY_MODES, type PrivacyMode } from "../lib/privacy.ts";
 import { type FileTrigger, type Schedule, type WatchLoop } from "../lib/schedules.ts";
+import { runScheduleNow } from "../lib/session.ts";
 import {
   defaultVoiceFor,
   keyedProviders,
@@ -1249,6 +1250,29 @@ function McpServerCard({
   );
 }
 
+/** Fire one schedule on demand (2.4): a one-off unattended run so the user can test
+ *  a 9am briefing without waiting for 9am. Reads the SAVED schedule from disk, so a
+ *  just-typed edit needs its debounced save to land first (hence the hint). Result
+ *  lands in the Runs tab. Disabled for a schedule with an empty prompt (nothing to
+ *  run). */
+function RunNowButton({ id, disabled }: { id: string; disabled: boolean }) {
+  const [note, setNote] = useState<string | null>(null);
+  const run = () => {
+    setNote(null);
+    void runScheduleNow(id)
+      .then(() => setNote("Started - watch the Runs tab."))
+      .catch((e) => setNote(msg(e)));
+  };
+  return (
+    <>
+      <button onClick={run} disabled={disabled} title="Run this saved schedule once now">
+        Run now
+      </button>
+      {note && <span className="settings-hint">{note}</span>}
+    </>
+  );
+}
+
 // --- Automation (Phase 18) ------------------------------------------------
 // Scheduled runs and file-watch triggers. Both fire UNATTENDED: any action that
 // needs approval is blocked automatically (18.2), never auto-approved, and the
@@ -1314,6 +1338,7 @@ function AutomationSection({ settings, update }: { settings: JuneSettings; updat
               <input type="checkbox" checked={s.enabled} onChange={(e) => patchSchedule(s.id, { enabled: e.target.checked })} />
               <span>Enabled</span>
             </label>
+            <RunNowButton id={s.id} disabled={!s.prompt.trim()} />
             <button onClick={() => setSchedules(schedules.filter((x) => x.id !== s.id))}>Remove</button>
           </div>
           <div className="stage-row">

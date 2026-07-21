@@ -1500,3 +1500,32 @@ kbd {
   font-size: var(--fs-s);
   color: var(--warm);
 }
+
+/* Expandable prompt on a run (2.4): collapsed by default so the list stays scannable. */
+.run-prompt {
+  font-size: var(--fs-s);
+}
+.run-prompt > summary {
+  cursor: pointer;
+  color: var(--dim);
+  font-size: var(--fs-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.run-prompt > p {
+  margin: var(--sp-1) 0 0;
+  color: var(--dim);
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+/* Unseen-runs dot on the Runs tab (2.4). */
+.tab-badge {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-left: 5px;
+  border-radius: 999px;
+  background: var(--blue);
+  vertical-align: middle;
+}

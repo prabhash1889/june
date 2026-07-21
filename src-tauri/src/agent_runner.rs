@@ -144,6 +144,10 @@ pub(crate) fn append_run(
     if let Err(e) = write {
         crate::logf::log(app, &format!("[runs] could not write {}: {e}", path.display()));
     }
+    // Wake the Runs tab (2.4): it was manual-refresh only, so an unattended run's
+    // result appeared only if the user happened to hit Refresh. Best-effort - a
+    // dropped event just means the next open/refresh catches up.
+    let _ = app.emit("runs://updated", ());
 }
 
 /// Drain the blocked-actions collected for an unattended `turn` (P1.3), so each

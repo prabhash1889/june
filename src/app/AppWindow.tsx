@@ -192,6 +192,21 @@ export function AppWindow() {
   // Transient failure note (improvement-5 P0.7): a failed invoke must not look
   // like a button that did nothing.
   const [note, setNote] = useState<string | null>(null);
+  // Unseen-runs badge (2.4): a run that lands while the user is on another tab
+  // should announce itself, so a scheduled result isn't missed. Set on
+  // `runs://updated` off the Runs tab; cleared when the Runs tab is opened.
+  const [runsUnseen, setRunsUnseen] = useState(false);
+  const viewRef = useRef(view);
+  viewRef.current = view;
+  useEffect(() => {
+    const unlisten = listen("runs://updated", () => {
+      if (viewRef.current !== "runs") setRunsUnseen(true);
+    });
+    return () => void unlisten.then((f) => f());
+  }, []);
+  useEffect(() => {
+    if (view === "runs") setRunsUnseen(false);
+  }, [view]);
 
   // Sticky-bottom, not forced (improvement-5 P0.8): a reader who scrolled up
   // stays put; a reader at the bottom follows the stream, instantly.
@@ -208,6 +223,7 @@ export function AppWindow() {
   const tab = (v: View, label: string) => (
     <button className={view === v ? "active" : ""} aria-current={view === v ? "page" : undefined} onClick={() => setView(v)}>
       {label}
+      {v === "runs" && runsUnseen && <span className="tab-badge" aria-label="new runs" />}
     </button>
   );
 
