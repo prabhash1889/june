@@ -35,6 +35,12 @@ const BUILTIN_SERVERS: ReadonlySet<string> = new Set([
  *  injection in a watched trigger can't persistently poison future prompts. */
 const MEMORY_WRITE_ACTIONS: ReadonlySet<string> = new Set(["remember", "record_lesson"]);
 
+/** Observe-class tools blocked on unattended runs anyway (4.7) because their
+ *  content is sensitive independent of the network: a clipboard read routinely
+ *  surfaces passwords/2FA codes, so an injected unattended trigger must never be
+ *  able to slurp it - even though reading is auto-run when the user is present. */
+const UNATTENDED_BLOCKED_OBSERVE: ReadonlySet<string> = new Set(["read_clipboard"]);
+
 /**
  * Per-action class. Explicitly named actions get exactly this class; anything
  * NOT listed here (and not covered by a server default below) is treated as
@@ -98,6 +104,13 @@ const ACTION_CLASS: Record<string, SafetyClass> = {
   // still blocked on an UNATTENDED run, keeping an injected trigger from silently
   // launching apps or opening exfiltration URLs.
   open_path: "reversible",
+  // Clipboard (improvement-6 4.7): reading is observe (local read-only) BUT is
+  // hard-blocked on unattended runs (see UNATTENDED_BLOCKED_OBSERVE) since a
+  // clipboard routinely holds passwords/2FA codes. Writing is reversible - the
+  // user can just copy something else - so it auto-runs when present and is
+  // blocked unattended like open_path (an injected trigger can't seed a paste).
+  read_clipboard: "observe",
+  write_clipboard: "reversible",
 };
 
 /**
@@ -170,6 +183,7 @@ export function unattendedBlockReason(
   call: { cls: SafetyClass; action: string; server?: string },
   networkedServers: ReadonlySet<string>,
 ): string | null {
+  if (UNATTENDED_BLOCKED_OBSERVE.has(call.action)) return "may expose secrets";
   if (call.cls !== "observe") return "needs approval";
   if (call.server && networkedServers.has(call.server)) return "reaches the network";
   if (MEMORY_WRITE_ACTIONS.has(call.action)) return "writes persistent memory";
@@ -303,6 +317,10 @@ export function summarize(action: string, input: Record<string, unknown>): strin
       return "Read active window context";
     case "open_path":
       return `Open ${s("target") || "?"}`;
+    case "read_clipboard":
+      return "Read the clipboard";
+    case "write_clipboard":
+      return `Copy to clipboard: ${showPayload(s("text")) || "?"}`;
     default: {
       // An unknown gated tool (a generic server's action) still fails closed to
       // destructive, so the user WILL be asked to approve it - and must see what

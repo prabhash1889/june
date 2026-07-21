@@ -161,6 +161,26 @@ describe("gate policy", () => {
     );
   });
 
+  it("clipboard: read is observe but hard-blocked unattended; write is reversible (4.7)", () => {
+    // Reading is auto-run when the user is present (local observe)...
+    expect(classify("read_clipboard", "system")).toBe("observe");
+    expect(isGated(classify("read_clipboard", "system"))).toBe(false);
+    // ...but an unattended (possibly injected) run must never slurp the clipboard,
+    // which routinely holds passwords/2FA codes - blocked despite being observe.
+    expect(unattendedBlockReason({ cls: "observe", action: "read_clipboard", server: "system" }, new Set())).toBe(
+      "may expose secrets",
+    );
+    // Writing is reversible - auto-runs when present, still blocked unattended so an
+    // injected trigger can't seed a malicious paste.
+    expect(classify("write_clipboard", "system")).toBe("reversible");
+    expect(isGated(classify("write_clipboard", "system"))).toBe(false);
+    expect(unattendedBlockReason({ cls: "reversible", action: "write_clipboard", server: "system" }, new Set())).toBe(
+      "needs approval",
+    );
+    expect(summarize("read_clipboard", {})).toBe("Read the clipboard");
+    expect(summarize("write_clipboard", { text: "hi\nthere" })).toBe("Copy to clipboard: hi\\nthere");
+  });
+
   it("shows the automation prompt on the approval card, control chars visible (1.2)", () => {
     // The prompt is what runs unattended on every fire, so it must be on the card
     // the user approves - an injected instruction can't hide behind a label.

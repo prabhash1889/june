@@ -145,6 +145,14 @@ export function validateOpenTarget(raw: string): OpenTarget {
   return { kind: "path", value: t };
 }
 
+/** Format a raw `Get-Clipboard -Raw` payload for a voice reply (4.7): strip the
+ *  trailing newline PowerShell appends and cap the length so a giant paste can't
+ *  flood the JSON-RPC pipe or a spoken reply. Pure so the cap is unit-tested. */
+export function formatClipboard(raw: string, max = 10000): string {
+  const t = raw.replace(/\s+$/, "");
+  return t.length > max ? `${t.slice(0, max)}…` : t;
+}
+
 /** Raw OS snapshot, so summarizeStats stays pure (the server passes node's `os`
  *  readings in; the test passes fixed numbers). */
 export interface StatsSnapshot {

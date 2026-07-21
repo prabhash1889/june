@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   countProcesses,
+  formatClipboard,
   isProcessRunning,
   parseActiveContext,
   parseCsvLine,
@@ -136,6 +137,20 @@ describe("validateOpenTarget", () => {
   it("rejects empty and control-character targets", () => {
     expect(() => validateOpenTarget("   ")).toThrow(/No path or URL/);
     expect(() => validateOpenTarget("https://x\ncalc")).toThrow(/control characters/);
+  });
+});
+
+describe("formatClipboard", () => {
+  it("strips the trailing newline PowerShell appends", () => {
+    expect(formatClipboard("hello world\r\n")).toBe("hello world");
+    expect(formatClipboard("multi\nline\n")).toBe("multi\nline");
+  });
+
+  it("caps a giant paste so it can't flood the pipe", () => {
+    const big = "x".repeat(20000);
+    const out = formatClipboard(big, 10000);
+    expect(out).toHaveLength(10001); // 10000 chars + the ellipsis
+    expect(out.endsWith("…")).toBe(true);
   });
 });
 

@@ -22,6 +22,7 @@ import { z } from "zod";
 
 import {
   countProcesses,
+  formatClipboard,
   parseActiveContext,
   parseTasklistCsv,
   summarizeStats,
@@ -81,15 +82,25 @@ try { $proc = (Get-Process -Id $fgPid -ErrorAction Stop).ProcessName } catch {}
 `;
 
 /** Run a PowerShell script via -EncodedCommand (UTF-16LE base64) so the script's
- *  quotes/newlines never fight the shell. */
-async function runPwsh(script: string): Promise<string> {
+ *  quotes/newlines never fight the shell. Extra `env` is merged over the process
+ *  env - used to hand user text (e.g. clipboard content) to the script WITHOUT
+ *  interpolating it into the script body, so the text can't inject PowerShell. */
+async function runPwsh(script: string, env?: Record<string, string>): Promise<string> {
   const encoded = Buffer.from(script, "utf16le").toString("base64");
   const { stdout } = await execAsync(
     `powershell -NoProfile -NonInteractive -EncodedCommand ${encoded}`,
-    { maxBuffer: 1024 * 1024 },
+    { maxBuffer: 1024 * 1024, env: env ? { ...process.env, ...env } : process.env },
   );
   return stdout;
 }
+
+/** Read the clipboard as text. `-Raw` returns the whole clipboard as one string
+ *  (not line-split); a non-text clipboard (image/files) yields empty. */
+const READ_CLIPBOARD_PS = `$ProgressPreference='SilentlyContinue'; Get-Clipboard -Raw`;
+
+/** Write the clipboard from $env:JUNE_CLIP_VALUE - the text rides in via the
+ *  environment (see runPwsh) so it never lands in the script body. */
+const WRITE_CLIPBOARD_PS = `$ProgressPreference='SilentlyContinue'; Set-Clipboard -Value $env:JUNE_CLIP_VALUE`;
 
 const server = new McpServer({ name: "system", version: "0.1.0" });
 
@@ -210,6 +221,50 @@ server.registerTool(
       child.on("error", () => {}); // never let a spawn error crash the server
       child.unref();
       return ok(`Opening ${value}.`);
+    } catch (e) {
+      return fail(msg(e));
+    }
+  },
+);
+
+server.registerTool(
+  "read_clipboard",
+  {
+    title: "Read the clipboard",
+    description:
+      "Read the current text on the clipboard. Read-only. Use to answer 'what's on my clipboard' or to act on something the user just copied. Text only - an image or copied files read as empty.",
+    inputSchema: {},
+  },
+  async () => {
+    try {
+      if (process.platform !== "win32") {
+        return fail("Reading the clipboard is only supported on Windows.");
+      }
+      const text = formatClipboard(await runPwsh(READ_CLIPBOARD_PS));
+      return ok(text || "(the clipboard is empty or holds non-text content)");
+    } catch (e) {
+      return fail(msg(e));
+    }
+  },
+);
+
+server.registerTool(
+  "write_clipboard",
+  {
+    title: "Write the clipboard",
+    description:
+      "Replace the clipboard contents with the given text, so the user can paste it. Use for 'copy that to my clipboard'.",
+    inputSchema: {
+      text: z.string().min(1).describe("The text to put on the clipboard."),
+    },
+  },
+  async ({ text }) => {
+    try {
+      if (process.platform !== "win32") {
+        return fail("Writing the clipboard is only supported on Windows.");
+      }
+      await runPwsh(WRITE_CLIPBOARD_PS, { JUNE_CLIP_VALUE: text });
+      return ok("Copied to your clipboard.");
     } catch (e) {
       return fail(msg(e));
     }
