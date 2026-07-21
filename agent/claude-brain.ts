@@ -163,6 +163,11 @@ export class ClaudeBrain implements Brain {
         // step loop the same way. On hitting the cap the SDK ends the turn with a
         // `result` of subtype `error_max_turns`, mapped to a short spoken message.
         maxTurns: MAX_TURNS,
+        // Stream text deltas as they're generated (3.6) so June can start speaking
+        // the first sentence well before the whole block finishes - the default
+        // (whole finished blocks only) inflates time-to-first-audio. The full
+        // `assistant` block still arrives and is used as a dedupe fallback in run().
+        includePartialMessages: true,
       },
     });
   }
@@ -185,6 +190,11 @@ export class ClaudeBrain implements Brain {
     let finalText = "";
     let isError = false;
     let usage: TokenUsage | undefined;
+    // 3.6: true once the current assistant message's text arrived as streamed
+    // deltas, so the full `assistant` block that follows is skipped (not spoken
+    // twice). Reset per assistant message so a message whose deltas didn't stream
+    // still falls back to its whole block.
+    let streamedText = false;
     // Correlate a tool_result back to the tool_use it answers: results arrive on a
     // later synthetic user turn carrying only `tool_use_id`, so without this map
     // every result reported as an empty action and batch counts (spawn_agents)
@@ -204,15 +214,28 @@ export class ClaudeBrain implements Brain {
           break;
         }
         const msg = next.value;
-        if (msg.type === "assistant") {
+        if (msg.type === "stream_event") {
+          // Streamed text delta (3.6): emit it immediately so the first sentence
+          // reaches TTS as soon as it forms, and mark the block streamed so the
+          // full-block fallback below doesn't re-emit the same text.
+          const ev = msg.event;
+          if (ev.type === "content_block_delta" && ev.delta.type === "text_delta" && ev.delta.text) {
+            streamedText = true;
+            hooks.onText?.(ev.delta.text);
+          }
+        } else if (msg.type === "assistant") {
           for (const block of msg.message.content as ContentBlock[]) {
-            if (block.type === "text" && block.text) hooks.onText?.(block.text);
-            else if (block.type === "tool_use") {
+            // Only speak the whole text block when deltas did NOT stream it (dedupe
+            // fallback); otherwise the deltas already delivered every character.
+            if (block.type === "text" && block.text) {
+              if (!streamedText) hooks.onText?.(block.text);
+            } else if (block.type === "tool_use") {
               const action = actionOf(block.name ?? "");
               if (block.id) actionById.set(block.id, action);
               hooks.onToolUse?.({ tool: block.name ?? "", action, input: block.input ?? {} });
             }
           }
+          streamedText = false; // next assistant message decides afresh
         } else if (msg.type === "user" && hooks.onToolResult) {
           // Tool results ride back on a synthetic user turn.
           const content = msg.message.content;

@@ -273,10 +273,19 @@ round-trip + legacy migration (1.9).
     (`synthesizeRaw`), so the memo can't grow unbounded. `tts.test.ts` pins
     cache-hit-once, non-canned-always-synthesizes, and voice-change-re-synthesizes.
 
-3.6 **Claude streaming: real deltas, not whole blocks** | P2 | M
+3.6 **Claude streaming: real deltas, not whole blocks** | P2 | M - DONE
     `onText` fires once per finished block, inflating time-to-first-audio against the
     800ms target. Set `includePartialMessages: true` and emit `stream_event` deltas,
     keeping the block path as dedupe fallback. `agent/claude-brain.ts`.
+    `includePartialMessages: true` in the query options; the run loop now handles
+    `stream_event` `content_block_delta` (`text_delta`) and calls `onText` with each
+    delta the moment it arrives, so the SentenceBuffer can flush the first sentence
+    to TTS long before the block completes. A per-message `streamedText` flag skips
+    the subsequent full `assistant` text block when its deltas already streamed (no
+    double-speak), and resets per assistant message so a block that DIDN'T stream
+    still falls back to speaking the whole text. `claude-brain.test.ts` mocks the SDK
+    `query` to pin deltas-only-not-doubled, whole-block-fallback, and the per-message
+    reset. The 800ms time-to-first-audio win itself wants a device run.
 
 3.7 **Retry transient completion errors** | P2 | S - DONE
     One 429/network blip kills the spoken turn. Retry 429/5xx once or twice in
