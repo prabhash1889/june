@@ -14,11 +14,14 @@ import { runAgent } from "../lib/stt.ts";
 // shared `mission://updated` broadcast). This component is a surface: it plans
 // via one interactive turn and renders Rust-owned state.
 
-/** A decomposed-but-unconfirmed plan: tasks as editable lines (5.3). */
+/** A decomposed-but-unconfirmed plan: tasks as editable lines (5.3). `serverIds`
+ *  is every enabled capability server, so the confirm view can offer the toolset
+ *  as editable checkboxes (5.5) rather than a fixed guess. */
 interface Plan {
   outcome: string;
   tasks: string;
   toolsetIds: string[];
+  serverIds: string[];
 }
 
 export function MissionBoard() {
@@ -47,7 +50,7 @@ export function MissionBoard() {
       if (reply.isError) throw new Error(reply.text || "Planning failed. Try again.");
       const tasks = parseTaskList(reply.text);
       if (tasks.length === 0) throw new Error("I couldn't break that outcome into tasks. Try rephrasing it.");
-      setPlan({ outcome: o, tasks: tasks.join("\n"), toolsetIds: parseToolsets(reply.text, serverIds) });
+      setPlan({ outcome: o, tasks: tasks.join("\n"), toolsetIds: parseToolsets(reply.text, serverIds), serverIds });
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -135,8 +138,31 @@ export function MissionBoard() {
             rows={Math.min(10, Math.max(3, plan.tasks.split("\n").length + 1))}
             onChange={(e) => setPlan({ ...plan, tasks: e.target.value })}
           />
-          {plan.toolsetIds.length > 0 && (
-            <p className="settings-hint">Tools for this mission: {plan.toolsetIds.join(", ")}</p>
+          {plan.serverIds.length > 0 && (
+            <div className="mission-toolset">
+              <p className="settings-hint">
+                Tools for this mission - June guessed these; adjust if it's wrong. None checked = all enabled tools.
+              </p>
+              <div className="row">
+                {plan.serverIds.map((id) => (
+                  <label key={id} className="wake-toggle">
+                    <input
+                      type="checkbox"
+                      checked={plan.toolsetIds.includes(id)}
+                      onChange={(e) =>
+                        setPlan({
+                          ...plan,
+                          toolsetIds: e.target.checked
+                            ? [...plan.toolsetIds, id]
+                            : plan.toolsetIds.filter((x) => x !== id),
+                        })
+                      }
+                    />
+                    <span>{id}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
           )}
           <div className="row">
             <button className="primary" onClick={() => void confirm()}>

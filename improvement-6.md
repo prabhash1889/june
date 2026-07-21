@@ -677,11 +677,22 @@ round-trip + legacy migration (1.9).
     read-modify-write, where there is no competing writer. A normal finish still
     reaches terminal via `advance`; the cancel-path write is guarded on `cancelled`.
 
-5.5 **Plan-confirm polish: editable toolset + per-watch cap** | P3 | S
+5.5 **Plan-confirm polish: editable toolset + per-watch cap** | P3 | S - DONE
     Toolset list becomes checkboxes over enabled server ids (a wrong `TOOLS:` guess can't
     be corrected today); `WatchLoop` gets optional `maxChecks` (a 1-minute watch dies in
     ~30 min while a 60-minute watch runs 30 hours). `MissionBoard.tsx`,
     `src/lib/schedules.ts`, `scheduler.rs`.
+    (a) The plan-confirm view now carries every enabled server id (`Plan.serverIds`)
+    and renders the toolset as editable checkboxes (June's `TOOLS:` guess pre-checked,
+    the user can correct it). None checked = all enabled tools (the existing empty-
+    toolsetIds = no-filter semantics), stated in a hint. (b) `WatchLoop` gains an
+    optional `maxChecks`, coerced in `coerceWatches` (>=1, clamped to 10,000, omitted
+    when absent/garbled so the scheduler default applies). The Rust `Watch` reads
+    `maxChecks` and the retire logic uses `w.max_checks.unwrap_or(MAX_WATCH_ITERS)`
+    for both the DONE-cap and the error-cap, so an existing watch with no cap behaves
+    exactly as before. A "Stop after N checks" field (blank = 30) on the watch card in
+    SettingsPanel. Pinned: schedules.test (cap kept / sub-1 & absent omitted / huge
+    clamped). Full suite 284 vitest + 13 scheduler cargo tests + clippy green.
 
 ---
 

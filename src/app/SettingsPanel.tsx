@@ -1580,6 +1580,21 @@ function AutomationSection({ settings, update }: { settings: JuneSettings; updat
               placeholder="the build is green"
             />
           </div>
+          <div className="stage-row">
+            <span className="stage-label">Stop after</span>
+            <input
+              type="number"
+              min={1}
+              className="num"
+              value={w.maxChecks ?? ""}
+              placeholder="30"
+              onChange={(e) => {
+                const n = Math.floor(Number(e.target.value));
+                patchWatch(w.id, { maxChecks: Number.isFinite(n) && n >= 1 ? n : undefined });
+              }}
+            />
+            <span className="settings-hint">checks (blank = 30)</span>
+          </div>
         </div>
       ))}
       <div className="settings-test">

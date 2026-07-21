@@ -90,6 +90,21 @@ describe("coerceWatches (P1.2)", () => {
   it("returns [] for a non-array", () => {
     expect(coerceWatches("nope")).toEqual([]);
   });
+
+  it("coerces the optional per-watch check cap (5.5)", () => {
+    const [withCap] = coerceWatches([
+      { label: "Build", everyMinutes: 10, untilCondition: "green", maxChecks: 100, enabled: true },
+    ]);
+    expect(withCap.maxChecks).toBe(100);
+    // A garbled / sub-1 / absent cap omits the field, so the scheduler default applies.
+    const [garbled] = coerceWatches([{ label: "B", everyMinutes: 10, maxChecks: 0 }]);
+    expect("maxChecks" in garbled).toBe(false);
+    const [absent] = coerceWatches([{ label: "B", everyMinutes: 10 }]);
+    expect("maxChecks" in absent).toBe(false);
+    // A huge value is clamped rather than left effectively unbounded.
+    const [huge] = coerceWatches([{ label: "B", everyMinutes: 10, maxChecks: 1e9 }]);
+    expect(huge.maxChecks).toBe(10_000);
+  });
 });
 
 describe("frameUnattended", () => {

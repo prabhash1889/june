@@ -60,6 +60,11 @@ export interface WatchLoop {
   everyMinutes: number;
   /** The stop condition, in plain words, e.g. "the build is green". */
   untilCondition: string;
+  /** Optional per-watch check cap (improvement-6 5.5): stop after this many
+   *  iterations even if the condition never comes true. Absent = the scheduler's
+   *  default (30). Lets a 1-minute watch run longer than 30 min, and a 60-minute
+   *  watch stop before 30 hours. */
+  maxChecks?: number;
   enabled: boolean;
 }
 
@@ -102,6 +107,20 @@ const MIN_EVERY_MINUTES = 1;
 const MAX_EVERY_MINUTES = 7 * 24 * 60;
 /** Default interval when a value is missing/garbled but one is needed. */
 const DEFAULT_EVERY_MINUTES = 60;
+
+/** Upper bound on a watch loop's per-watch check cap (5.5). Generous - a long,
+ *  slow watch is legitimate - but bounded so a garbled huge value can't imply an
+ *  effectively unbounded loop. */
+const MAX_CHECKS = 10_000;
+
+/** Coerce a raw value into a valid per-watch check cap, or undefined if it isn't
+ *  one (so the entry omits the field and the scheduler applies its default). */
+function maxChecksOrUndef(v: unknown): number | undefined {
+  if (typeof v !== "number" || !Number.isFinite(v)) return undefined;
+  const n = Math.floor(v);
+  if (n < 1) return undefined;
+  return Math.min(n, MAX_CHECKS);
+}
 
 /** Coerce a raw value into a valid interval in minutes, or null if it isn't one
  *  (so a caller can drop an `every` entry with no usable interval). */
@@ -199,12 +218,14 @@ export function coerceWatches(v: unknown): WatchLoop[] {
     const every = everyMinutesOrNull(r.everyMinutes);
     if (every === null) continue; // no valid interval - nothing to re-run
     const label = str(r.label, "Watch loop").trim() || "Watch loop";
+    const maxChecks = maxChecksOrUndef(r.maxChecks);
     out.push({
       id: uniqueId(r.id, label, taken),
       label,
       prompt: str(r.prompt).trim(),
       everyMinutes: every,
       untilCondition: str(r.untilCondition).trim(),
+      ...(maxChecks !== undefined ? { maxChecks } : {}),
       enabled: bool(r.enabled, false),
     });
   }

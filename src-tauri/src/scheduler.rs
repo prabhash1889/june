@@ -200,6 +200,8 @@ struct Watch {
     prompt: String,
     every_minutes: u32,
     until_condition: String,
+    /// Optional per-watch check cap (5.5); `None` = the default `MAX_WATCH_ITERS`.
+    max_checks: Option<u32>,
     enabled: bool,
 }
 
@@ -314,6 +316,10 @@ fn read_watches(settings: &serde_json::Value) -> Vec<Watch> {
                     prompt: s(v, "prompt"),
                     every_minutes: every_minutes(v),
                     until_condition: s(v, "untilCondition"),
+                    max_checks: v
+                        .get("maxChecks")
+                        .and_then(|x| x.as_u64())
+                        .map(|n| n.clamp(1, u32::MAX as u64) as u32),
                     enabled: v.get("enabled").and_then(|x| x.as_bool()).unwrap_or(false),
                 })
                 .collect()
@@ -780,20 +786,23 @@ pub fn start(app: AppHandle, session: AgentSession, runner: MissionRunner) {
                             *n += 1;
                             *n
                         };
+                        // Per-watch cap (5.5), falling back to the default so an
+                        // existing watch with no maxChecks behaves exactly as before.
+                        let cap = w.max_checks.unwrap_or(MAX_WATCH_ITERS);
                         // Decide whether this watch is finished (DONE) or has hit its
                         // check cap, and the completion note to speak.
                         let retire: Option<(String, String)> = match outcome {
                             Ok(Some(reply)) => {
                                 if parse_verdict(&reply) == Verdict::Done {
                                     Some((format!("Watch complete: {}", w.label), truncate(&reply, 240)))
-                                } else if iters >= MAX_WATCH_ITERS {
+                                } else if iters >= cap {
                                     Some((format!("Watch stopped (max checks): {}", w.label), truncate(&reply, 240)))
                                 } else {
                                     None
                                 }
                             }
                             // A transient error counts as an iteration; give up at the cap.
-                            Err(e) if iters >= MAX_WATCH_ITERS => {
+                            Err(e) if iters >= cap => {
                                 Some((format!("Watch stopped: {}", w.label), e))
                             }
                             Err(_) => None,
