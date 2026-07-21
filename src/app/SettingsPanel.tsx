@@ -64,6 +64,7 @@ import {
   writeMemory,
 } from "../lib/settings.ts";
 import { transcribe } from "../lib/stt.ts";
+import { applyTheme, THEMES } from "../lib/theme.ts";
 import { synthesize } from "../lib/tts.ts";
 import { type CaptureHandle, LEVEL_GAIN, startCapture } from "../lib/voice-capture.ts";
 
@@ -210,6 +211,9 @@ export function SettingsPanel() {
       <div id="sec-privacy" className="settings-anchor">
         <PrivacySection settings={settings} update={update} />
       </div>
+      <div id="sec-appearance" className="settings-anchor">
+        <AppearanceSection settings={settings} update={update} />
+      </div>
       <div id="sec-activation" className="settings-anchor">
         <ActivationSection settings={settings} update={update} />
       </div>
@@ -248,6 +252,7 @@ const NAV_SECTIONS: { id: string; label: string }[] = [
   { id: "sec-models", label: "Models" },
   { id: "sec-keys", label: "API keys" },
   { id: "sec-privacy", label: "Privacy" },
+  { id: "sec-appearance", label: "Appearance" },
   { id: "sec-activation", label: "Activation" },
   { id: "sec-handsfree", label: "Hands-free" },
   { id: "sec-transcript", label: "Dictation" },
@@ -898,6 +903,38 @@ function PrivacySection({
         </div>
       )}
       <ClearActivity />
+    </section>
+  );
+}
+
+// --- Appearance (3.4) -----------------------------------------------------
+
+/** Theme picker: System / Light / Dark. Applies the choice immediately (live
+ *  preview) as well as persisting it, so the window recolours as the radio flips. */
+function AppearanceSection({ settings, update }: { settings: JuneSettings; update: (s: JuneSettings) => void }) {
+  return (
+    <section className="settings-section">
+      <h2>Appearance</h2>
+      <p className="settings-hint">Choose June's colour theme. System follows your OS light/dark setting.</p>
+      <div role="radiogroup" aria-label="Colour theme">
+        {THEMES.map((t) => (
+          <label key={t.id} className="privacy-mode">
+            <input
+              type="radio"
+              name="theme"
+              checked={settings.theme === t.id}
+              onChange={() => {
+                applyTheme(t.id); // live preview
+                update({ ...settings, theme: t.id });
+              }}
+            />
+            <span>
+              <span className="privacy-name">{t.label}</span>
+              <span className="privacy-desc">{t.desc}</span>
+            </span>
+          </label>
+        ))}
+      </div>
     </section>
   );
 }

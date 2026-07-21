@@ -566,7 +566,10 @@ function ApprovalBanner({ approval, onDecide }: { approval: Approval; onDecide: 
   // Esc rejects from anywhere in the window.
   const rejectRef = useApprovalKeys(approval.id, onDecide);
   return (
-    <div className="app-approval">
+    // role=alertdialog + assertive live region: a screen reader announces the
+    // pending approval the moment it appears, not only when focus reaches it (3.4).
+    <div className="app-approval" role="alertdialog" aria-live="assertive" aria-label="Approval needed">
+
       <div className="app-approval-text">
         <span className="approval-head">
           <span className="app-approval-label">Approval needed</span>

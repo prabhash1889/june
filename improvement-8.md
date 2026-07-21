@@ -213,6 +213,19 @@ re-discovered.
     `prefers-color-scheme` auto + a three-way setting, and do one axe-devtools + tab-through
     sitting in the same pass since both touch every surface.
     `src/styles.css`, `settings.ts`, `tauri.conf.json`, `AppWindow.tsx`, `VoicePanel.tsx`.
+    **DONE (light theme + a11y; palette already variabled).** The palette was already
+    CSS-variabled at `:root`, so light theme is one override block
+    (`:root[data-theme="light"]`, `color-scheme: light`, AA-tuned inks/brand/coral). New
+    `src/lib/theme.ts` `applyTheme` resolves the three-way `theme` setting
+    (System/Light/Dark, default System) to a concrete `data-theme` - "system" tracks the
+    OS via matchMedia live, so no media-query duplication - applied early in the shared
+    `main.tsx` for both windows and live-previewed from a new SettingsPanel **Appearance**
+    section. Dropped the `"theme": "Dark"` hardpin in tauri.conf.json so native chrome
+    follows the OS. Focus rings + `role="status"` live regions already existed; added
+    `role="alertdialog"` + `aria-live="assertive"` to the app approval banner so it's
+    announced on appearance. Pinned `applyTheme` with a test (pin/system/fallback);
+    build + 350 TS tests green. **Not done:** the manual axe-devtools + tab-through
+    sweep (needs a running GUI, not reachable headlessly).
 
 ---
 

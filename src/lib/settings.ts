@@ -4,6 +4,7 @@ import { coerceMcpServers, type McpServerEntry } from "./mcp-servers.ts";
 import { type PrivacyMode, providerAllowed } from "./privacy.ts";
 import { coerceSchedules, coerceTriggers, coerceWatches, type FileTrigger, type Schedule, type WatchLoop } from "./schedules.ts";
 import { PROVIDERS, resolveProvider, type Stage } from "./providers.ts";
+import type { ThemeMode } from "./theme.ts";
 import type { TermMap } from "./transcript.ts";
 
 // June's typed settings (PLAN.md §4, Phase 7). Persisted to
@@ -95,6 +96,9 @@ export interface JuneSettings {
    *  0 = never auto-reset; the conversation persists until "new conversation". */
   conversationIdleMinutes: number;
   privacyMode: PrivacyMode;
+  /** Colour theme (3.4): "system" follows the OS, "light"/"dark" pin the palette.
+   *  Defaults to "system" so June respects the OS preference out of the box. */
+  theme: ThemeMode;
   /** Whether the one-time first-run welcome card has been dismissed (6.4). False on
    *  a fresh install (or a settings file predating this flag), so onboarding shows
    *  once, then never again. */
@@ -138,6 +142,7 @@ export const DEFAULT_SETTINGS: JuneSettings = {
   outputVolume: 1,
   conversationIdleMinutes: 10,
   privacyMode: "standard",
+  theme: "system",
   firstRunDone: false,
   launchAtLogin: false,
   micMuted: false,
@@ -199,6 +204,7 @@ function coerce(raw: RawSettings): JuneSettings {
   };
   const efforts: Effort[] = ["low", "medium", "high"];
   const modes: PrivacyMode[] = ["standard", "local-voice", "strict-offline"];
+  const themes: ThemeMode[] = ["system", "light", "dark"];
   const brainEffort = obj("brain").effort;
   const mode = raw.privacyMode;
   const wake = obj("wake");
@@ -223,6 +229,7 @@ function coerce(raw: RawSettings): JuneSettings {
     outputVolume: unit(raw.outputVolume, d.outputVolume),
     conversationIdleMinutes: nonNegInt(raw.conversationIdleMinutes, d.conversationIdleMinutes),
     privacyMode: modes.includes(mode as PrivacyMode) ? (mode as PrivacyMode) : d.privacyMode,
+    theme: themes.includes(raw.theme as ThemeMode) ? (raw.theme as ThemeMode) : d.theme,
     firstRunDone: bool(raw.firstRunDone, d.firstRunDone),
     launchAtLogin: bool(raw.launchAtLogin, d.launchAtLogin),
     micMuted: bool(raw.micMuted, d.micMuted),

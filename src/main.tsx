@@ -4,6 +4,8 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import { ErrorBoundary } from "./app/ErrorBoundary.tsx";
 import { installGlobalErrorHooks } from "./lib/errorlog.ts";
+import { loadSettings } from "./lib/settings.ts";
+import { applyTheme } from "./lib/theme.ts";
 import "./styles.css";
 
 // One bundle, two faces (PLAN.md Phase 6): the `app` window is the full
@@ -27,6 +29,13 @@ const Face =
 
 // Catch async / event-handler / promise throws the ErrorBoundary can't (2.2).
 installGlobalErrorHooks();
+
+// Apply the saved colour theme as early as possible (3.4), in both windows. Async
+// (settings come from the Rust side); a "system" user sees at worst a brief dark
+// frame before this resolves, which the CSS default already matches.
+void loadSettings()
+  .then((s) => applyTheme(s.theme))
+  .catch(() => {});
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
